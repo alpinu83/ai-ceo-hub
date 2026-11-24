@@ -1,3 +1,5 @@
+import { standaloneApi } from './standalone-runtime.js';
+
 const PRESETS = {
   business: {
     title: 'B2B 제안서 작성 + 경쟁사 모니터링 + 고객 미팅 식당 예약',
@@ -179,8 +181,30 @@ function toast(msg, isError = false) {
   setTimeout(() => el.remove(), 3500);
 }
 
+let runtimeMode = 'detecting'; // 'server' | 'standalone'
+
+async function detectRuntime() {
+  try {
+    const res = await fetch('./api/health', { cache: 'no-store' });
+    if (res.ok) {
+      const data = await res.json().catch(() => null);
+      if (data && data.ok === true) {
+        runtimeMode = 'server';
+        return;
+      }
+    }
+  } catch {
+    // static hosting (e.g. GitHub Pages)
+  }
+  runtimeMode = 'standalone';
+}
+
 async function api(url, options = {}) {
-  const res = await fetch(url, {
+  if (runtimeMode === 'standalone') {
+    return standaloneApi(url, options);
+  }
+  const targetUrl = url.startsWith('/') ? `.${url}` : url;
+  const res = await fetch(targetUrl, {
     headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
     ...options
   });
@@ -1605,6 +1629,11 @@ async function handleRunTask(taskId, btn) {
 async function init() {
   bindEvents();
   try {
+    await detectRuntime();
+    const subEl = document.querySelector('.brand-sub');
+    if (subEl) {
+      subEl.textContent = runtimeMode === 'server' ? 'Hono · MCP · AI SDK 서버' : 'GitHub Pages 실사용 모드';
+    }
     const [st, oss] = await Promise.all([api('/api/state'), api('/api/oss-stack')]);
     state = st;
     ossStack = oss;

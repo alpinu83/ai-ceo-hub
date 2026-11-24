@@ -8,9 +8,9 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Newsreader:ital,opsz,wght@0,6..72,500;0,6..72,600;1,6..72,500&family=Noto+Sans+KR:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/styles.css" />
-  <script src="/vendor/marked.umd.js" defer></script>
-  <script src="/vendor/lucide.min.js" defer></script>
+  <link rel="stylesheet" href="./styles.css" />
+  <script src="./vendor/marked.umd.js" defer></script>
+  <script src="./vendor/lucide.min.js" defer></script>
 </head>
 <body>
   <div class="app-shell">
@@ -595,16 +595,21 @@
             <div class="sheet" style="margin-top: 20px;">
               <div class="sheet-header compact">
                 <div>
-                  <h3 class="sheet-title">동봉된 오픈소스 배포 파일 미리보기</h3>
-                  <p class="sheet-desc">아래 설정을 그대로 사용해 로컬 PC나 클라우드에서 1분 만에 LiteLLM + CEO Office를 띄울 수 있습니다.</p>
+                  <h3 class="sheet-title">원클릭 클라우드 HTTPS 배포 (모바일 Muse · Cue MCP 접속용)</h3>
+                  <p class="sheet-desc">GitHub Pages 웹앱은 지금 바로 사용할 수 있으며, 외부 앱(Meta Muse · Manus Cue)이 <code class="mono">/api/mcp</code>에 직접 접속하게 하려면 아래 원클릭 버튼으로 Node 백엔드를 띄우세요.</p>
                 </div>
                 <div class="tester-btns">
-                  <button type="button" class="btn btn-ghost btn-sm" data-load-export="litellm">litellm_config.yaml</button>
-                  <button type="button" class="btn btn-ghost btn-sm" data-load-export="docker-compose">docker-compose.yml</button>
-                  <button type="button" class="btn btn-ghost btn-sm" data-load-export="railway">railway.json</button>
-                  <button type="button" class="btn btn-ghost btn-sm" data-load-export="render">render.yaml</button>
-                  <button type="button" class="btn btn-primary btn-sm" id="btn-copy-export">내용 복사</button>
+                  <a class="btn btn-primary btn-sm" href="https://render.com/deploy?repo=https://github.com/alpinu83/ai-ceo-hub" target="_blank" rel="noreferrer">Render 원클릭 배포</a>
+                  <a class="btn btn-ghost btn-sm" href="https://railway.com/new" target="_blank" rel="noreferrer">Railway GitHub 연결</a>
+                  <a class="btn btn-ghost btn-sm" href="https://github.com/alpinu83/ai-ceo-hub" target="_blank" rel="noreferrer">GitHub 저장소</a>
                 </div>
+              </div>
+              <div class="tester-btns" style="margin-bottom: 10px;">
+                <button type="button" class="btn btn-ghost btn-sm" data-load-export="litellm">litellm_config.yaml</button>
+                <button type="button" class="btn btn-ghost btn-sm" data-load-export="docker-compose">docker-compose.yml</button>
+                <button type="button" class="btn btn-ghost btn-sm" data-load-export="railway">railway.json</button>
+                <button type="button" class="btn btn-ghost btn-sm" data-load-export="render">render.yaml</button>
+                <button type="button" class="btn btn-ghost btn-sm" id="btn-copy-export">내용 복사</button>
               </div>
               <pre class="code-block tall" id="oss-export-preview">위 버튼을 눌러 동봉된 설정 파일을 확인하세요.</pre>
             </div>
@@ -792,6 +797,6 @@
   <!-- Toast feedback -->
   <div class="toast-region" id="toast-region" aria-live="polite"></div>
 
-  <script type="module" src="/app.js"></script>
+  <script type="module" src="./app.js"></script>
 </body>
 </html>
