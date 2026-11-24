@@ -30,7 +30,17 @@ async function runTests() {
     const health = await (await fetch(`${BASE}/api/health`)).json();
     assert.equal(health.ok, true, 'health.ok should be true');
 
-    for (const p of ['/', '/styles.css', '/app.js', '/vendor/marked.umd.js', '/vendor/lucide.min.js']) {
+    for (const p of [
+      '/',
+      '/styles.css',
+      '/app.js',
+      '/manifest.webmanifest',
+      '/sw.js',
+      '/icons/icon-192.png',
+      '/icons/icon-512.png',
+      '/vendor/marked.umd.js',
+      '/vendor/lucide.min.js'
+    ]) {
       const r = await fetch(`${BASE}${p}`);
       assert.equal(r.status, 200, `GET ${p} must return 200`);
     }

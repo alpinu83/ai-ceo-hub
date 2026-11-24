@@ -49,8 +49,10 @@ const MIME_TYPES = {
   '.css': 'text/css; charset=utf-8',
   '.js': 'application/javascript; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
+  '.webmanifest': 'application/manifest+json; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
+  '.ico': 'image/x-icon',
   '.yaml': 'text/yaml; charset=utf-8'
 };
 
@@ -1265,7 +1267,7 @@ app.get('*', (c) => {
     const ext = path.extname(fullPath);
     const content = fs.readFileSync(fullPath);
     const headers = { 'Content-Type': MIME_TYPES[ext] || 'application/octet-stream' };
-    if (ext === '.html' || ext === '.js' || ext === '.css') {
+    if (ext === '.html' || ext === '.js' || ext === '.css' || ext === '.webmanifest') {
       headers['Cache-Control'] = 'no-cache, no-store, must-revalidate';
     }
     return c.body(content, 200, headers);
