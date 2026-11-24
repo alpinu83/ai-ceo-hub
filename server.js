@@ -1104,10 +1104,17 @@ app.get('*', (c) => {
   if (fullPath.startsWith(PUBLIC_DIR) && fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
     const ext = path.extname(fullPath);
     const content = fs.readFileSync(fullPath);
-    return c.body(content, 200, { 'Content-Type': MIME_TYPES[ext] || 'application/octet-stream' });
+    const headers = { 'Content-Type': MIME_TYPES[ext] || 'application/octet-stream' };
+    if (ext === '.html' || ext === '.js' || ext === '.css') {
+      headers['Cache-Control'] = 'no-cache, no-store, must-revalidate';
+    }
+    return c.body(content, 200, headers);
   }
   const indexHtml = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
-  return c.html(indexHtml);
+  return c.body(indexHtml, 200, {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Cache-Control': 'no-cache, no-store, must-revalidate'
+  });
 });
 
 const honoListener = getRequestListener(app.fetch);
