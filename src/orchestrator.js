@@ -226,16 +226,10 @@ export function buildDispatchPrompt(agent, task, mission) {
   }
 }
 
-function selectLeadAgent(agents, costPolicy, settings) {
+function selectLeadAgent(agents, costPolicy) {
   const active = agents.filter((a) => a.active);
   if (costPolicy === 'free_first') {
-    const hasExaone = Boolean(settings?.providers?.exaone?.apiKey);
-    const hasGemini = Boolean(settings?.providers?.gemini?.apiKey);
-    if (hasExaone && !hasGemini) {
-      return active.find((a) => a.id === 'agent_exaone') || active[0];
-    }
     return (
-      active.find((a) => a.id === 'agent_gemini_free') ||
       active.find((a) => a.id === 'agent_exaone') ||
       active.find((a) => a.costTier === 'free') ||
       active[0]
@@ -282,12 +276,12 @@ function heuristicDecompose({ directive, domain, costPolicy, agents, leadAgent }
   const isFreeOnly = costPolicy === 'free_first';
 
   const researchAgent = isFreeOnly
-    ? pick(['agent_exaone', 'agent_gemini_free', 'agent_vooy', 'agent_cue'])
-    : pick(['agent_gemini_free', 'agent_exaone', 'agent_cue', 'agent_gemini_neon']);
+    ? pick(['agent_exaone', 'agent_vooy', 'agent_cue'])
+    : pick(['agent_exaone', 'agent_cue', 'agent_gemini_neon']);
 
   const deepWorkAgent = isFreeOnly
-    ? pick(['agent_exaone', 'agent_gemini_free', 'agent_muse', 'agent_claude'])
-    : pick(['agent_claude', 'agent_gemini_neon', 'agent_exaone', 'agent_gemini_free']);
+    ? pick(['agent_exaone', 'agent_muse', 'agent_claude'])
+    : pick(['agent_claude', 'agent_gemini_neon', 'agent_exaone']);
 
   const needsCallOrBooking = /예약|식당|병원|전화|ktx|기차|호텔|숙소|주문|결제|구매/.test(text);
   const needsRecurring = /매일|매주|아침|브리핑|모니터링|가격|뉴스|트렌드|추적/.test(text);
@@ -308,7 +302,7 @@ function heuristicDecompose({ directive, domain, costPolicy, agents, leadAgent }
 
   if (needsCode || domain === 'dev') {
     const devAgent = isFreeOnly
-      ? pick(['agent_gemini_free', 'agent_claude'])
+      ? pick(['agent_exaone', 'agent_claude'])
       : pick(['agent_claude', 'agent_gemini_neon']);
     tasks.push({
       title: '아키텍처 설계 · 구현 코드 작성 및 리뷰',
@@ -333,7 +327,7 @@ function heuristicDecompose({ directive, domain, costPolicy, agents, leadAgent }
 
   if (needsEmailOrOutreach || domain === 'business') {
     const bizAgent = needsEmailOrOutreach
-      ? pick(['agent_cue', 'agent_claude', 'agent_gemini_free'])
+      ? pick(['agent_cue', 'agent_claude', 'agent_exaone'])
       : deepWorkAgent;
     tasks.push({
       title: needsEmailOrOutreach ? '대외 제안 문서 작성 및 메일 초안 준비' : '비즈니스 실행안 및 의사결정 옵션 비교',
@@ -363,7 +357,7 @@ function heuristicDecompose({ directive, domain, costPolicy, agents, leadAgent }
     tasks.push({
       title: '정기 자동 브리핑 · 모니터링 루틴 설정',
       description: '매일 아침 동일 조건으로 뉴스·가격·업계 동향을 수집해 핵심만 브리핑하는 반복 루틴을 세팅합니다.',
-      assigneeId: pick(['agent_vooy', 'agent_gemini_free']).id,
+      assigneeId: pick(['agent_vooy', 'agent_exaone']).id,
       domain,
       requiresApproval: false,
       estimatedCostKRW: 0
@@ -374,7 +368,7 @@ function heuristicDecompose({ directive, domain, costPolicy, agents, leadAgent }
     tasks.push({
       title: '개인 취향·일정 제약 대조 및 프로젝트 보드 정리',
       description: '기존 선호도와 캘린더 충돌 여부를 점검하고 Spaces 보드 형태로 정리합니다.',
-      assigneeId: pick(['agent_muse', 'agent_gemini_free']).id,
+      assigneeId: pick(['agent_muse', 'agent_exaone']).id,
       domain: 'life',
       requiresApproval: false,
       estimatedCostKRW: 0
@@ -396,7 +390,7 @@ function heuristicDecompose({ directive, domain, costPolicy, agents, leadAgent }
     tasks.push({
       title: '일정·컨텍스트 정합성 점검 및 실행 체크리스트',
       description: 'CEO의 기존 우선순위와 일정에 맞춰 실행 순서와 누락 항목을 정리합니다.',
-      assigneeId: pick(['agent_muse', 'agent_vooy', 'agent_gemini_free']).id,
+      assigneeId: pick(['agent_muse', 'agent_vooy', 'agent_exaone']).id,
       domain,
       requiresApproval: false,
       estimatedCostKRW: 0
@@ -619,10 +613,9 @@ function pickResponders(text, agents, mission, tasks) {
   const matched = [];
 
   const aliasMap = [
-    { id: 'agent_gemini_neon', re: /네온|neon|총괄|팀장/ },
+    { id: 'agent_gemini_neon', re: /제미나이|gemini|네온|neon|총괄|팀장/ },
     { id: 'agent_claude', re: /클로드|claude|수석|개발|코드|제안서/ },
-    { id: 'agent_exaone', re: /엑사원|exaone|lg|요약|정리|단순|번역/ },
-    { id: 'agent_gemini_free', re: /제미나이|gemini|무료|리서치|조사/ },
+    { id: 'agent_exaone', re: /엑사원|exaone|lg|무료|요약|정리|리서치|조사|단순|번역/ },
     { id: 'agent_muse', re: /뮤즈|muse|취향|일정|spaces/ },
     { id: 'agent_cue', re: /큐|cue|마누스|manus|이메일|메일/ },
     { id: 'agent_pickle', re: /피클|pickle|식당|예약|전화|병원|ktx/ },

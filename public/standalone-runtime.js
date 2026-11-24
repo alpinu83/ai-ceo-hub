@@ -6,7 +6,7 @@
  * - Smart Korean Team Lead decomposition, parallel execution, custom dispatch prompts, and MCP preview
  */
 
-const STORAGE_KEY = 'ceo_office_standalone_v4';
+const STORAGE_KEY = 'ceo_office_standalone_v5';
 
 function uid(prefix = 'id') {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
@@ -99,29 +99,9 @@ function createDefaultDb() {
         spentKRW: 0,
         domains: ['business', 'content', 'dev', 'life'],
         strengths: 'LG AI연구원 무료 K-EXAONE 2.5 API(512K 컨텍스트). 한국어 문서 요약, 이메일 초안, 단순 반복 정리, 코딩 보조를 비용 0원 자동 실행',
-        bridgeGuide: '보유하신 LG EXAONE API 키를 빠른 시작 화면에 넣으면 https://api.exaone.ai/v1 로 즉시 무료 자동 가동됩니다.',
+        bridgeGuide: '보유하신 LG EXAONE API 키를 설정에 넣으면 https://api.exaone.ai/v1 로 즉시 무료 자동 가동됩니다.',
         active: true,
         accent: '#A50034'
-      },
-      {
-        id: 'agent_gemini_free',
-        name: 'Gemini (무료 티어)',
-        shortCode: 'GM',
-        roleTitle: '자동 실무·리서치·초안 팀원 (무료 자동)',
-        tier: 'specialist',
-        reportsTo: 'agent_gemini_neon',
-        provider: 'gemini',
-        modelId: 'gemini-2.5-flash',
-        connectionMode: 'api',
-        costTier: 'free',
-        appUrl: 'https://aistudio.google.com',
-        monthlyCapKRW: 0,
-        spentKRW: 0,
-        domains: ['business', 'content', 'dev', 'life'],
-        strengths: 'Google AI Studio 무료 API로 추가 비용 0원 자동 분해·리서치·초안·회의실 대화 처리',
-        bridgeGuide: 'Google AI Studio 무료 키를 넣으면 LG 엑사원과 함께 무료 자동 실행 팀원으로 가동됩니다.',
-        active: true,
-        accent: '#1D5B8C'
       },
       {
         id: 'agent_muse',
@@ -246,14 +226,14 @@ function createDefaultDb() {
         missionId: sampleMissionId,
         title: '경쟁사 3곳 가격·서비스 구조 1차 리서치',
         description: '국내 주요 경쟁사 3곳의 요금제, 핵심 기능, 최근 업데이트를 표로 정리해 제안서 근거 자료를 확보합니다.',
-        assigneeId: 'agent_gemini_free',
+        assigneeId: 'agent_exaone',
         domain: 'business',
         status: 'completed',
         requiresApproval: false,
         estimatedCostKRW: 0,
-        dispatchPrompt: '[Gemini 무료 티어] 국내 주요 경쟁사 3곳의 요금제, 차별점, 약점을 비교 표로 정리해 주세요.',
+        dispatchPrompt: '[LG K-EXAONE 2.5] 국내 주요 경쟁사 3곳의 요금제, 차별점, 약점을 비교 표로 정리해 주세요.',
         output:
-          '### 경쟁사 3곳 비교 요약\n\n| 구분 | 가격 정책 | 핵심 강점 | 한계점 |\n| --- | --- | --- | --- |\n| **A사** | 월 49,000원 | 워크플로우 자동화 | 한국 전화 예약·생활 에이전트 부재 |\n| **B사** | 토큰 종량제 | 개발자 코딩 특화 | 비개발자용 CEO 결재 UI 복잡 |\n| **C사** | 무료 베타 | 개인 일상 비서 | 팀 단위 분업·예산 통제 불가 |\n\n**제안서 핵심 소구점**: 무료 에이전트(Gemini·Muse·피클·부이·인스팅스)와 유료 모델(Gemini 4 Neon·Claude)을 **오픈소스 MCP + CEO 결재 체계**로 통합.',
+          '### 경쟁사 3곳 비교 요약\n\n| 구분 | 가격 정책 | 핵심 강점 | 한계점 |\n| --- | --- | --- | --- |\n| **A사** | 월 49,000원 | 워크플로우 자동화 | 한국 전화 예약·생활 에이전트 부재 |\n| **B사** | 토큰 종량제 | 개발자 코딩 특화 | 비개발자용 CEO 결재 UI 복잡 |\n| **C사** | 무료 베타 | 개인 일상 비서 | 팀 단위 분업·통제 불가 |\n\n**제안서 핵심 소구점**: 무료 에이전트(EXAONE·Muse·피클·부이·인스팅스)와 구독 모델(Gemini 4 Neon·Claude)을 **오픈소스 MCP + CEO 결재 체계**로 통합.',
         executionModeUsed: 'simulation',
         createdAt: now,
         updatedAt: now
@@ -370,24 +350,24 @@ function createDefaultDb() {
         senderRole: '전략·총괄 팀장',
         senderShortCode: 'GN',
         senderAccent: '#0E6245',
-        targetAgentId: 'agent_gemini_free',
+        targetAgentId: 'agent_exaone',
         statusText: '업무 분배 중',
         type: 'plan',
-        text: '대표님 지시 확인했습니다! 비용 균형 정책으로 바로 분배하겠습니다. @Gemini(무료) 님은 경쟁사 3곳 가격·기능 리서치 먼저 부탁드리고, @Claude 수석님은 리서치 받아서 제안서 5페이지 본문 잡아주세요. @피클 님은 성수역 4인 룸 식당 전화 확인, @부이 님은 매일 오전 8시 경쟁사 브리핑 루틴 세팅 부탁드립니다!',
+        text: '대표님 지시 확인했습니다! 바로 분배하겠습니다. @엑사원 님은 경쟁사 3곳 가격·기능 리서치 먼저 부탁드리고, @Claude 수석님은 리서치 받아서 제안서 5페이지 본문 잡아주세요. @피클 님은 성수역 4인 룸 식당 전화 확인, @부이 님은 매일 오전 8시 경쟁사 브리핑 루틴 세팅 부탁드립니다!',
         timestamp: now
       },
       {
         id: 'msg_init_3',
         missionId: sampleMissionId,
-        senderId: 'agent_gemini_free',
-        senderName: 'Gemini (무료 티어)',
-        senderRole: '리서치·초안 팀원',
-        senderShortCode: 'GM',
-        senderAccent: '#1D5B8C',
+        senderId: 'agent_exaone',
+        senderName: 'LG K-EXAONE 2.5',
+        senderRole: '한국어 실무·요약·리서치',
+        senderShortCode: 'EX',
+        senderAccent: '#A50034',
         targetAgentId: 'agent_claude',
         statusText: '리서치 완료 · 핸드오프',
         type: 'handoff',
-        text: '네 팀장님! 무료 티어로 국내 경쟁사 3곳 요금제·차별점 비교 표 정리 마쳤습니다. A사는 국내 전화 예약이 없고 B사는 결재 UI가 복잡하네요. @Claude 수석님, 제안서 핵심 소구점 바로 쓰실 수 있게 표 넘겨드렸습니다!',
+        text: '네 팀장님! 무료 API로 국내 경쟁사 3곳 요금제·차별점 비교 표 정리 마쳤습니다. A사는 국내 전화 예약이 없고 B사는 결재 UI가 복잡하네요. @Claude 수석님, 제안서 핵심 소구점 바로 쓰실 수 있게 표 넘겨드렸습니다!',
         timestamp: now
       },
       {
@@ -398,7 +378,7 @@ function createDefaultDb() {
         senderRole: '개발·기획 수석 팀장',
         senderShortCode: 'CL',
         senderAccent: '#9A4A2E',
-        targetAgentId: 'agent_gemini_free',
+        targetAgentId: 'agent_exaone',
         statusText: '제안서 초안 구성 중',
         type: 'work',
         text: '@Gemini(무료) 님 자료 잘 받았습니다. 비교 표가 깔끔하네요. 이걸 기반으로 ROI 섹션과 2주 파일럿 일정까지 넣어서 5페이지 제안서 초안 마무리하겠습니다. 실행 버튼 눌러주시면 바로 완성본 올리겠습니다.',
@@ -614,13 +594,10 @@ async function sendTelegramDirect(settings, approval, agentName) {
   }).catch(() => {});
 }
 
-function selectLead(agents, costPolicy, settings) {
+function selectLead(agents, costPolicy) {
   const active = agents.filter((a) => a.active);
   if (costPolicy === 'free_first') {
-    const hasGem = Boolean(settings?.providers?.gemini?.apiKey);
-    const hasExa = Boolean(settings?.providers?.exaone?.apiKey);
-    if (hasExa && !hasGem) return active.find((a) => a.id === 'agent_exaone') || active[0];
-    return active.find((a) => a.id === 'agent_gemini_free') || active.find((a) => a.id === 'agent_exaone') || active[0];
+    return active.find((a) => a.id === 'agent_exaone') || active[0];
   }
   return active.find((a) => a.id === 'agent_gemini_neon') || active.find((a) => a.tier === 'lead') || active[0];
 }
@@ -635,7 +612,7 @@ function heuristicPlan({ directive, domain, costPolicy, agents, leadAgent }) {
   tasks.push({
     title: '핵심 자료 조사 및 요구사항 구조화',
     description: `CEO 지시("${directive.slice(0, 72)}${directive.length > 72 ? '…' : ''}")의 선행 자료, 벤치마크, 제약 조건을 구조화합니다.`,
-    assigneeId: (isFree ? pick(['agent_exaone', 'agent_gemini_free', 'agent_vooy']) : pick(['agent_gemini_free', 'agent_exaone', 'agent_cue'])).id,
+    assigneeId: (isFree ? pick(['agent_exaone', 'agent_vooy']) : pick(['agent_exaone', 'agent_cue'])).id,
     domain,
     requiresApproval: false,
     estimatedCostKRW: 0
@@ -645,7 +622,7 @@ function heuristicPlan({ directive, domain, costPolicy, agents, leadAgent }) {
     tasks.push({
       title: '아키텍처 설계 · 구현 코드 작성 및 리뷰',
       description: '핵심 구현 코드, 예외 처리, 단위 테스트 및 보안 체크리스트를 작성합니다.',
-      assigneeId: (isFree ? pick(['agent_exaone', 'agent_gemini_free', 'agent_claude']) : pick(['agent_claude', 'agent_gemini_neon'])).id,
+      assigneeId: (isFree ? pick(['agent_exaone', 'agent_claude']) : pick(['agent_claude', 'agent_gemini_neon'])).id,
       domain: 'dev',
       requiresApproval: /배포|프로덕션|결제/.test(text),
       estimatedCostKRW: 0
@@ -655,7 +632,7 @@ function heuristicPlan({ directive, domain, costPolicy, agents, leadAgent }) {
     tasks.push({
       title: '콘텐츠 기획안 · 대본 및 채널별 카피 제작',
       description: '후킹 제목 5종, 본문 초안, 블로그/스레드 확산용 버전을 제작합니다.',
-      assigneeId: (isFree ? pick(['agent_exaone', 'agent_gemini_free', 'agent_muse']) : pick(['agent_claude', 'agent_gemini_neon'])).id,
+      assigneeId: (isFree ? pick(['agent_exaone', 'agent_muse']) : pick(['agent_claude', 'agent_gemini_neon'])).id,
       domain: 'content',
       requiresApproval: /발행|업로드|게시|승인/.test(text),
       estimatedCostKRW: 0
@@ -666,7 +643,7 @@ function heuristicPlan({ directive, domain, costPolicy, agents, leadAgent }) {
     tasks.push({
       title: needEmail ? '대외 제안 문서 작성 및 메일 초안 준비' : '비즈니스 실행안 및 의사결정 옵션 비교',
       description: needEmail ? '고객/파트너 발송용 초안을 작성하고 실제 발송 전 CEO 결재를 거칩니다.' : '보수안/적극안 2가지 전략과 기대 ROI, 리스크를 비교 정리합니다.',
-      assigneeId: (needEmail ? pick(['agent_cue', 'agent_exaone', 'agent_claude']) : isFree ? pick(['agent_exaone', 'agent_gemini_free', 'agent_muse']) : pick(['agent_claude', 'agent_gemini_neon'])).id,
+      assigneeId: (needEmail ? pick(['agent_cue', 'agent_exaone', 'agent_claude']) : isFree ? pick(['agent_exaone', 'agent_muse']) : pick(['agent_claude', 'agent_gemini_neon'])).id,
       domain: 'business',
       requiresApproval: needEmail,
       estimatedCostKRW: 0
@@ -686,7 +663,7 @@ function heuristicPlan({ directive, domain, costPolicy, agents, leadAgent }) {
     tasks.push({
       title: '정기 자동 브리핑 · 모니터링 루틴 설정',
       description: '매일 아침 동일 조건으로 뉴스·가격·트렌드를 자동 수집해 보고하는 반복 루틴을 구성합니다.',
-      assigneeId: pick(['agent_vooy', 'agent_gemini_free']).id,
+      assigneeId: pick(['agent_vooy', 'agent_exaone']).id,
       domain,
       requiresApproval: false,
       estimatedCostKRW: 0
@@ -696,7 +673,7 @@ function heuristicPlan({ directive, domain, costPolicy, agents, leadAgent }) {
     tasks.push({
       title: '개인 컨텍스트 대조 및 실행 체크리스트',
       description: 'CEO의 기존 일정과 우선순위에 맞춰 실행 순서를 정리하고 누락 항목을 점검합니다.',
-      assigneeId: pick(['agent_muse', 'agent_exaone', 'agent_vooy', 'agent_gemini_free']).id,
+      assigneeId: pick(['agent_muse', 'agent_exaone', 'agent_vooy']).id,
       domain,
       requiresApproval: false,
       estimatedCostKRW: 0
@@ -1080,10 +1057,9 @@ export async function standaloneApi(path, options = {}) {
     const active = db.agents.filter((a) => a.active);
     const lower = text.toLowerCase();
     const aliasMap = [
-      { id: 'agent_gemini_neon', re: /네온|neon|총괄|팀장/ },
+      { id: 'agent_gemini_neon', re: /제미나이|gemini|네온|neon|총괄|팀장/ },
       { id: 'agent_claude', re: /클로드|claude|수석|개발|코드|제안서/ },
-      { id: 'agent_exaone', re: /엑사원|exaone|lg|요약|정리|단순|번역/ },
-      { id: 'agent_gemini_free', re: /제미나이|gemini|무료|리서치|조사/ },
+      { id: 'agent_exaone', re: /엑사원|exaone|lg|무료|요약|정리|리서치|조사|단순|번역/ },
       { id: 'agent_muse', re: /뮤즈|muse|취향|일정|spaces/ },
       { id: 'agent_cue', re: /큐|cue|마누스|manus|이메일|메일/ },
       { id: 'agent_pickle', re: /피클|pickle|식당|예약|전화|병원|ktx/ },

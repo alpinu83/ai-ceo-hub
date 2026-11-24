@@ -232,75 +232,31 @@ textarea {
 }
 
 .nav-badge {
+  display: none;
   font-family: var(--font-mono);
   font-size: 11px;
   font-weight: 700;
   padding: 2px 7px;
   border-radius: 99px;
-  background: var(--bg-subtle);
-  color: var(--ink-muted);
-}
-
-.nav-badge.has-pending {
   background: var(--accent-amber);
   color: #fff;
 }
 
-.nav-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--border-strong);
+.nav-badge.has-pending {
+  display: inline-flex;
 }
-
-.nav-dot.connected { background: var(--accent-primary); }
-
-.sidebar-summary {
-  margin-top: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 12px;
-  background: var(--bg-subtle);
-  border-radius: var(--radius-md);
-}
-
-.mini-budget-row {
-  display: flex;
-  justify-content: space-between;
-  font-size: 12px;
-  color: var(--ink-secondary);
-  margin-bottom: 6px;
-}
-
-.mini-budget-row strong { color: var(--ink-primary); }
-
-.metric-pairs {
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-
-.metric-pairs > div {
-  display: flex;
-  justify-content: space-between;
-  font-size: 12px;
-}
-
-.metric-pairs dt { color: var(--ink-muted); }
-.metric-pairs dd { margin: 0; font-weight: 600; }
 
 .sidebar-footer {
-  padding-top: 8px;
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-hairline);
 }
 
 .ceo-chip {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 4px 6px;
+  gap: 8px;
+  padding: 4px 4px;
 }
 
 .ceo-avatar {
@@ -332,6 +288,8 @@ textarea {
 }
 
 .icon-btn:hover { background: var(--bg-subtle); color: var(--ink-primary); }
+.nav-gear-btn.active { background: var(--ink-primary); color: var(--bg-surface); border-color: var(--ink-primary); }
+#btn-topbar-settings { display: none; }
 
 /* ==================== TOPBAR & MAIN ==================== */
 .main-column {
@@ -1365,6 +1323,7 @@ textarea:focus {
   .sidebar.mobile-open { transform: translateX(0); }
 
   .mobile-menu-btn { display: inline-flex; }
+  #btn-topbar-settings { display: grid; }
 
   .topbar { padding: 10px 14px; }
   .page-title { font-size: 18px; }
@@ -1408,7 +1367,7 @@ textarea:focus {
 
   .mobile-bottom-nav {
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     position: fixed;
     left: 0; right: 0; bottom: 0;
     z-index: 40;

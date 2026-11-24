@@ -6,7 +6,7 @@
   <title>CEO Office</title>
   <meta name="description" content="멀티 AI 팀 지휘본부" />
   <link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" />
-  <link rel="stylesheet" href="./styles.css?v=20261124d" />
+  <link rel="stylesheet" href="./styles.css?v=20261124e" />
   <script src="./vendor/marked.umd.js" defer></script>
   <script src="./vendor/lucide.min.js" defer></script>
 </head>
@@ -19,7 +19,6 @@
         <div class="brand-seal" aria-hidden="true">C</div>
         <div class="brand-text">
           <div class="brand-name" id="sidebar-company-name">CEO Office</div>
-          <div class="brand-sub">AI Command</div>
         </div>
       </div>
 
@@ -29,11 +28,9 @@
         </button>
         <button class="nav-item" data-view="missions" id="nav-missions">
           <span class="nav-left"><i data-lucide="layout-kanban" class="icon-sm"></i><span>업무</span></span>
-          <span class="nav-meta" id="nav-mission-count">0</span>
         </button>
         <button class="nav-item" data-view="office" id="nav-office">
           <span class="nav-left"><i data-lucide="messages-square" class="icon-sm"></i><span>회의실</span></span>
-          <span class="nav-meta" id="nav-chat-count">0</span>
         </button>
         <button class="nav-item" data-view="approvals" id="nav-approvals">
           <span class="nav-left"><i data-lucide="stamp" class="icon-sm"></i><span>결재함</span></span>
@@ -41,21 +38,8 @@
         </button>
         <button class="nav-item" data-view="roster" id="nav-roster">
           <span class="nav-left"><i data-lucide="users" class="icon-sm"></i><span>AI 팀</span></span>
-          <span class="nav-meta" id="nav-agent-count">9</span>
-        </button>
-        <button class="nav-item" data-view="integrations" id="nav-integrations">
-          <span class="nav-left"><i data-lucide="sliders-horizontal" class="icon-sm"></i><span>설정</span></span>
-          <span class="nav-dot" id="nav-api-dot" title="API 연결"></span>
         </button>
       </nav>
-
-      <section class="sidebar-summary" aria-label="요약">
-        <dl class="metric-pairs">
-          <div><dt>AI 팀원</dt><dd id="stat-active-agents">-</dd></div>
-          <div><dt>API</dt><dd id="stat-live-apis">-</dd></div>
-          <div><dt>전략</dt><dd id="stat-cost-policy">-</dd></div>
-        </dl>
-      </section>
 
       <div class="sidebar-footer">
         <div class="ceo-chip">
@@ -63,8 +47,11 @@
           <div class="ceo-info">
             <div class="ceo-name" id="sidebar-ceo-name">대표님</div>
           </div>
-          <button type="button" class="icon-btn" id="btn-toggle-theme" title="테마 전환">
+          <button type="button" class="icon-btn" id="btn-toggle-theme" title="테마 전환" aria-label="테마 전환">
             <i data-lucide="sun-moon" class="icon-sm"></i>
+          </button>
+          <button type="button" class="icon-btn nav-gear-btn" data-view="integrations" id="nav-integrations" title="설정" aria-label="설정">
+            <i data-lucide="settings" class="icon-sm"></i>
           </button>
         </div>
       </div>
@@ -81,14 +68,12 @@
           <p class="page-subtitle sr-only" id="page-subtitle"></p>
         </div>
         <div class="topbar-actions">
-          <button class="btn btn-ghost btn-sm desktop-only" id="btn-open-approvals-quick">
-            <i data-lucide="inbox" class="icon-xs"></i>
-            <span>결재</span>
-            <strong class="mono" id="topbar-pending-count">0</strong>
-          </button>
           <button class="btn btn-primary btn-sm" id="btn-focus-directive">
             <i data-lucide="plus" class="icon-xs"></i>
             <span>새 지시</span>
+          </button>
+          <button type="button" class="icon-btn nav-gear-btn" data-view="integrations" id="btn-topbar-settings" title="설정" aria-label="설정">
+            <i data-lucide="settings" class="icon-sm"></i>
           </button>
         </div>
       </header>
@@ -107,7 +92,7 @@
             </button>
             <button type="button" class="kpi-card" id="kpi-budget-cell">
               <span class="kpi-label">가동 AI</span>
-              <strong class="kpi-value" id="kpi-budget-val">9명</strong>
+              <strong class="kpi-value" id="kpi-budget-val">8명</strong>
             </button>
           </div>
 
@@ -228,7 +213,7 @@
                   </button>
                   <button type="button" class="btn btn-ghost btn-sm mobile-participants-btn" id="btn-toggle-participants" aria-label="참석자 보기">
                     <i data-lucide="users" class="icon-xs"></i>
-                    <span id="office-participant-count">9</span>
+                    <span id="office-participant-count">8</span>
                   </button>
                 </div>
               </div>
@@ -244,8 +229,9 @@
                 <div class="quick-mention-row">
                   <button type="button" class="pill-chip" data-quick-chat="@전체 진행 상황 한 줄씩 보고해줘">@전체 보고</button>
                   <button type="button" class="pill-chip" data-quick-chat="@엑사원 핵심 요약하고 초안 잡아줘">@엑사원</button>
-                  <button type="button" class="pill-chip" data-quick-chat="@제미나이 자료 조사해줘">@제미나이</button>
                   <button type="button" class="pill-chip" data-quick-chat="@피클 예약 조건 확인해줘">@피클</button>
+                  <button type="button" class="pill-chip" data-quick-chat="@Muse 일정과 취향 체크해줘">@Muse</button>
+                  <button type="button" class="pill-chip" data-quick-chat="@Cue 자료 조사해줘">@Cue</button>
                   <button type="button" class="pill-chip" data-quick-chat="@Claude 검토해줘">@Claude</button>
                 </div>
                 <div class="chat-input-row">
@@ -325,58 +311,95 @@
           </div>
         </section>
 
-        <!-- 6. SETTINGS & CONNECTIONS -->
+        <!-- 6. SETTINGS & CONNECTIONS (CLEAN 2-TAB) -->
         <section class="view" id="view-integrations" aria-label="설정">
           <div class="hub-tab-bar" role="tablist">
-            <button type="button" class="hub-tab active" data-hub-tab="quickstart">빠른 연결</button>
-            <button type="button" class="hub-tab" data-hub-tab="mcp">MCP · 앱 연동</button>
-            <button type="button" class="hub-tab" data-hub-tab="providers">고급 · 텔레그램</button>
-            <button type="button" class="hub-tab" data-hub-tab="oss">배포</button>
+            <button type="button" class="hub-tab active" data-hub-tab="quickstart">연결 현황</button>
+            <button type="button" class="hub-tab" data-hub-tab="mcp">MCP · HTTPS 연동</button>
           </div>
 
-          <!-- TAB 1: QUICK CONNECT -->
+          <!-- TAB 1: ACTIVE CONNECTIONS + EXAONE + TELEGRAM + BASIC -->
           <div class="hub-panel active" id="hub-panel-quickstart">
-            <div class="form-row-two" style="gap:14px;">
-              <form id="quick-exaone-form" class="card compact-card">
-                <div class="card-head">
-                  <div>
-                    <h3 class="card-title">LG K-EXAONE 2.5</h3>
-                    <span class="key-status" id="status-exaone-quick">미연결</span>
-                  </div>
-                  <a class="text-link" href="https://docs.exaone.ai" target="_blank" rel="noreferrer">키 발급 ↗</a>
-                </div>
-                <div class="inline-action-row">
-                  <input type="password" id="quick-key-exaone" placeholder="EXAONE API 키" autocomplete="off" />
-                  <button type="submit" class="btn btn-primary btn-sm" id="btn-save-quick-exaone">연결</button>
-                </div>
-              </form>
-
-              <form id="quick-gemini-form" class="card compact-card">
-                <div class="card-head">
-                  <div>
-                    <h3 class="card-title">Google Gemini 무료</h3>
-                    <span class="key-status" id="status-gemini-quick">미연결</span>
-                  </div>
-                  <a class="text-link" href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer">키 발급 ↗</a>
-                </div>
-                <div class="inline-action-row">
-                  <input type="password" id="quick-key-gemini" placeholder="AIza... 무료 키" autocomplete="off" />
-                  <button type="submit" class="btn btn-primary btn-sm" id="btn-save-quick-gemini">연결</button>
-                </div>
-              </form>
-            </div>
-
-            <div class="card" style="margin-top:14px;">
+            <div class="card" style="margin-bottom:14px;">
               <div class="card-head">
-                <h3 class="card-title">연동 요약</h3>
-                <button type="button" class="btn btn-ghost btn-sm" data-hub-tab="mcp">토큰 · 명령어 복사</button>
+                <h3 class="card-title">AI 연결 현황</h3>
+                <button type="button" class="btn btn-ghost btn-sm" data-hub-tab="mcp">토큰 · 명령어</button>
               </div>
               <div class="simple-list">
-                <div class="simple-row"><strong>LG EXAONE · Gemini 무료</strong><span class="badge badge-green">API 자동</span></div>
-                <div class="simple-row"><strong>Meta Muse · Manus Cue</strong><span class="badge badge-blue">MCP / HTTPS</span></div>
-                <div class="simple-row"><strong>피클 · 부이</strong><span class="badge badge-blue">HTTPS 수신함</span></div>
-                <div class="simple-row"><strong>Gemini 4 Neon · Claude</strong><span class="badge badge-neutral">구독 (0원)</span></div>
+                <div class="simple-row">
+                  <div><strong>LG K-EXAONE 2.5</strong> <span class="mono" style="color:var(--ink-muted);">API 자동</span></div>
+                  <span class="key-status" id="status-exaone-quick">미연결</span>
+                </div>
+                <div class="simple-row">
+                  <div><strong>Meta Muse</strong> <span class="mono" style="color:var(--ink-muted);">공식 MCP</span></div>
+                  <span class="badge badge-green">연결됨</span>
+                </div>
+                <div class="simple-row">
+                  <div><strong>피클 (알렉스)</strong> <span class="mono" style="color:var(--ink-muted);">HTTPS · 30분 스케줄</span></div>
+                  <span class="badge badge-green">연결됨</span>
+                </div>
+                <div class="simple-row">
+                  <div><strong>Manus Cue</strong> <span class="mono" style="color:var(--ink-muted);">HTTPS · 보안 폼</span></div>
+                  <span class="badge badge-green">연결됨</span>
+                </div>
+                <div class="simple-row">
+                  <div><strong>부이 (vooy)</strong> <span class="mono" style="color:var(--ink-muted);">HTTPS 수신함</span></div>
+                  <span class="badge badge-amber">대기 중</span>
+                </div>
+                <div class="simple-row">
+                  <div><strong>Gemini 4 Neon · Claude</strong> <span class="mono" style="color:var(--ink-muted);">구독 · MCP</span></div>
+                  <span class="badge badge-blue">구독 (0원)</span>
+                </div>
               </div>
+            </div>
+
+            <div class="card">
+              <form id="settings-form" class="settings-form">
+                <div class="provider-group" style="padding-top:0;border-top:none;">
+                  <div class="provider-head">
+                    <h3>LG K-EXAONE 2.5 (무료 API)</h3>
+                    <div class="provider-right">
+                      <span class="key-status" id="status-exaone">미연결</span>
+                      <button type="button" class="btn btn-ghost btn-sm" data-ping-provider="exaone">테스트</button>
+                    </div>
+                  </div>
+                  <div class="form-row-two">
+                    <label class="field"><span class="field-label">API 키</span><input type="password" id="key-exaone" placeholder="변경 시 입력" autocomplete="off" /></label>
+                    <label class="field"><span class="field-label">모델</span><input type="text" id="model-exaone" placeholder="k-exaone_v2.5" /></label>
+                  </div>
+                </div>
+
+                <div class="provider-group">
+                  <div class="provider-head">
+                    <h3>텔레그램 결재 봇</h3>
+                    <div class="provider-right">
+                      <span class="key-status" id="status-telegram">미연결</span>
+                      <button type="button" class="btn btn-ghost btn-sm" id="btn-test-telegram">테스트</button>
+                    </div>
+                  </div>
+                  <div class="form-row-two">
+                    <label class="field"><span class="field-label">Bot Token</span><input type="password" id="tg-bot-token" placeholder="변경 시 입력" autocomplete="off" /></label>
+                    <label class="field"><span class="field-label">Chat ID</span><input type="text" id="tg-chat-id" placeholder="숫자 ID" /></label>
+                  </div>
+                  <label class="checkbox-row">
+                    <input type="checkbox" id="tg-polling-enabled" />
+                    <span>실시간 수신 활성화 (<code>/order</code>, <code>/status</code>, 결재 버튼)</span>
+                  </label>
+                </div>
+
+                <div class="provider-group">
+                  <div class="provider-head"><h3>기본 정보</h3></div>
+                  <div class="form-row-two">
+                    <label class="field"><span class="field-label">조직명</span><input type="text" id="set-company-name" /></label>
+                    <label class="field"><span class="field-label">CEO 호칭</span><input type="text" id="set-ceo-name" /></label>
+                  </div>
+                </div>
+
+                <div class="form-actions">
+                  <button type="button" class="btn btn-ghost btn-sm" id="btn-reset-demo">초기화</button>
+                  <button type="submit" class="btn btn-primary">저장</button>
+                </div>
+              </form>
             </div>
           </div>
 
@@ -431,182 +454,6 @@
               </div>
             </div>
           </div>
-
-          <!-- TAB 3: ADVANCED PROVIDERS & TELEGRAM -->
-          <div class="hub-panel" id="hub-panel-providers">
-            <div class="card">
-              <form id="settings-form" class="settings-form">
-                <div class="form-row-three">
-                  <label class="field"><span class="field-label">조직명</span><input type="text" id="set-company-name" /></label>
-                  <label class="field"><span class="field-label">CEO 호칭</span><input type="text" id="set-ceo-name" /></label>
-                  <label class="field">
-                    <span class="field-label">비용 전략</span>
-                    <select id="set-cost-policy">
-                      <option value="free_first">무료 우선</option>
-                      <option value="balanced">균형</option>
-                      <option value="max_quality">최고 성능</option>
-                    </select>
-                  </label>
-                </div>
-
-                <div class="form-row-two">
-                  <label class="field"><span class="field-label">월 예산 (원)</span><input type="number" id="set-monthly-budget" min="0" step="10000" /></label>
-                  <label class="field"><span class="field-label">결재 기준 금액 (원)</span><input type="number" id="set-threshold" min="0" step="5000" /></label>
-                </div>
-
-                <div class="provider-group">
-                  <div class="provider-head">
-                    <h3>LG K-EXAONE 2.5</h3>
-                    <div class="provider-right">
-                      <span class="key-status" id="status-exaone">미연결</span>
-                      <button type="button" class="btn btn-ghost btn-sm" data-ping-provider="exaone">테스트</button>
-                    </div>
-                  </div>
-                  <div class="form-row-three">
-                    <label class="field"><span class="field-label">API 키</span><input type="password" id="key-exaone" placeholder="변경 시 입력" autocomplete="off" /></label>
-                    <label class="field"><span class="field-label">Base URL</span><input type="url" id="url-exaone" placeholder="https://api.exaone.ai/v1" /></label>
-                    <label class="field"><span class="field-label">모델</span><input type="text" id="model-exaone" placeholder="k-exaone_v2.5" /></label>
-                  </div>
-                </div>
-
-                <div class="provider-group">
-                  <div class="provider-head">
-                    <h3>Google Gemini</h3>
-                    <div class="provider-right">
-                      <span class="key-status" id="status-gemini">미연결</span>
-                      <button type="button" class="btn btn-ghost btn-sm" data-ping-provider="gemini">테스트</button>
-                    </div>
-                  </div>
-                  <div class="form-row-two">
-                    <label class="field"><span class="field-label">API 키</span><input type="password" id="key-gemini" placeholder="AIza..." autocomplete="off" /></label>
-                    <label class="field">
-                      <span class="field-label">무료 / 유료 모델</span>
-                      <div class="inline-inputs">
-                        <input type="text" id="model-gemini-free" placeholder="gemini-2.5-flash" />
-                        <input type="text" id="model-gemini-paid" placeholder="gemini-4-neon" />
-                      </div>
-                    </label>
-                  </div>
-                </div>
-
-                <div class="provider-group">
-                  <div class="provider-head">
-                    <h3>텔레그램 결재 봇</h3>
-                    <div class="provider-right">
-                      <span class="key-status" id="status-telegram">미연결</span>
-                      <button type="button" class="btn btn-ghost btn-sm" id="btn-test-telegram">테스트</button>
-                    </div>
-                  </div>
-                  <div class="form-row-two">
-                    <label class="field"><span class="field-label">Bot Token</span><input type="password" id="tg-bot-token" placeholder="123456:ABC..." autocomplete="off" /></label>
-                    <label class="field"><span class="field-label">Chat ID</span><input type="text" id="tg-chat-id" placeholder="숫자 ID" /></label>
-                  </div>
-                  <label class="checkbox-row">
-                    <input type="checkbox" id="tg-polling-enabled" />
-                    <span>실시간 수신 활성화 (<code>/order</code>, <code>/status</code>, 결재 버튼)</span>
-                  </label>
-                </div>
-
-                <details class="composer-options">
-                  <summary>추가 프로바이더 (Claude · Manus · LiteLLM · Ollama · Webhook)</summary>
-                  <div style="display:flex;flex-direction:column;gap:14px;margin-top:12px;">
-                    <div class="provider-group">
-                      <div class="provider-head">
-                        <h3>Anthropic Claude</h3>
-                        <div class="provider-right">
-                          <span class="key-status" id="status-claude">미연결</span>
-                          <button type="button" class="btn btn-ghost btn-sm" data-ping-provider="claude">테스트</button>
-                        </div>
-                      </div>
-                      <div class="form-row-two">
-                        <label class="field"><span class="field-label">API 키</span><input type="password" id="key-claude" placeholder="sk-ant-..." autocomplete="off" /></label>
-                        <label class="field"><span class="field-label">모델</span><input type="text" id="model-claude" placeholder="claude-sonnet-4-5" /></label>
-                      </div>
-                    </div>
-
-                    <div class="provider-group">
-                      <div class="provider-head">
-                        <h3>Manus / Cue</h3>
-                        <div class="provider-right">
-                          <span class="key-status" id="status-manus">미연결</span>
-                          <button type="button" class="btn btn-ghost btn-sm" data-ping-provider="manus">테스트</button>
-                        </div>
-                      </div>
-                      <div class="form-row-two">
-                        <label class="field"><span class="field-label">API 키</span><input type="password" id="key-manus" placeholder="선택" autocomplete="off" /></label>
-                        <label class="field"><span class="field-label">전용 이메일</span><input type="email" id="email-cue" placeholder="agent@cue.manus.im" /></label>
-                      </div>
-                    </div>
-
-                    <div class="provider-group">
-                      <div class="provider-head">
-                        <h3>LiteLLM</h3>
-                        <div class="provider-right">
-                          <span class="key-status" id="status-litellm">미연결</span>
-                          <button type="button" class="btn btn-ghost btn-sm" data-ping-provider="litellm">테스트</button>
-                        </div>
-                      </div>
-                      <div class="form-row-three">
-                        <label class="field"><span class="field-label">Proxy URL</span><input type="url" id="url-litellm" placeholder="http://localhost:4000/v1" /></label>
-                        <label class="field"><span class="field-label">모델</span><input type="text" id="model-litellm" placeholder="gemini-free" /></label>
-                        <label class="field"><span class="field-label">Key</span><input type="password" id="key-litellm" placeholder="선택" autocomplete="off" /></label>
-                      </div>
-                    </div>
-
-                    <div class="provider-group">
-                      <div class="provider-head">
-                        <h3>Ollama (로컬)</h3>
-                        <div class="provider-right">
-                          <span class="key-status" id="status-ollama">대기</span>
-                          <button type="button" class="btn btn-ghost btn-sm" data-ping-provider="ollama">테스트</button>
-                        </div>
-                      </div>
-                      <div class="form-row-two">
-                        <label class="field"><span class="field-label">Endpoint</span><input type="url" id="url-ollama" placeholder="http://localhost:11434/v1" /></label>
-                        <label class="field"><span class="field-label">모델</span><input type="text" id="model-ollama" placeholder="qwen2.5:14b" /></label>
-                      </div>
-                    </div>
-
-                    <div class="provider-group">
-                      <div class="provider-head">
-                        <h3>Webhook 알림</h3>
-                        <button type="button" class="btn btn-ghost btn-sm" id="btn-test-webhook">테스트</button>
-                      </div>
-                      <label class="field"><input type="url" id="set-webhook-url" placeholder="Slack / Discord / n8n Webhook URL" /></label>
-                    </div>
-                  </div>
-                </details>
-
-                <div class="form-actions">
-                  <button type="button" class="btn btn-ghost btn-sm" id="btn-reset-demo">초기화</button>
-                  <button type="submit" class="btn btn-primary">저장</button>
-                </div>
-              </form>
-            </div>
-          </div>
-
-          <!-- TAB 4: DEPLOY & OSS -->
-          <div class="hub-panel" id="hub-panel-oss">
-            <div class="card" style="margin-bottom:14px;">
-              <div class="card-head">
-                <h3 class="card-title">클라우드 배포</h3>
-                <div class="tester-btns">
-                  <a class="btn btn-primary btn-sm" href="https://render.com/deploy?repo=https://github.com/alpinu83/ai-ceo-hub" target="_blank" rel="noreferrer">Render 배포 ↗</a>
-                  <a class="btn btn-ghost btn-sm" href="https://github.com/alpinu83/ai-ceo-hub" target="_blank" rel="noreferrer">GitHub ↗</a>
-                </div>
-              </div>
-              <div class="tester-btns" style="margin-bottom: 10px;">
-                <button type="button" class="btn btn-ghost btn-sm" data-load-export="render">render.yaml</button>
-                <button type="button" class="btn btn-ghost btn-sm" data-load-export="litellm">litellm</button>
-                <button type="button" class="btn btn-ghost btn-sm" data-load-export="docker-compose">docker</button>
-                <button type="button" class="btn btn-ghost btn-sm" id="btn-copy-export">복사</button>
-              </div>
-              <pre class="code-block tall" id="oss-export-preview"></pre>
-            </div>
-
-            <div class="oss-grid" id="oss-builtin-grid"></div>
-            <div class="oss-grid" id="oss-pluggable-grid" style="margin-top:12px;"></div>
-          </div>
         </section>
       </main>
     </div>
@@ -638,12 +485,6 @@
         </button>
       </div>
       <form id="hire-agent-form" class="modal-body">
-        <div class="preset-row">
-          <button type="button" class="pill-chip" data-hire-preset="ollama">Ollama 로컬</button>
-          <button type="button" class="pill-chip" data-hire-preset="openrouter">OpenRouter 무료</button>
-          <button type="button" class="pill-chip" data-hire-preset="openclaw">OpenClaw</button>
-          <button type="button" class="pill-chip" data-hire-preset="perplexity">Perplexity</button>
-        </div>
         <div class="form-row-two">
           <label class="field"><span class="field-label">이름 *</span><input type="text" id="hire-name" required /></label>
           <label class="field"><span class="field-label">역할 *</span><input type="text" id="hire-role" required /></label>
@@ -662,7 +503,6 @@
             <select id="hire-mode">
               <option value="bridge" selected>앱·구독</option>
               <option value="api">API</option>
-              <option value="litellm">LiteLLM</option>
               <option value="mcp">MCP</option>
             </select>
           </label>
@@ -671,24 +511,21 @@
             <select id="hire-cost">
               <option value="free" selected>무료</option>
               <option value="freemium">부분 무료</option>
-              <option value="paid_or_sub">유료·구독</option>
+              <option value="paid_or_sub">구독</option>
             </select>
           </label>
         </div>
-        <div class="form-row-three">
+        <div class="form-row-two">
           <label class="field">
             <span class="field-label">프로바이더</span>
             <select id="hire-provider">
-              <option value="ollama">Ollama</option>
-              <option value="litellm">LiteLLM</option>
-              <option value="gemini">Gemini</option>
+              <option value="exaone">LG EXAONE</option>
               <option value="claude">Claude</option>
-              <option value="manus">Manus</option>
+              <option value="manus">Manus / Cue</option>
               <option value="custom" selected>기타</option>
             </select>
           </label>
           <label class="field"><span class="field-label">모델 ID</span><input type="text" id="hire-model" /></label>
-          <label class="field"><span class="field-label">월 한도 (원)</span><input type="number" id="hire-cap" value="0" min="0" step="5000" /></label>
         </div>
         <label class="field"><span class="field-label">강점</span><textarea id="hire-strengths" rows="2"></textarea></label>
         <div class="form-actions">
@@ -699,7 +536,7 @@
     </div>
   </div>
 
-  <!-- Mobile Bottom Navigation -->
+  <!-- Mobile Bottom Navigation (4 Core Tabs — Settings is corner gear icon) -->
   <nav class="mobile-bottom-nav" aria-label="하단 메뉴">
     <button type="button" class="mobile-nav-item active" data-view="command">
       <i data-lucide="home" class="icon-sm"></i><span>홈</span>
@@ -714,12 +551,9 @@
       <i data-lucide="stamp" class="icon-sm"></i><span>결재</span>
       <span class="mobile-nav-badge" id="mobile-approval-badge">0</span>
     </button>
-    <button type="button" class="mobile-nav-item" data-view="integrations">
-      <i data-lucide="sliders-horizontal" class="icon-sm"></i><span>설정</span>
-    </button>
   </nav>
 
   <div class="toast-region" id="toast-region" aria-live="polite"></div>
-  <script type="module" src="./app.js?v=20261124d"></script>
+  <script type="module" src="./app.js?v=20261124e"></script>
 </body>
 </html>

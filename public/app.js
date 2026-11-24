@@ -272,34 +272,23 @@ function renderChrome() {
   const s = state.settings;
   const activeAgents = state.agents.filter((a) => a.active);
   const pendingCount = state.approvals.filter((a) => a.status === 'pending').length;
-  const liveProviderCount = Object.values(s.providers || {}).filter((p) => p.hasApiKey).length;
   const totalTasks = state.tasks.length;
   const doneTasks = state.tasks.filter((t) => t.status === 'completed').length;
   const taskPct = totalTasks ? Math.round((doneTasks / totalTasks) * 100) : 0;
 
   document.getElementById('sidebar-company-name').textContent = s.companyName || 'CEO Office';
   document.getElementById('sidebar-ceo-name').textContent = s.ceoName || '대표님';
-  document.getElementById('nav-mission-count').textContent = String(state.missions.length);
-  const chatCountEl = document.getElementById('nav-chat-count');
-  if (chatCountEl) chatCountEl.textContent = String((state.messages || []).length);
-  document.getElementById('nav-agent-count').textContent = String(activeAgents.length);
 
   const badge = document.getElementById('nav-approval-badge');
-  badge.textContent = String(pendingCount);
-  badge.classList.toggle('has-pending', pendingCount > 0);
+  if (badge) {
+    badge.textContent = String(pendingCount);
+    badge.classList.toggle('has-pending', pendingCount > 0);
+  }
   const mobBadge = document.getElementById('mobile-approval-badge');
   if (mobBadge) {
     mobBadge.textContent = String(pendingCount);
     mobBadge.classList.toggle('show', pendingCount > 0);
   }
-  const topPending = document.getElementById('topbar-pending-count');
-  if (topPending) topPending.textContent = String(pendingCount);
-
-  document.getElementById('stat-active-agents').textContent = `${activeAgents.length}명`;
-  document.getElementById('stat-live-apis').textContent = liveProviderCount > 0 ? `${liveProviderCount}개` : '대기';
-  document.getElementById('stat-cost-policy').textContent = POLICY_LABELS[s.defaultCostPolicy] || s.defaultCostPolicy;
-
-  document.getElementById('nav-api-dot').classList.toggle('connected', liveProviderCount > 0);
 
   // Executive 3-Cell KPI Strip (Approvals · Missions · Active AI)
   document.getElementById('kpi-approvals-val').textContent = `${pendingCount}건`;
@@ -947,7 +936,7 @@ function renderRosterView() {
         <span class="ceo-avatar" style="width:26px;height:26px;font-size:10px;">CEO</span>
         <div>
           <div class="org-node-name">${esc(state.settings.ceoName || '대표님')}</div>
-          <div class="org-node-role">최종 지시 · 예산 통제 · 결재권자</div>
+          <div class="org-node-role">최종 지시 · 결재권자</div>
         </div>
       </div>
     </div>
@@ -1014,7 +1003,6 @@ function renderRosterView() {
           <div class="agent-card-controls">
             <select data-agent-mode="${esc(ag.id)}" aria-label="${esc(ag.name)} 연동 방식" style="width:auto;padding:5px 8px;font-size:12px;">
               <option value="api" ${ag.connectionMode === 'api' ? 'selected' : ''}>API 자동</option>
-              <option value="litellm" ${ag.connectionMode === 'litellm' ? 'selected' : ''}>LiteLLM</option>
               <option value="mcp" ${ag.connectionMode === 'mcp' ? 'selected' : ''}>MCP</option>
               <option value="bridge" ${ag.connectionMode === 'bridge' ? 'selected' : ''}>앱·구독</option>
             </select>
@@ -1033,30 +1021,12 @@ function renderIntegrationsView() {
   const s = state.settings;
   document.getElementById('set-company-name').value = s.companyName || '';
   document.getElementById('set-ceo-name').value = s.ceoName || '';
-  document.getElementById('set-cost-policy').value = s.defaultCostPolicy || 'balanced';
-  document.getElementById('set-monthly-budget').value = s.monthlyBudgetKRW ?? 150000;
-  document.getElementById('set-threshold').value = s.approvalThresholdKRW ?? 30000;
-  document.getElementById('set-webhook-url').value = s.webhookUrl || '';
 
   const p = s.providers || {};
-  document.getElementById('url-exaone').value = p.exaone?.baseUrl || 'https://api.exaone.ai/v1';
   document.getElementById('model-exaone').value = p.exaone?.model || 'k-exaone_v2.5';
-  document.getElementById('model-gemini-free').value = p.gemini?.freeModel || 'gemini-2.5-flash';
-  document.getElementById('model-gemini-paid').value = p.gemini?.paidModel || 'gemini-4-neon';
-  document.getElementById('model-claude').value = p.claude?.model || 'claude-sonnet-4-5';
-  document.getElementById('email-cue').value = p.manus?.cueEmail || '';
-  document.getElementById('url-litellm').value = p.litellm?.baseUrl || 'http://localhost:4000/v1';
-  document.getElementById('model-litellm').value = p.litellm?.model || 'gemini-free';
-  document.getElementById('url-ollama').value = p.ollama?.baseUrl || 'http://localhost:11434/v1';
-  document.getElementById('model-ollama').value = p.ollama?.model || 'qwen2.5:14b';
 
   setKeyStatus('status-exaone', p.exaone);
   setKeyStatus('status-exaone-quick', p.exaone);
-  setKeyStatus('status-gemini', p.gemini);
-  setKeyStatus('status-gemini-quick', p.gemini);
-  setKeyStatus('status-claude', p.claude);
-  setKeyStatus('status-manus', p.manus);
-  setKeyStatus('status-litellm', p.litellm);
 
   const tg = s.telegram || {};
   document.getElementById('tg-chat-id').value = tg.chatId || '';
@@ -1076,38 +1046,6 @@ function renderIntegrationsView() {
   document.getElementById('mcp-endpoint-url').textContent = endpoint;
   document.getElementById('mcp-token-value').textContent = `Bearer ${s.mcpToken || ''}`;
   renderMcpSnippet(endpoint, s.mcpToken || '');
-
-  if (ossStack) {
-    document.getElementById('oss-builtin-grid').innerHTML = ossStack.builtIn
-      .map(
-        (item) => `<article class="oss-card">
-          <div class="oss-card-head">
-            <div>
-              <div class="oss-name">${esc(item.name)}</div>
-              <a class="oss-repo" href="${esc(item.url)}" target="_blank" rel="noreferrer">${esc(item.repo)}</a>
-            </div>
-            <span class="badge badge-green mono">${esc(item.version)}</span>
-          </div>
-          <p class="oss-role">${esc(item.role)}</p>
-        </article>`
-      )
-      .join('');
-
-    document.getElementById('oss-pluggable-grid').innerHTML = ossStack.pluggable
-      .map(
-        (item) => `<article class="oss-card">
-          <div class="oss-card-head">
-            <div>
-              <div class="oss-name">${esc(item.name)}</div>
-              <a class="oss-repo" href="${esc(item.url)}" target="_blank" rel="noreferrer">${esc(item.repo)}</a>
-            </div>
-            <span class="badge badge-blue">연동 지원</span>
-          </div>
-          <p class="oss-role">${esc(item.role)}</p>
-        </article>`
-      )
-      .join('');
-  }
 }
 
 function setKeyStatus(elId, providerObj) {
@@ -1117,7 +1055,7 @@ function setKeyStatus(elId, providerObj) {
     el.textContent = `연결됨 (${providerObj.apiKeyPreview})`;
     el.classList.add('ok');
   } else {
-    el.textContent = '미연결 (브릿지/시뮬레이션)';
+    el.textContent = '미연결';
     el.classList.remove('ok');
   }
 }
@@ -1350,7 +1288,7 @@ function setOfficeMobileTab() {
 
 function switchView(viewName) {
   currentView = viewName;
-  document.querySelectorAll('.nav-item, .mobile-nav-item').forEach((btn) => {
+  document.querySelectorAll('.nav-item, .mobile-nav-item, .nav-gear-btn').forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.view === viewName);
   });
   document.querySelectorAll('.view').forEach((sec) => {
@@ -1385,8 +1323,8 @@ function bindEvents() {
     toast(next === 'studio' ? '다크 테마로 전환했습니다.' : '라이트 테마로 전환했습니다.');
   });
 
-  // Navigation (Desktop Sidebar + Mobile Bottom Bar)
-  document.querySelectorAll('.nav-item, .mobile-nav-item').forEach((btn) => {
+  // Navigation (Desktop Sidebar + Mobile Bottom Bar + Corner Settings Gear)
+  document.querySelectorAll('.nav-item, .mobile-nav-item, .nav-gear-btn').forEach((btn) => {
     btn.addEventListener('click', () => switchView(btn.dataset.view));
   });
   document.getElementById('mobile-menu-btn').addEventListener('click', () => {
@@ -1405,7 +1343,6 @@ function bindEvents() {
   document.getElementById('btn-close-participants')?.addEventListener('click', closeParticipantsDrawer);
   document.getElementById('participants-backdrop')?.addEventListener('click', closeParticipantsDrawer);
 
-  document.getElementById('btn-open-approvals-quick')?.addEventListener('click', () => switchView('approvals'));
   document.getElementById('kpi-approvals-cell')?.addEventListener('click', () => switchView('approvals'));
   document.getElementById('kpi-missions-cell')?.addEventListener('click', () => switchView('missions'));
   document.getElementById('kpi-budget-cell')?.addEventListener('click', () => switchView('roster'));
@@ -1439,24 +1376,7 @@ function bindEvents() {
       document.getElementById('input-mission-title').value = preset.title;
       document.getElementById('input-mission-domain').value = preset.domain;
       document.getElementById('input-directive').value = preset.directive;
-      toast('업무 템플릿을 채웠습니다. 팀장에게 지시를 하달해 보세요.');
-    });
-  });
-
-  // Hire open-source presets
-  document.querySelectorAll('[data-hire-preset]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const p = HIRE_PRESETS[btn.dataset.hirePreset];
-      if (!p) return;
-      document.getElementById('hire-name').value = p.name;
-      document.getElementById('hire-role').value = p.role;
-      document.getElementById('hire-tier').value = p.tier;
-      document.getElementById('hire-mode').value = p.mode;
-      document.getElementById('hire-cost').value = p.cost;
-      document.getElementById('hire-provider').value = p.provider;
-      document.getElementById('hire-model').value = p.model;
-      document.getElementById('hire-cap').value = p.cap;
-      document.getElementById('hire-strengths').value = p.strengths;
+      toast('업무 템플릿을 채웠습니다.');
     });
   });
 
@@ -1470,7 +1390,7 @@ function bindEvents() {
     const costPolicy = document.getElementById('input-cost-policy').value;
 
     submitBtn.disabled = true;
-    submitBtn.textContent = '팀장이 분배 중…';
+    submitBtn.textContent = '분배 중…';
     try {
       const res = await api('/api/missions', {
         method: 'POST',
@@ -1487,7 +1407,7 @@ function bindEvents() {
       toast(err.message, true);
     } finally {
       submitBtn.disabled = false;
-      submitBtn.innerHTML = '<i data-lucide="send" class="icon-xs"></i><span>팀장에게 지시 하달</span>';
+      submitBtn.innerHTML = '<i data-lucide="arrow-up" class="icon-xs"></i><span>지시</span>';
       refreshIcons();
     }
   });
@@ -1777,16 +1697,6 @@ function bindEvents() {
       return;
     }
 
-    if (target.id === 'btn-test-webhook') {
-      try {
-        const res = await api('/api/webhook/test', { method: 'POST' });
-        toast(res.ok ? 'Webhook 테스트 알림을 전송했습니다!' : `Webhook 응답 오류: ${res.error || res.status}`, !res.ok);
-      } catch (err) {
-        toast(err.message, true);
-      }
-      return;
-    }
-
     if (target.dataset.mcpTab) {
       currentMcpTab = target.dataset.mcpTab;
       document.querySelectorAll('[data-mcp-tab]').forEach((b) => b.classList.toggle('active', b === target));
@@ -1795,7 +1705,7 @@ function bindEvents() {
     }
 
     if (target.id === 'btn-copy-mcp-snippet') {
-      copyText(document.getElementById('mcp-snippet-box').textContent, 'MCP 연결 설정을 복사했습니다.');
+      copyText(document.getElementById('mcp-snippet-box').textContent, '연동 설정을 복사했습니다.');
       return;
     }
 
@@ -1807,7 +1717,7 @@ function bindEvents() {
     if (target.dataset.mcpTest) {
       const action = target.dataset.mcpTest;
       const out = document.getElementById('mcp-test-output');
-      out.textContent = '공식 @modelcontextprotocol/sdk 엔드포인트로 요청 중…';
+      out.textContent = 'MCP 요청 중…';
       try {
         const payload =
           action === 'tools/list'
@@ -1826,23 +1736,6 @@ function bindEvents() {
         out.textContent = `오류: ${err.message}`;
       }
       return;
-    }
-
-    if (target.dataset.loadExport) {
-      const which = target.dataset.loadExport;
-      const box = document.getElementById('oss-export-preview');
-      box.textContent = '불러오는 중…';
-      try {
-        const text = await api(`/api/exports/${which}`);
-        box.textContent = text;
-      } catch (err) {
-        box.textContent = `오류: ${err.message}`;
-      }
-      return;
-    }
-
-    if (target.id === 'btn-copy-export') {
-      copyText(document.getElementById('oss-export-preview').textContent, '오픈소스 배포 설정을 복사했습니다.');
     }
   });
 
@@ -1914,7 +1807,7 @@ function bindEvents() {
       costTier: document.getElementById('hire-cost').value,
       provider: document.getElementById('hire-provider').value,
       modelId: document.getElementById('hire-model').value.trim(),
-      monthlyCapKRW: Number(document.getElementById('hire-cap').value) || 0,
+      monthlyCapKRW: 0,
       strengths: document.getElementById('hire-strengths').value.trim()
     };
     try {
@@ -1929,16 +1822,12 @@ function bindEvents() {
     }
   });
 
-  // Save Settings
+  // Save Settings (Clean active stack: EXAONE + Telegram + Basic Info)
   document.getElementById('settings-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const payload = {
       companyName: document.getElementById('set-company-name').value.trim(),
       ceoName: document.getElementById('set-ceo-name').value.trim(),
-      defaultCostPolicy: document.getElementById('set-cost-policy').value,
-      monthlyBudgetKRW: Number(document.getElementById('set-monthly-budget').value) || 0,
-      approvalThresholdKRW: Number(document.getElementById('set-threshold').value) || 0,
-      webhookUrl: document.getElementById('set-webhook-url').value.trim(),
       telegram: {
         botToken: document.getElementById('tg-bot-token').value.trim(),
         chatId: document.getElementById('tg-chat-id').value.trim(),
@@ -1947,42 +1836,19 @@ function bindEvents() {
       providers: {
         exaone: {
           apiKey: document.getElementById('key-exaone').value.trim(),
-          baseUrl: document.getElementById('url-exaone').value.trim(),
           model: document.getElementById('model-exaone').value.trim()
-        },
-        gemini: {
-          apiKey: document.getElementById('key-gemini').value.trim(),
-          freeModel: document.getElementById('model-gemini-free').value.trim(),
-          paidModel: document.getElementById('model-gemini-paid').value.trim()
-        },
-        claude: {
-          apiKey: document.getElementById('key-claude').value.trim(),
-          model: document.getElementById('model-claude').value.trim()
-        },
-        manus: {
-          apiKey: document.getElementById('key-manus').value.trim(),
-          cueEmail: document.getElementById('email-cue').value.trim()
-        },
-        litellm: {
-          apiKey: document.getElementById('key-litellm').value.trim(),
-          baseUrl: document.getElementById('url-litellm').value.trim(),
-          model: document.getElementById('model-litellm').value.trim()
-        },
-        ollama: {
-          baseUrl: document.getElementById('url-ollama').value.trim(),
-          model: document.getElementById('model-ollama').value.trim()
         }
       }
     };
     try {
       const res = await api('/api/settings', { method: 'PUT', body: JSON.stringify(payload) });
       state = res.state;
-      ['key-exaone', 'key-gemini', 'key-claude', 'key-manus', 'key-litellm', 'tg-bot-token'].forEach((id) => {
+      ['key-exaone', 'tg-bot-token'].forEach((id) => {
         const el = document.getElementById(id);
         if (el) el.value = '';
       });
       renderAll();
-      toast('연동 설정 · 텔레그램 봇 · 예산 정책을 저장했습니다.');
+      toast('설정을 저장했습니다.');
     } catch (err) {
       toast(err.message, true);
     }
@@ -2036,86 +1902,6 @@ function bindEvents() {
       } finally {
         sendBtn.disabled = false;
         loungeInput.focus();
-      }
-    });
-  }
-
-  // Quick 1-step LG K-EXAONE 2.5 Free Key save & live test
-  const quickExaoneForm = document.getElementById('quick-exaone-form');
-  if (quickExaoneForm) {
-    quickExaoneForm.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const keyInput = document.getElementById('quick-key-exaone');
-      const btn = document.getElementById('btn-save-quick-exaone');
-      const apiKey = keyInput.value.trim();
-      if (!apiKey) {
-        toast('보유하신 LG EXAONE API 키를 입력해 주세요.', true);
-        return;
-      }
-      const prev = btn.textContent;
-      btn.disabled = true;
-      btn.textContent = '저장 · 확인 중…';
-      try {
-        const saved = await api('/api/settings', {
-          method: 'PUT',
-          body: JSON.stringify({
-            defaultCostPolicy: 'free_first',
-            providers: { exaone: { apiKey } }
-          })
-        });
-        state = saved.state;
-        keyInput.value = '';
-        renderAll();
-        const ping = await api('/api/providers/test', {
-          method: 'POST',
-          body: JSON.stringify({ provider: 'exaone' })
-        });
-        toast(`LG K-EXAONE 2.5 연결 완료! (${ping.model}) 이제 단순·한국어 업무와 회의실이 무료 자동 실행됩니다.`);
-      } catch (err) {
-        toast(`키는 저장되었으나 연결 테스트 오류: ${err.message} (브라우저 CORS 제한 시 Render 무료 서버로 배포하면 해결됩니다)`, true);
-      } finally {
-        btn.disabled = false;
-        btn.textContent = prev;
-      }
-    });
-  }
-
-  // Quick 1-step Gemini Free Key save & live test
-  const quickGeminiForm = document.getElementById('quick-gemini-form');
-  if (quickGeminiForm) {
-    quickGeminiForm.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const keyInput = document.getElementById('quick-key-gemini');
-      const btn = document.getElementById('btn-save-quick-gemini');
-      const apiKey = keyInput.value.trim();
-      if (!apiKey) {
-        toast('Google AI Studio 무료 API 키(AIza...)를 입력해 주세요.', true);
-        return;
-      }
-      const prev = btn.textContent;
-      btn.disabled = true;
-      btn.textContent = '저장 · 확인 중…';
-      try {
-        const saved = await api('/api/settings', {
-          method: 'PUT',
-          body: JSON.stringify({
-            defaultCostPolicy: 'free_first',
-            providers: { gemini: { apiKey } }
-          })
-        });
-        state = saved.state;
-        keyInput.value = '';
-        renderAll();
-        const ping = await api('/api/providers/test', {
-          method: 'POST',
-          body: JSON.stringify({ provider: 'gemini' })
-        });
-        toast(`연결 완료! (${ping.model}) 이제 팀장과 회의실이 무료 Gemini AI로 실시간 가동됩니다.`);
-      } catch (err) {
-        toast(`저장되었으나 연결 확인 중 오류: ${err.message}`, true);
-      } finally {
-        btn.disabled = false;
-        btn.textContent = prev;
       }
     });
   }
@@ -2200,7 +1986,7 @@ async function handleRunTask(taskId, btn) {
     if (res.task.status === 'awaiting_approval') {
       toast('사전 작업 완료 — CEO 결재함에 승인 안건이 상신되었습니다.');
     } else {
-      toast(res.live ? 'Vercel AI SDK로 실시간 실행을 완료했습니다.' : '시뮬레이션 실행을 완료했습니다.');
+      toast(res.live ? '실시간 실행을 완료했습니다.' : '시뮬레이션 실행을 완료했습니다.');
     }
   } catch (err) {
     toast(err.message, true);
@@ -2214,21 +2000,10 @@ async function init() {
   bindEvents();
   try {
     await detectRuntime();
-    const subEl = document.querySelector('.brand-sub');
-    if (subEl) {
-      subEl.textContent = runtimeMode === 'server' ? 'Hono · MCP · AI SDK 서버' : 'GitHub Pages 실사용 모드';
-    }
-    const [st, oss] = await Promise.all([api('/api/state'), api('/api/oss-stack')]);
-    state = st;
-    ossStack = oss;
-    document.getElementById('input-cost-policy').value = state.settings.defaultCostPolicy || 'balanced';
+    state = await api('/api/state');
+    const policyEl = document.getElementById('input-cost-policy');
+    if (policyEl) policyEl.value = state.settings.defaultCostPolicy || 'free_first';
     renderAll();
-    // Preload litellm_config.yaml preview
-    api('/api/exports/litellm')
-      .then((txt) => {
-        document.getElementById('oss-export-preview').textContent = txt;
-      })
-      .catch(() => {});
 
     // Auto-sync live external reports from Pickle / Vooy / Muse / Cue when running on Render server
     if (runtimeMode === 'server') {
