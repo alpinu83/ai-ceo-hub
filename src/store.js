@@ -12,6 +12,18 @@ export function uid(prefix = 'id') {
   return `${prefix}_${crypto.randomBytes(4).toString('hex')}`;
 }
 
+export function resolveStableMcpToken() {
+  if (process.env.MCP_TOKEN && process.env.MCP_TOKEN.trim()) {
+    return process.env.MCP_TOKEN.trim();
+  }
+  const renderSeed = process.env.RENDER_SERVICE_ID || process.env.RENDER_EXTERNAL_HOSTNAME || '';
+  if (renderSeed) {
+    const hash = crypto.createHash('sha256').update(`ceo-office-stable-v1:${renderSeed}`).digest('hex').slice(0, 20);
+    return `ceo_mcp_${hash}`;
+  }
+  return `ceo_mcp_${crypto.randomBytes(8).toString('hex')}`;
+}
+
 export function createDefaultState() {
   const now = new Date().toISOString();
   const sampleMissionId = 'msn_welcome_01';
@@ -31,7 +43,7 @@ export function createDefaultState() {
         chatId: process.env.TELEGRAM_CHAT_ID || '',
         pollingEnabled: process.env.TELEGRAM_POLLING === 'true'
       },
-      mcpToken: process.env.MCP_TOKEN || `ceo_mcp_${crypto.randomBytes(8).toString('hex')}`,
+      mcpToken: resolveStableMcpToken(),
       providers: {
         gemini: {
           apiKey: process.env.GEMINI_API_KEY || '',
