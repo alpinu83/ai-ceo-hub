@@ -5,7 +5,7 @@ const PRESETS = {
     title: 'B2B 제안서 작성 + 경쟁사 모니터링 + 고객 미팅 식당 예약',
     domain: 'business',
     directive:
-      '신규 B2B 클라이언트용 5페이지 제안서 초안을 작성하고, 경쟁사 3곳 가격 변동을 매일 아침 브리핑하도록 세팅해줘. 목요일 저녁 성수역 근처 4인 비즈니스 식당도 전화로 빈자리 확인 후 예약 준비해줘.'
+      '신규 B2B 클라이언트용 5페이지 제안서 초안을 작성하고, 경쟁사 3곳 가격 변동을 매일 아침 브리핑하도록 세팅해줘. 목요일 저녁 4인 비즈니스 미팅 식당도 전화로 빈자리 확인 후 예약 준비해줘.'
   },
   life: {
     title: '주말 가족 모임 식당 예약 + 선물 조사 + 매일 아침 브리핑',
@@ -251,8 +251,8 @@ async function api(url, options = {}) {
       ? `.${url}`
       : url;
   const res = await fetch(targetUrl, {
-    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
-    ...options
+    ...options,
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) }
   });
   const ct = res.headers.get('content-type') || '';
   const data = ct.includes('application/json') ? await res.json().catch(() => ({})) : await res.text();
@@ -1185,14 +1185,11 @@ function selectConfigAgent(agentKey = 'gemini') {
 
     const inboxBtn = document.getElementById('btn-test-pickle-inbox');
     if (inboxBtn) {
-      const label = agentKey === 'pickle' ? '피클' : agentKey === 'vooy' ? '부이' : agentKey === 'instinct' ? '인스팅스' : agentKey;
-      inboxBtn.textContent = `${label} 수신함 테스트`;
+      const labelMap = { pickle: '피클', vooy: '부이', instinct: '인스팅스', muse: 'Muse', cue: 'Cue', claude: 'Claude' };
+      inboxBtn.textContent = `${labelMap[agentKey] || agentKey} 연결 상태 확인`;
       inboxBtn.dataset.testInboxKey = meta.inboxKey;
-      inboxBtn.style.display = isInboxPrimary || agentKey === 'cue' ? '' : 'none';
+      inboxBtn.style.display = '';
     }
-    document.querySelectorAll('[data-mcp-test]').forEach((btn) => {
-      btn.style.display = isInboxPrimary ? 'none' : '';
-    });
   }
 }
 
@@ -1530,14 +1527,18 @@ function bindEvents() {
   });
 
   // Submit directive (Team Lead decomposes and employees start working automatically!)
+  let isSubmittingDirective = false;
   document.getElementById('directive-form').addEventListener('submit', async (e) => {
     e.preventDefault();
+    if (isSubmittingDirective) return;
     const submitBtn = document.getElementById('btn-submit-directive');
     const directive = document.getElementById('input-directive').value.trim();
     const title = document.getElementById('input-mission-title').value.trim();
     const domain = document.getElementById('input-mission-domain').value;
     const costPolicy = document.getElementById('input-cost-policy').value;
+    if (!directive) return;
 
+    isSubmittingDirective = true;
     submitBtn.disabled = true;
     submitBtn.textContent = '분배 중…';
     try {
@@ -1552,10 +1553,11 @@ function bindEvents() {
       document.getElementById('input-directive').value = '';
       renderAll();
       switchView('missions');
-      toast(`팀장이 ${res.tasks.length}개 업무로 분배하고 자동 착수했습니다.`);
+      toast(res.deduplicated ? '이미 접수된 지시입니다.' : `팀장이 ${res.tasks.length}개 업무로 분배했습니다.`);
     } catch (err) {
       toast(err.message, true);
     } finally {
+      isSubmittingDirective = false;
       submitBtn.disabled = false;
       submitBtn.innerHTML = '<i data-lucide="arrow-up" class="icon-xs"></i><span>지시</span>';
       refreshIcons();
@@ -1915,14 +1917,20 @@ function bindEvents() {
     if (target.id === 'btn-test-pickle-inbox') {
       const inboxKey = target.dataset.testInboxKey || 'pickle';
       const out = document.getElementById('mcp-test-output');
-      out.textContent = `${inboxKey} 수신함 연결 테스트 중…`;
+      out.textContent = `${inboxKey} 연결 상태 확인 중…`;
       try {
         const tok = encodeURIComponent(state.settings?.mcpToken || '');
-        const res = await api(`/api/agent-inbox/${encodeURIComponent(inboxKey)}?token=${tok}`);
-        out.textContent = JSON.stringify(res, null, 2);
-        state = await api('/api/state');
-        renderIntegrationsView();
-        toast(`${inboxKey} 수신함이 정상 응답했습니다!`);
+        const res = await api(`/api/agent-inbox/${encodeURIComponent(inboxKey)}?token=${tok}&dryRun=1`);
+        const headerLine = res.externalBotConnected
+          ? `✅ 서버 수신함 정상 · 실제 외부 봇 접속 기록 있음 (${formatRelativeTime(res.lastExternalSeenAt)})`
+          : `⚠️ 서버 수신함 주소는 열려있으나, 실제 외부 봇(${res.agent?.name || inboxKey})은 아직 접속 기록이 없습니다.\n→ 왼쪽 '명령어 복사'를 해당 봇 앱에 붙여넣어 실행해야 실제로 연결됩니다.`;
+        out.textContent = `${headerLine}\n\n${JSON.stringify({ serverInboxReady: res.serverInboxReady, externalBotConnected: res.externalBotConnected, lastExternalSeenAt: res.lastExternalSeenAt, pendingTaskCount: (res.myPendingTasks || []).length, myPendingTasks: (res.myPendingTasks || []).map((t) => ({ id: t.id, title: t.title, status: t.status })) }, null, 2)}`;
+        toast(
+          res.externalBotConnected
+            ? `${res.agent?.name || inboxKey} 실제 연동이 확인되었습니다.`
+            : `서버 주소는 정상이지만 ${res.agent?.name || inboxKey} 봇 접속 기록은 아직 없습니다.`,
+          !res.externalBotConnected
+        );
       } catch (err) {
         out.textContent = `오류: ${err.message}`;
         toast(`수신함 오류: ${err.message}`, true);

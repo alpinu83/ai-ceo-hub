@@ -783,10 +783,15 @@ app.get('/api/agent-inbox/:agentKey', (c) => {
     return c.json({ error: `알 수 없는 에이전트입니다: ${c.req.param('agentKey')} (예: pickle, cue, vooy)` }, 404);
   }
 
-  recordAgentHeartbeat(db, agent.id, 'GET inbox');
-  saveDb(db);
+  const isDryRun = c.req.query('dryRun') === '1' || c.req.query('test') === '1';
+  if (!isDryRun) {
+    recordAgentHeartbeat(db, agent.id, 'GET inbox');
+    saveDb(db);
+  }
 
-  const origin = new URL(c.req.url).origin;
+  const parsedUrl = new URL(c.req.url);
+  const proto = c.req.header('x-forwarded-proto') || parsedUrl.protocol.replace(':', '');
+  const origin = `${proto}://${parsedUrl.host}`;
   const token = db.settings?.mcpToken || '';
   const pendingTasks = db.tasks
     .filter((t) => t.assigneeId === agent.id && t.status !== 'completed' && t.status !== 'rejected')
@@ -810,6 +815,8 @@ app.get('/api/agent-inbox/:agentKey', (c) => {
   }));
 
   const replyUrl = `${origin}/api/agent-inbox/${encodeURIComponent(c.req.param('agentKey'))}/reply?token=${encodeURIComponent(token)}`;
+  const connInfo = db.agentConnections?.[agent.id] || null;
+  const externalBotConnected = Boolean(connInfo?.lastSeenAt);
 
   if (c.req.query('format') === 'text') {
     const lines = [
@@ -833,6 +840,12 @@ app.get('/api/agent-inbox/:agentKey', (c) => {
 
   return c.json({
     ok: true,
+    serverInboxReady: true,
+    externalBotConnected,
+    lastExternalSeenAt: connInfo?.lastSeenAt || null,
+    statusNote: externalBotConnected
+      ? `실제 외부 봇(${agent.name})의 접속 기록이 있습니다.`
+      : `우리 서버의 ${agent.name} 수신함 주소는 정상 열려있지만, 실제 외부 봇(${agent.name})은 아직 접속한 기록이 없습니다.`,
     company: db.settings.companyName,
     ceoName: db.settings.ceoName || '대표님',
     agent: { id: agent.id, name: agent.name, roleTitle: agent.roleTitle },
@@ -1000,6 +1013,19 @@ app.post('/api/missions', async (c) => {
   const body = await c.req.json();
   const directive = String(body.directive || '').trim();
   if (!directive) return c.json({ error: 'CEO 지시 내용을 입력해 주세요.' }, 400);
+
+  // Deduplicate identical directives submitted within 3 minutes (network retry / double tap)
+  const existingDb = loadDb();
+  const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+  const dup = existingDb.missions.find(
+    (m) =>
+      norm(m.directive) === norm(directive) &&
+      Date.now() - Date.parse(m.createdAt || 0) < 180_000
+  );
+  if (dup) {
+    const dupTasks = existingDb.tasks.filter((t) => t.missionId === dup.id);
+    return c.json({ mission: dup, tasks: dupTasks, deduplicated: true, state: sanitizeStateForClient(existingDb) }, 200);
+  }
 
   const { mission, tasks, db } = await createMissionInDb({
     title: body.title,
