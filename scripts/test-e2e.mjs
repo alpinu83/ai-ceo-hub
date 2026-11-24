@@ -146,9 +146,32 @@ async function runTests() {
     });
     assert.equal(tgRes.status, 200, 'Telegram webhook should acknowledge updates with 200');
 
+    // 10. Async External Agent HTTPS Inbox (Pickle / Vooy real pull & post)
+    const inboxRes = await fetch(`${BASE}/api/agent-inbox/pickle?token=${encodeURIComponent(mcpToken)}`);
+    const inbox = await inboxRes.json();
+    assert.equal(inboxRes.status, 200, 'agent inbox GET should return 200');
+    assert.equal(inbox.ok, true);
+    assert.equal(inbox.agent.id, 'agent_pickle');
+
+    const replyRes = await fetch(`${BASE}/api/agent-inbox/pickle/reply?token=${encodeURIComponent(mcpToken)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: '알렉스입니다! 성수역 식당 3곳 전화 확인 완료했습니다. 예약금 3만원 결제 전 승인 부탁드립니다.',
+        requestApproval: true,
+        approvalTitle: '피클(알렉스) 성수역 식당 예약 승인',
+        estimatedCostKRW: 30000
+      })
+    });
+    const replyData = await replyRes.json();
+    assert.equal(replyRes.status, 200, 'agent inbox POST reply should return 200');
+    assert.equal(replyData.ok, true);
+    assert.ok(replyData.postedMessageId);
+    assert.ok(replyData.approvalId);
+
     // Clean reset after tests
     await fetch(`${BASE}/api/reset`, { method: 'POST' });
-    console.log('✅ All AI CEO Hub E2E tests (REST + Parallel + Official MCP SDK + Live Office Chat + Standup + Telegram) passed!');
+    console.log('✅ All AI CEO Hub E2E tests (REST + Parallel + Official MCP SDK + Async Pickle/Vooy HTTPS Inbox + Live Office Chat + Standup + Telegram) passed!');
   } finally {
     child.kill('SIGTERM');
   }

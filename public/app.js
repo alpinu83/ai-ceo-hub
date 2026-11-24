@@ -143,7 +143,7 @@ let missionViewMode = 'board'; // 'board' | 'list' | 'graph'
 let selectedMissionId = null;
 let selectedApprovalId = null;
 let currentHubTab = 'quickstart';
-let currentMcpTab = 'muse';
+let currentMcpTab = 'pickle';
 let openDrawerTaskId = null;
 let highlightedAgentId = null;
 
@@ -1191,17 +1191,54 @@ function setKeyStatus(elId, providerObj) {
   }
 }
 
+function buildAsyncAgentPrompt(agentKey, label, origin, token) {
+  const getUrl = `${origin}/api/agent-inbox/${agentKey}?token=${token}&format=text`;
+  const postUrl = `${origin}/api/agent-inbox/${agentKey}/reply?token=${token}`;
+  return `# [${label}] 앱 채팅창에 아래 명령을 그대로 붙여넣으세요!
+# (정기 스케줄을 걸어두면 자동으로 확인·보고합니다)
+
+지금 바로 아래 공개 HTTPS API에 GET 요청해서 나(${label})에게 배정된 업무와 최근 #전사-회의실 대화를 읽어와 줘:
+${getUrl}
+
+읽어온 뒤:
+1. 새 업무나 내가 대답할 내용이 있으면 처리해 줘. (단, 실제 예약 확정·결제·송금은 절대 자동 실행하지 말고 반드시 멈춰!)
+2. 처리 결과나 회의실 답변을 아래 URL로 POST (Content-Type: application/json) 해 줘:
+${postUrl}
+
+POST JSON 형식:
+{
+  "message": "회의실에 남길 내 핵심 보고 (2~3문장)",
+  "taskId": "GET으로 받은 업무 id (있을 때)",
+  "deliverable": "조사·전화 확인 상세 결과",
+  "requestApproval": true,
+  "estimatedCostKRW": 0
+}`;
+}
+
 function renderMcpSnippet(endpoint, token) {
+  const origin = endpoint.replace(/\/api\/mcp$/, '');
   const snippets = {
-    muse: `# Meta Muse 앱 → Settings → Connectors → Add custom connector
-Remote MCP Server URL:
-${endpoint}
+    pickle: buildAsyncAgentPrompt('pickle', '피클(알렉스)', origin, token),
+    vooy: buildAsyncAgentPrompt('vooy', '부이(vooy)', origin, token),
+    muse: `# Meta Muse 채팅창에 아래처럼 말해서 커스텀 커넥터 추가:
+Add CEO Office as a custom connector. The server URL is ${endpoint}
 
-Authorization Header:
-Bearer ${token}
+# API Key 입력 창이 뜨면 아래 값만 붙여넣기:
+${token}
 
-# 연결 후 Muse 채팅창에서 테스트:
+# 연결 후 Muse 채팅창 테스트:
 "CEO Office MCP(list_my_tasks)에서 내게 배정된 업무를 가져와 처리하고 보고해줘."`,
+    cue: `# Manus / Cue → Settings → Connectors → Custom MCP → + Add custom MCP → Direct configuration
+Transport: HTTP
+Server URL: ${endpoint}
+Header Name: Authorization
+Header Value: Bearer ${token}
+
+# 제공되는 공식 MCP 도구 (@modelcontextprotocol/sdk):
+- get_company_brief
+- list_my_tasks (agent_id: "agent_cue")
+- submit_task_result
+- request_ceo_approval`,
     claude: JSON.stringify(
       {
         mcpServers: {
@@ -1215,22 +1252,21 @@ Bearer ${token}
       null,
       2
     ),
-    cue: `# Manus / Cue → Settings → Integrations → Custom MCP Server
-URL: ${endpoint}
-Header: Authorization: Bearer ${token}
+    gemini: `# Gemini 웹 (gemini.google.com) → Settings → Connected Apps → Add a custom app
+MCP Server URL:
+${endpoint}
 
-# 등록된 공식 MCP 도구 (@modelcontextprotocol/sdk):
-- get_company_brief
-- list_my_tasks (agent_id: "agent_cue")
-- submit_task_result
-- request_ceo_approval`
+# 또는 Gemini CLI (PC 터미널):
+gemini mcp add ceo-office-hub --transport http ${endpoint} --header "Authorization: Bearer ${token}"`
   };
-  document.getElementById('mcp-snippet-box').textContent = snippets[currentMcpTab] || snippets.muse;
+  document.getElementById('mcp-snippet-box').textContent = snippets[currentMcpTab] || snippets.pickle;
 }
 
 function renderTaskDrawer(task) {
   const ag = getAgent(task.assigneeId) || state.agents[0];
   const cueEmail = state.settings?.providers?.manus?.cueEmail || '';
+  const isAsyncPullAgent = ['pickle', 'vooy', 'instinct'].includes(ag.provider);
+  const asyncAgentKey = ag.provider === 'pickle' ? 'pickle' : ag.provider === 'vooy' ? 'vooy' : 'instinct';
   document.getElementById('drawer-agent-meta').textContent = `${ag.name} · ${MODE_LABELS[ag.connectionMode]} · ${COST_LABELS[ag.costTier]}`;
   document.getElementById('drawer-title').textContent = task.title;
 
@@ -1245,11 +1281,17 @@ function renderTaskDrawer(task) {
       <p class="form-hint">${esc(ag.bridgeGuide)}</p>
       <div class="prompt-box">${esc(task.dispatchPrompt)}</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
-        <button type="button" class="btn btn-primary btn-sm" id="btn-copy-dispatch">지시서 원클릭 복사</button>
-        ${ag.appUrl ? `<a class="btn btn-ghost btn-sm" href="${esc(ag.appUrl)}" target="_blank" rel="noreferrer">${esc(ag.name)} 바로 열기 ↗</a>` : ''}
-        ${mailtoLink ? `<a class="btn btn-ghost btn-sm" href="${mailtoLink}">Cue 전용 이메일로 발송</a>` : ''}
+        ${
+          isAsyncPullAgent
+            ? `<button type="button" class="btn btn-primary btn-sm" id="btn-copy-async-pull" data-async-key="${esc(asyncAgentKey)}" data-async-label="${esc(ag.name)}">${esc(ag.name)} API 수신함 호출 명령 복사</button>`
+            : ''
+        }
+        <button type="button" class="btn ${isAsyncPullAgent ? 'btn-ghost' : 'btn-primary'} btn-sm" id="btn-copy-dispatch">지시서 복사</button>
+        ${typeof navigator !== 'undefined' && navigator.share ? `<button type="button" class="btn btn-ghost btn-sm" id="btn-share-dispatch">모바일 바로 공유</button>` : ''}
+        ${ag.appUrl ? `<a class="btn btn-ghost btn-sm" href="${esc(ag.appUrl)}" target="_blank" rel="noreferrer">${esc(ag.name)} 열기 ↗</a>` : ''}
+        ${mailtoLink ? `<a class="btn btn-ghost btn-sm" href="${mailtoLink}">Cue 전용 이메일 발송</a>` : ''}
         <button type="button" class="btn btn-ghost btn-sm" data-run-task="${esc(task.id)}">
-          ${ag.connectionMode === 'api' || ag.connectionMode === 'litellm' ? '자동 실행' : '시뮬레이션 미리보기'}
+          ${ag.connectionMode === 'api' || ag.connectionMode === 'litellm' ? '자동 실행' : '미리보기'}
         </button>
       </div>
     </div>
@@ -1297,6 +1339,30 @@ function renderTaskDrawer(task) {
 
   document.getElementById('btn-copy-dispatch').addEventListener('click', () => {
     copyText(task.dispatchPrompt, `${ag.name}용 맞춤 지시서를 복사했습니다.`);
+  });
+
+  document.getElementById('btn-copy-async-pull')?.addEventListener('click', (ev) => {
+    const btn = ev.currentTarget;
+    const prompt = buildAsyncAgentPrompt(
+      btn.dataset.asyncKey || 'pickle',
+      btn.dataset.asyncLabel || ag.name,
+      window.location.origin,
+      state.settings?.mcpToken || ''
+    );
+    copyText(prompt, `${ag.name} 앱에 붙여넣을 HTTPS 수신함 호출 명령을 복사했습니다!`);
+  });
+
+  document.getElementById('btn-share-dispatch')?.addEventListener('click', async () => {
+    try {
+      await navigator.share({
+        title: `[CEO Office] ${task.title}`,
+        text: isAsyncPullAgent
+          ? buildAsyncAgentPrompt(asyncAgentKey, ag.name, window.location.origin, state.settings?.mcpToken || '')
+          : task.dispatchPrompt
+      });
+    } catch {
+      // user canceled share sheet
+    }
   });
 
   document.getElementById('bridge-report-form').addEventListener('submit', async (e) => {
@@ -2153,6 +2219,32 @@ async function init() {
         document.getElementById('oss-export-preview').textContent = txt;
       })
       .catch(() => {});
+
+    // Auto-sync live external reports from Pickle / Vooy / Muse / Cue when running on Render server
+    if (runtimeMode === 'server') {
+      setInterval(async () => {
+        if (isPlayingLiveSession || document.hidden) return;
+        const activeTag = document.activeElement?.tagName;
+        if (activeTag === 'INPUT' || activeTag === 'TEXTAREA' || activeTag === 'SELECT') return;
+        try {
+          const fresh = await api('/api/state');
+          const prevMsgLen = (state?.messages || []).length;
+          const prevAprLen = (state?.approvals || []).filter((a) => a.status === 'pending').length;
+          const newMsgLen = (fresh?.messages || []).length;
+          const newAprLen = (fresh?.approvals || []).filter((a) => a.status === 'pending').length;
+          if (newMsgLen !== prevMsgLen || newAprLen !== prevAprLen || (fresh?.logs || []).length !== (state?.logs || []).length) {
+            state = fresh;
+            renderAll();
+            if (newMsgLen > prevMsgLen) {
+              const latest = fresh.messages[fresh.messages.length - 1];
+              toast(`${latest.senderName} 님의 새 보고가 회의실에 도착했습니다!`);
+            }
+          }
+        } catch {
+          // ignore transient network glitches
+        }
+      }, 8000);
+    }
   } catch (err) {
     toast(`초기 데이터 로드 실패: ${err.message}`, true);
   }

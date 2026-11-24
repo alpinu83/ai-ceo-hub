@@ -471,6 +471,236 @@ app.post('/api/missions/:id/standup', async (c) => {
   });
 });
 
+// ==================== ASYNC AGENT INBOX HTTPS API (Pickle / Vooy / Instinct) ====================
+function resolveInboxAgent(db, rawKey) {
+  const key = String(rawKey || '').trim().toLowerCase();
+  const alias = {
+    pickle: 'agent_pickle',
+    alex: 'agent_pickle',
+    '피클': 'agent_pickle',
+    '알렉스': 'agent_pickle',
+    vooy: 'agent_vooy',
+    '부이': 'agent_vooy',
+    instinct: 'agent_instinct',
+    '인스팅스': 'agent_instinct',
+    muse: 'agent_muse',
+    cue: 'agent_cue',
+    manus: 'agent_cue',
+    exaone: 'agent_exaone',
+    claude: 'agent_claude',
+    gemini: 'agent_gemini_free',
+    neon: 'agent_gemini_neon'
+  };
+  const targetId = alias[key] || rawKey;
+  return db.agents.find((a) => a.id === targetId) || null;
+}
+
+function checkInboxToken(c, db, bodyToken = '') {
+  const expected = db.settings?.mcpToken;
+  if (!expected) return true;
+  const queryToken = c.req.query('token') || '';
+  const authHeader = (c.req.header('authorization') || '').replace(/^Bearer\s+/i, '').trim();
+  const apiKeyHeader = (c.req.header('x-api-key') || '').trim();
+  const provided = queryToken || authHeader || apiKeyHeader || String(bodyToken || '').trim();
+  return provided === expected;
+}
+
+app.get('/api/agent-inbox/:agentKey', (c) => {
+  const db = loadDb();
+  if (!checkInboxToken(c, db)) {
+    return c.json({ error: '유효한 토큰이 필요합니다. (?token=<mcpToken> 또는 Authorization: Bearer <mcpToken>)' }, 401);
+  }
+  const agent = resolveInboxAgent(db, c.req.param('agentKey'));
+  if (!agent) {
+    return c.json({ error: `알 수 없는 에이전트입니다: ${c.req.param('agentKey')} (예: pickle, vooy, instinct)` }, 404);
+  }
+
+  const origin = new URL(c.req.url).origin;
+  const token = db.settings?.mcpToken || '';
+  const pendingTasks = db.tasks
+    .filter((t) => t.assigneeId === agent.id && t.status !== 'completed' && t.status !== 'rejected')
+    .map((t) => ({
+      id: t.id,
+      missionId: t.missionId,
+      title: t.title,
+      description: t.description,
+      status: t.status,
+      requiresApproval: t.requiresApproval,
+      estimatedCostKRW: t.estimatedCostKRW,
+      dispatchPrompt: t.dispatchPrompt
+    }));
+
+  const recentMeetingRoom = (db.messages || []).slice(-15).map((m) => ({
+    sender: m.senderName,
+    role: m.senderRole,
+    text: m.text,
+    timestamp: m.timestamp
+  }));
+
+  const replyUrl = `${origin}/api/agent-inbox/${encodeURIComponent(c.req.param('agentKey'))}/reply?token=${encodeURIComponent(token)}`;
+
+  if (c.req.query('format') === 'text') {
+    const lines = [
+      `[${db.settings.companyName}] ${agent.name} 전용 업무·회의실 수신함`,
+      `CEO: ${db.settings.ceoName || '대표님'}`,
+      '',
+      `=== 나에게 배정된 대기 업무 (${pendingTasks.length}건) ===`,
+      ...(pendingTasks.length
+        ? pendingTasks.map((t, i) => `${i + 1}. [${t.id}] ${t.title}\n   설명: ${t.description}\n   승인 필요: ${t.requiresApproval ? '예(확정·결제 전 정지)' : '아니오'}`)
+        : ['현재 새로 배정된 업무가 없습니다.']),
+      '',
+      `=== 최근 #전사-회의실 대화 (최근 ${recentMeetingRoom.length}건) ===`,
+      ...recentMeetingRoom.map((m) => `- ${m.sender}: ${m.text}`),
+      '',
+      `=== 답변/결과 제출 방법 (POST JSON) ===`,
+      `URL: ${replyUrl}`,
+      `Body: {"message":"회의실 보고 내용","taskId":"업무ID(선택)","deliverable":"상세 결과(선택)","requestApproval":true,"estimatedCostKRW":0}`
+    ];
+    return c.text(lines.join('\n'));
+  }
+
+  return c.json({
+    ok: true,
+    company: db.settings.companyName,
+    ceoName: db.settings.ceoName || '대표님',
+    agent: { id: agent.id, name: agent.name, roleTitle: agent.roleTitle },
+    myPendingTasks: pendingTasks,
+    recentMeetingRoom,
+    howToReply: {
+      method: 'POST',
+      url: replyUrl,
+      contentType: 'application/json',
+      exampleBody: {
+        message: '성수역 식당 3곳 전화 확인 완료했습니다. 예약 확정 전 CEO 결재 부탁드립니다.',
+        taskId: pendingTasks[0]?.id || '',
+        deliverable: '1. 식당A (목 19시 가능, 예약금 4만원)\n2. 식당B (만석)\n3. 식당C (목 19시 가능, 예약금 없음)',
+        requestApproval: true,
+        approvalTitle: '성수역 4인 식당 예약 확정 승인 요청',
+        estimatedCostKRW: 40000
+      }
+    }
+  });
+});
+
+app.post('/api/agent-inbox/:agentKey/reply', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const db = loadDb();
+  if (!checkInboxToken(c, db, body.token)) {
+    return c.json({ error: '유효한 토큰이 필요합니다.' }, 401);
+  }
+  const agent = resolveInboxAgent(db, c.req.param('agentKey'));
+  if (!agent) {
+    return c.json({ error: `알 수 없는 에이전트입니다: ${c.req.param('agentKey')}` }, 404);
+  }
+
+  const message = String(body.message || body.deliverable || '').trim();
+  if (!message) {
+    return c.json({ error: 'message 또는 deliverable 내용을 보내주세요.' }, 400);
+  }
+
+  const deliverable = String(body.deliverable || body.message || '').trim();
+  const requestApproval = Boolean(body.requestApproval);
+  const estimatedCostKRW = Number(body.estimatedCostKRW) || 0;
+  const now = new Date().toISOString();
+
+  let task = body.taskId ? db.tasks.find((t) => t.id === body.taskId) : null;
+  if (!task && (body.deliverable || requestApproval)) {
+    task = db.tasks.find((t) => t.assigneeId === agent.id && t.status !== 'completed' && t.status !== 'rejected') || null;
+  }
+
+  const postedMsg = appendMessage(db, {
+    missionId: task?.missionId || db.missions[0]?.id || '',
+    senderId: agent.id,
+    senderName: agent.name,
+    senderRole: `${agent.roleTitle} · 실제 앱 보고`,
+    senderShortCode: agent.shortCode,
+    senderAccent: agent.accent,
+    targetAgentId: 'ceo',
+    statusText: requestApproval ? '실제 앱 결재 상신' : '실제 앱 보고 (LIVE)',
+    type: requestApproval ? 'approval' : 'reply',
+    text: message
+  });
+
+  let approvalId = null;
+  if (task) {
+    task.output = deliverable;
+    task.executionModeUsed = 'external_agent_https';
+    task.updatedAt = now;
+    if (estimatedCostKRW > 0) task.estimatedCostKRW = estimatedCostKRW;
+
+    const shouldPause = requestApproval || task.requiresApproval;
+    if (shouldPause) {
+      task.status = 'awaiting_approval';
+      const existing = db.approvals.find((a) => a.taskId === task.id && a.status === 'pending');
+      if (!existing) {
+        const apr = {
+          id: uid('apr'),
+          missionId: task.missionId,
+          taskId: task.id,
+          agentId: agent.id,
+          title: body.approvalTitle || `${task.title} — ${agent.name} 실행 승인 요청`,
+          category: (task.estimatedCostKRW || 0) > 0 ? '예약 · 결제' : '외부 에이전트 실행 승인',
+          riskLevel: (task.estimatedCostKRW || 0) >= 100000 ? 'high' : 'medium',
+          estimatedCostKRW: task.estimatedCostKRW || 0,
+          depositKRW: 0,
+          summary: message.slice(0, 260),
+          proposedAction: `승인 시 ${agent.name}에서 최종 확정 처리`,
+          status: 'pending',
+          ceoNote: '',
+          createdAt: now,
+          decidedAt: null
+        };
+        db.approvals.unshift(apr);
+        approvalId = apr.id;
+        notifyWebhook(db.settings, 'approval_requested', apr).catch(() => {});
+        sendTelegramApprovalCard(db.settings, apr, agent.name).catch(() => {});
+      } else {
+        approvalId = existing.id;
+      }
+      appendLog(db, `${agent.name} (HTTPS 보고)`, `"${task.title}" 실제 보고 접수 → CEO 결재함 상신.`, 'approval');
+    } else {
+      task.status = 'completed';
+      appendLog(db, `${agent.name} (HTTPS 보고)`, `"${task.title}" 실제 작업 완료 보고.`, 'success');
+    }
+    updateMissionStatus(db, task.missionId);
+  } else if (requestApproval) {
+    const apr = {
+      id: uid('apr'),
+      missionId: db.missions[0]?.id || '',
+      taskId: '',
+      agentId: agent.id,
+      title: body.approvalTitle || `${agent.name} CEO 결재 요청`,
+      category: estimatedCostKRW > 0 ? '예약 · 결제' : '외부 에이전트 승인 요청',
+      riskLevel: estimatedCostKRW >= 100000 ? 'high' : 'medium',
+      estimatedCostKRW,
+      depositKRW: 0,
+      summary: message.slice(0, 260),
+      proposedAction: `승인 시 ${agent.name} 실행 확정`,
+      status: 'pending',
+      ceoNote: '',
+      createdAt: now,
+      decidedAt: null
+    };
+    db.approvals.unshift(apr);
+    approvalId = apr.id;
+    notifyWebhook(db.settings, 'approval_requested', apr).catch(() => {});
+    sendTelegramApprovalCard(db.settings, apr, agent.name).catch(() => {});
+    appendLog(db, `${agent.name} (HTTPS 보고)`, `실제 결재 안건 상신: "${apr.title}"`, 'approval');
+  } else {
+    appendLog(db, `${agent.name} (HTTPS 보고)`, `사내 회의실에 실제 답변을 올렸습니다.`, 'success');
+  }
+
+  saveDb(db);
+  return c.json({
+    ok: true,
+    agent: agent.name,
+    postedMessageId: postedMsg.id,
+    taskId: task?.id || null,
+    taskStatus: task?.status || null,
+    approvalId
+  });
+});
+
 // Create Mission & Decompose via Team Lead
 app.post('/api/missions', async (c) => {
   const body = await c.req.json();

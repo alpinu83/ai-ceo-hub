@@ -776,14 +776,14 @@
             </div>
           </div>
 
-          <!-- HUB TAB 2: OFFICIAL MCP SERVER -->
+          <!-- HUB TAB 2: OFFICIAL MCP SERVER & ASYNC AGENT INBOX -->
           <div class="hub-panel" id="hub-panel-mcp">
             <div class="integrations-grid">
               <div class="sheet">
                 <div class="sheet-header compact">
                   <div>
-                    <h2 class="sheet-title">공식 @modelcontextprotocol/sdk MCP 서버</h2>
-                    <p class="sheet-desc">Meta Muse, Manus Cue, Claude Desktop / Claude Code가 직접 접속해 업무를 가져가고 결과를 보고하는 Streamable HTTP 엔드포인트입니다.</p>
+                    <h2 class="sheet-title">공식 MCP 서버 · 피클/부이 비동기 HTTPS 연동</h2>
+                    <p class="sheet-desc"><strong>Muse · Cue · Claude · Gemini</strong>는 공식 MCP(<code>/api/mcp</code>)로, <strong>피클(알렉스) · 부이(vooy)</strong>는 전용 공개 HTTPS 수신함(<code>/api/agent-inbox/</code>)으로 실제 업무를 읽고 보고합니다.</p>
                   </div>
                 </div>
 
@@ -798,16 +798,19 @@
                   </div>
                 </div>
 
-                <div class="mcp-tabs">
-                  <button type="button" class="tab-pill active" data-mcp-tab="muse">Meta Muse</button>
-                  <button type="button" class="tab-pill" data-mcp-tab="claude">Claude Desktop / Code</button>
+                <div class="mcp-tabs" style="flex-wrap:wrap;">
+                  <button type="button" class="tab-pill active" data-mcp-tab="pickle">피클 (알렉스) HTTPS</button>
+                  <button type="button" class="tab-pill" data-mcp-tab="vooy">부이 (vooy) HTTPS</button>
+                  <button type="button" class="tab-pill" data-mcp-tab="muse">Meta Muse</button>
                   <button type="button" class="tab-pill" data-mcp-tab="cue">Manus Cue</button>
+                  <button type="button" class="tab-pill" data-mcp-tab="claude">Claude</button>
+                  <button type="button" class="tab-pill" data-mcp-tab="gemini">Gemini 웹</button>
                 </div>
                 <pre class="code-block" id="mcp-snippet-box"></pre>
                 <div class="snippet-actions">
-                  <button type="button" class="btn btn-ghost btn-sm" id="btn-copy-mcp-snippet">
+                  <button type="button" class="btn btn-primary btn-sm" id="btn-copy-mcp-snippet">
                     <i data-lucide="copy" class="icon-xs"></i>
-                    <span>설정 복사</span>
+                    <span>명령어 · 설정 복사</span>
                   </button>
                 </div>
               </div>
