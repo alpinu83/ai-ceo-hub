@@ -520,59 +520,140 @@ export function loadDb() {
 }
 
 let gistSyncTimer = null;
+let activeGistId = (process.env.GIST_BACKUP_ID || '').trim();
+let cloudBackupState = { enabled: false, restored: false, gistId: '', lastSyncAt: null, error: '' };
+const GIST_FILENAME = 'ceo-office-db.json';
+const GIST_DESCRIPTION = 'CEO Office (ai-ceo-hub) Private Cloud Backup';
 
-function isGistBackupEnabled() {
-  return Boolean(process.env.GITHUB_GIST_TOKEN && process.env.GIST_BACKUP_ID);
+function getGistHeaders() {
+  return {
+    Authorization: `Bearer ${process.env.GITHUB_GIST_TOKEN.trim()}`,
+    Accept: 'application/vnd.github+json',
+    'Content-Type': 'application/json',
+    'User-Agent': 'ai-ceo-hub'
+  };
+}
+
+function isGistTokenSet() {
+  return Boolean(process.env.GITHUB_GIST_TOKEN && process.env.GITHUB_GIST_TOKEN.trim());
+}
+
+export function getCloudPersistenceStatus() {
+  return {
+    enabled: cloudBackupState.enabled,
+    restored: cloudBackupState.restored,
+    gistId: activeGistId ? `${activeGistId.slice(0, 6)}…${activeGistId.slice(-4)}` : '',
+    lastSyncAt: cloudBackupState.lastSyncAt,
+    error: cloudBackupState.error || ''
+  };
 }
 
 /**
  * Free zero-data-loss persistence for Render Free Tier:
- * Restores data/db.json from a private GitHub Gist on server boot when GITHUB_GIST_TOKEN + GIST_BACKUP_ID are set.
+ * Needs ONLY GITHUB_GIST_TOKEN (GIST_BACKUP_ID is optional!).
+ * Auto-discovers an existing private ceo-office-db.json Gist, or auto-creates one on first run.
  */
 export async function initCloudPersistence() {
-  if (!isGistBackupEnabled()) return { enabled: false };
+  if (!isGistTokenSet()) {
+    cloudBackupState = { enabled: false, restored: false, gistId: '', lastSyncAt: null, error: '' };
+    return cloudBackupState;
+  }
+  cloudBackupState.enabled = true;
+  const headers = getGistHeaders();
+
   try {
-    const res = await fetch(`https://api.github.com/gists/${encodeURIComponent(process.env.GIST_BACKUP_ID)}`, {
-      headers: {
-        Authorization: `Bearer ${process.env.GITHUB_GIST_TOKEN}`,
-        Accept: 'application/vnd.github+json',
-        'User-Agent': 'ai-ceo-hub'
+    // 1) If no GIST_BACKUP_ID is provided, auto-discover existing private backup Gist
+    if (!activeGistId) {
+      const listRes = await fetch('https://api.github.com/gists?per_page=30', { headers });
+      if (listRes.ok) {
+        const list = await listRes.json();
+        const found = Array.isArray(list) ? list.find((g) => g?.files?.[GIST_FILENAME]) : null;
+        if (found?.id) {
+          activeGistId = found.id;
+        }
       }
-    });
-    if (!res.ok) return { enabled: true, restored: false, status: res.status };
-    const gist = await res.json();
-    const raw = gist?.files?.['ceo-office-db.json']?.content;
-    if (raw) {
-      JSON.parse(raw); // validate JSON before writing
-      if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-      fs.writeFileSync(DB_PATH, raw, 'utf8');
-      return { enabled: true, restored: true };
     }
-    return { enabled: true, restored: false };
+
+    // 2) If found or provided, fetch & restore full DB from Gist
+    if (activeGistId) {
+      const res = await fetch(`https://api.github.com/gists/${encodeURIComponent(activeGistId)}`, { headers });
+      if (res.ok) {
+        const gist = await res.json();
+        const fileObj = gist?.files?.[GIST_FILENAME];
+        let raw = fileObj?.content || '';
+        if (fileObj?.truncated && fileObj?.raw_url) {
+          const rawRes = await fetch(fileObj.raw_url, { headers });
+          if (rawRes.ok) raw = await rawRes.text();
+        }
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && parsed.settings && Array.isArray(parsed.agents)) {
+            // Preserve current environment API keys & permanent token if present
+            if (process.env.EXAONE_API_KEY) parsed.settings.providers.exaone.apiKey = process.env.EXAONE_API_KEY;
+            if (process.env.GEMINI_API_KEY) parsed.settings.providers.gemini.apiKey = process.env.GEMINI_API_KEY;
+            if (process.env.ANTHROPIC_API_KEY) parsed.settings.providers.claude.apiKey = process.env.ANTHROPIC_API_KEY;
+            if (process.env.MCP_TOKEN || process.env.RENDER_SERVICE_ID) {
+              parsed.settings.mcpToken = resolveStableMcpToken();
+            }
+            if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+            fs.writeFileSync(DB_PATH, JSON.stringify(parsed, null, 2), 'utf8');
+            cloudBackupState = { enabled: true, restored: true, gistId: activeGistId, lastSyncAt: new Date().toISOString(), error: '' };
+            console.log(`☁️  GitHub Gist cloud backup restored (${activeGistId})`);
+            return cloudBackupState;
+          }
+        }
+      }
+    }
+
+    // 3) No backup Gist exists yet → auto-create a private (secret) Gist right now!
+    const initialDb = loadDb();
+    const createRes = await fetch('https://api.github.com/gists', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        description: GIST_DESCRIPTION,
+        public: false,
+        files: {
+          [GIST_FILENAME]: { content: JSON.stringify(initialDb, null, 2) }
+        }
+      })
+    });
+    if (createRes.ok) {
+      const created = await createRes.json();
+      activeGistId = created.id || '';
+      cloudBackupState = { enabled: true, restored: false, gistId: activeGistId, lastSyncAt: new Date().toISOString(), error: '' };
+      console.log(`☁️  Created new private GitHub Gist backup (${activeGistId})`);
+      return cloudBackupState;
+    }
+    cloudBackupState.error = `Gist init HTTP ${createRes.status}`;
+    return cloudBackupState;
   } catch (err) {
-    return { enabled: true, restored: false, error: err.message };
+    cloudBackupState.error = err.message;
+    return cloudBackupState;
   }
 }
 
 function scheduleGistBackup(serialized) {
-  if (!isGistBackupEnabled()) return;
+  if (!isGistTokenSet() || !activeGistId) return;
   if (gistSyncTimer) clearTimeout(gistSyncTimer);
   gistSyncTimer = setTimeout(() => {
-    fetch(`https://api.github.com/gists/${encodeURIComponent(process.env.GIST_BACKUP_ID)}`, {
+    fetch(`https://api.github.com/gists/${encodeURIComponent(activeGistId)}`, {
       method: 'PATCH',
-      headers: {
-        Authorization: `Bearer ${process.env.GITHUB_GIST_TOKEN}`,
-        Accept: 'application/vnd.github+json',
-        'Content-Type': 'application/json',
-        'User-Agent': 'ai-ceo-hub'
-      },
+      headers: getGistHeaders(),
       body: JSON.stringify({
         files: {
-          'ceo-office-db.json': { content: serialized }
+          [GIST_FILENAME]: { content: serialized }
         }
       })
-    }).catch(() => {});
-  }, 1800);
+    })
+      .then((res) => {
+        if (res.ok) {
+          cloudBackupState.lastSyncAt = new Date().toISOString();
+          cloudBackupState.error = '';
+        }
+      })
+      .catch(() => {});
+  }, 1500);
 }
 
 export function saveDb(db) {

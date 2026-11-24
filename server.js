@@ -11,6 +11,7 @@ import {
   appendLog,
   appendMessage,
   initCloudPersistence,
+  getCloudPersistenceStatus,
   sanitizeStateForClient,
   createDefaultState,
   uid
@@ -268,7 +269,8 @@ app.get('/api/health', (c) =>
     ok: true,
     version: PKG.version,
     uptimeSec: Math.round(process.uptime()),
-    telegramPolling: isTelegramPollingActive()
+    telegramPolling: isTelegramPollingActive(),
+    cloudBackup: getCloudPersistenceStatus()
   })
 );
 
@@ -1141,25 +1143,49 @@ const honoListener = getRequestListener(app.fetch);
 const server = http.createServer(async (req, res) => {
   const urlObj = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
 
-  if (urlObj.pathname === '/api/mcp' && req.method === 'POST') {
+  if (urlObj.pathname === '/api/mcp') {
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept');
-    let raw = '';
-    req.on('data', (chunk) => {
-      raw += chunk;
-    });
-    req.on('end', async () => {
-      try {
-        const parsed = raw.trim() ? JSON.parse(raw) : {};
-        await handleOfficialMcpHttp(req, res, parsed);
-      } catch (err) {
-        if (!res.headersSent) {
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32603, message: err.message } }));
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, Mcp-Session-Id, MCP-Protocol-Version, x-api-key');
+    res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id');
+
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
+    if (req.method === 'GET') {
+      // Per MCP Streamable HTTP spec, stateless servers without standalone SSE stream return 405 (never HTML)
+      res.writeHead(405, { 'Content-Type': 'application/json', Allow: 'POST, OPTIONS' });
+      res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32000, message: 'Method Not Allowed: use POST for stateless MCP Streamable HTTP' } }));
+      return;
+    }
+
+    if (req.method === 'DELETE') {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
+    if (req.method === 'POST') {
+      let raw = '';
+      req.on('data', (chunk) => {
+        raw += chunk;
+      });
+      req.on('end', async () => {
+        try {
+          const parsed = raw.trim() ? JSON.parse(raw) : {};
+          await handleOfficialMcpHttp(req, res, parsed);
+        } catch (err) {
+          if (!res.headersSent) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32603, message: err.message } }));
+          }
         }
-      }
-    });
-    return;
+      });
+      return;
+    }
   }
 
   return honoListener(req, res);
