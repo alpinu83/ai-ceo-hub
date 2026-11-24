@@ -106,20 +106,37 @@ export async function sendTelegramApprovalCard(settings, approval, agentName) {
   }
 }
 
-export async function testTelegramBot(settings) {
+export async function testTelegramBot(settings, onAutoRegisterChatId = null) {
   const tg = settings?.telegram;
   if (!tg?.botToken) {
     throw new Error('Telegram Bot Token을 먼저 입력하고 저장해 주세요.');
   }
   const me = await tgCall(tg.botToken, 'getMe', {});
-  if (!isNumericChatId(tg.chatId)) {
+  let chatId = String(tg.chatId || '').trim();
+
+  // If Chat ID isn't numeric yet (empty or bot username), try auto-discovering it from recent /start messages!
+  if (!isNumericChatId(chatId)) {
+    const updates = await tgCall(tg.botToken, 'getUpdates', { limit: 10 }).catch(() => []);
+    const recentChat = [...(updates || [])]
+      .reverse()
+      .map((u) => u?.message?.chat?.id || u?.callback_query?.message?.chat?.id)
+      .find((id) => isNumericChatId(id));
+    if (recentChat) {
+      chatId = String(recentChat);
+      if (typeof onAutoRegisterChatId === 'function') {
+        await onAutoRegisterChatId(chatId);
+      }
+    }
+  }
+
+  if (!isNumericChatId(chatId)) {
     throw new Error(
-      `봇(@${me.username}) 토큰은 정상입니다! 단, Chat ID("${tg.chatId || '비어 있음'}")가 숫자 ID가 아닙니다. 텔레그램에서 @${me.username} 채팅방을 열어 /start 를 한 번 보내시면 숫자 Chat ID가 자동 등록됩니다.`
+      `봇(@${me.username}) 토큰은 정상입니다! 텔레그램에서 @${me.username} 채팅방을 열어 [시작(/start)] 버튼을 한 번 누른 뒤, 여기서 [테스트]를 다시 누르시면 숫자 Chat ID가 자동 등록됩니다.`
     );
   }
   await sendTelegramText(
     tg.botToken,
-    tg.chatId,
+    chatId,
     [
       `<b>${escapeHtml(settings.companyName || 'CEO Office')} 텔레그램 결재 봇 연결 완료</b>`,
       `봇 계정: @${escapeHtml(me.username || 'bot')}`,
@@ -130,7 +147,7 @@ export async function testTelegramBot(settings) {
       `• <code>/order 지시내용</code> — 텔레그램에서 바로 새 업무 지시`
     ].join('\n')
   );
-  return { ok: true, botUsername: me.username };
+  return { ok: true, botUsername: me.username, chatId };
 }
 
 /**

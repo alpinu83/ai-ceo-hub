@@ -570,8 +570,11 @@ app.get('/api/exports/:name', (c) => {
 app.post('/api/telegram/test', async (c) => {
   const db = loadDb();
   try {
-    const res = await testTelegramBot(db.settings);
-    return c.json(res);
+    const callbacks = getTelegramCallbacks();
+    const res = await testTelegramBot(db.settings, callbacks.onAutoRegisterChatId);
+    const updated = loadDb();
+    syncTelegramPolling(updated.settings, callbacks);
+    return c.json({ ...res, state: sanitizeStateForClient(updated) });
   } catch (err) {
     return c.json({ ok: false, error: err.message }, 400);
   }

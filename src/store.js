@@ -593,12 +593,24 @@ export async function initCloudPersistence() {
         if (raw) {
           const parsed = JSON.parse(raw);
           if (parsed && parsed.settings && Array.isArray(parsed.agents)) {
-            // Preserve current environment API keys, Telegram credentials & permanent token if present
-            if (process.env.EXAONE_API_KEY) parsed.settings.providers.exaone.apiKey = process.env.EXAONE_API_KEY;
-            if (process.env.ANTHROPIC_API_KEY) parsed.settings.providers.claude.apiKey = process.env.ANTHROPIC_API_KEY;
-            if (process.env.TELEGRAM_BOT_TOKEN) parsed.settings.telegram.botToken = process.env.TELEGRAM_BOT_TOKEN;
-            if (process.env.TELEGRAM_CHAT_ID) parsed.settings.telegram.chatId = process.env.TELEGRAM_CHAT_ID;
-            if (process.env.TELEGRAM_POLLING === 'true') parsed.settings.telegram.pollingEnabled = true;
+            // App settings saved in Gist take priority! Only fall back to Render env vars when Gist value is empty/invalid.
+            if (!parsed.settings.providers?.exaone?.apiKey && process.env.EXAONE_API_KEY) {
+              parsed.settings.providers.exaone.apiKey = process.env.EXAONE_API_KEY;
+            }
+            if (!parsed.settings.providers?.claude?.apiKey && process.env.ANTHROPIC_API_KEY) {
+              parsed.settings.providers.claude.apiKey = process.env.ANTHROPIC_API_KEY;
+            }
+            const validTgToken = (v) => /^\d+:[A-Za-z0-9_-]{20,}$/.test(String(v || '').trim().replace(/^bot/i, ''));
+            const validChatId = (v) => /^-?\d+$/.test(String(v || '').trim());
+            if (!validTgToken(parsed.settings.telegram?.botToken) && validTgToken(process.env.TELEGRAM_BOT_TOKEN)) {
+              parsed.settings.telegram.botToken = process.env.TELEGRAM_BOT_TOKEN.trim();
+            }
+            if (!validChatId(parsed.settings.telegram?.chatId) && validChatId(process.env.TELEGRAM_CHAT_ID)) {
+              parsed.settings.telegram.chatId = process.env.TELEGRAM_CHAT_ID.trim();
+            }
+            if (parsed.settings.telegram?.pollingEnabled === undefined && process.env.TELEGRAM_POLLING === 'true') {
+              parsed.settings.telegram.pollingEnabled = true;
+            }
             if (process.env.MCP_TOKEN || process.env.RENDER_SERVICE_ID) {
               parsed.settings.mcpToken = resolveStableMcpToken();
             }

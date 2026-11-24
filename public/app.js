@@ -1851,6 +1851,10 @@ function bindEvents() {
       target.textContent = '발송 중…';
       try {
         const res = await api('/api/telegram/test', { method: 'POST' });
+        if (res.state) {
+          state = res.state;
+          renderAll();
+        }
         toast(`텔레그램 연결 성공 (@${res.botUsername})! 테스트 메시지를 보냈습니다.`);
       } catch (err) {
         toast(err.message, true);
