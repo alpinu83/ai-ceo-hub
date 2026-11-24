@@ -413,10 +413,30 @@ function heuristicDecompose({ directive, domain, costPolicy, agents, leadAgent }
   };
 }
 
+function resolveLiveBackendModel(settings) {
+  const exa = settings?.providers?.exaone;
+  if (exa?.apiKey) {
+    const client = createOpenAI({
+      baseURL: exa.baseUrl || 'https://api.exaone.ai/v1',
+      apiKey: exa.apiKey,
+      compatibility: 'compatible'
+    });
+    const modelName = exa.model || 'k-exaone_v2.5';
+    return { model: client(modelName), label: `exaone:${modelName}` };
+  }
+  const claude = settings?.providers?.claude;
+  if (claude?.apiKey) {
+    const anthropic = createAnthropic({ apiKey: claude.apiKey });
+    const modelName = claude.model || 'claude-sonnet-4-5';
+    return { model: anthropic(modelName), label: `claude:${modelName}` };
+  }
+  return null;
+}
+
 export async function decomposeDirective({ directive, title, domain, costPolicy, agents, settings }) {
   const leadAgent = selectLeadAgent(agents, costPolicy, settings);
   const activeAgents = agents.filter((a) => a.active);
-  const resolved = resolveLanguageModel(leadAgent, settings);
+  const resolved = resolveLanguageModel(leadAgent, settings) || resolveLiveBackendModel(settings);
 
   if (resolved) {
     const rosterText = activeAgents
@@ -450,14 +470,12 @@ ${rosterText}`;
 
       return {
         leadAgentId: leadAgent.id,
-        planSummary: `${object.planSummary} (Vercel AI SDK · ${resolved.label})`,
+        planSummary: object.planSummary,
         usedLiveApi: true,
         tasks: normalized
       };
-    } catch (err) {
-      const fallback = heuristicDecompose({ directive, domain, costPolicy, agents, leadAgent });
-      fallback.planSummary = `[Live SDK 폴백: ${err.message.slice(0, 90)}] ${fallback.planSummary}`;
-      return fallback;
+    } catch {
+      return heuristicDecompose({ directive, domain, costPolicy, agents, leadAgent });
     }
   }
 
@@ -501,34 +519,45 @@ CEO 원지시: ${mission.directive}
     return { output: text.trim(), executionModeUsed: `live_sdk:${resolved.label}`, live: true };
   }
 
-  // Rich simulation deliverable when API key isn't connected yet
-  const modeNote =
-    agent.connectionMode === 'api'
-      ? 'API 키 미등록 — 드라이런 시뮬레이션'
-      : agent.connectionMode === 'litellm'
-        ? 'LiteLLM 프록시 미연결 — 드라이런 시뮬레이션'
-        : agent.connectionMode === 'mcp'
-          ? '공식 MCP 업무함 대기열 시뮬레이션'
-          : '소비자 앱 · 구독 브릿지 시뮬레이션';
+  // External / subscription agent: prepare an honest handoff brief (using live EXAONE if available, never faking an external phone call or email)
+  const helperModel = resolveLiveBackendModel(settings);
+  const channelLabel =
+    agent.provider === 'pickle'
+      ? '피클(알렉스) HTTPS 수신함 대기'
+      : agent.provider === 'vooy'
+        ? '부이(vooy) 연동 대기 중'
+        : agent.provider === 'muse'
+          ? 'Meta Muse 공식 MCP 대기'
+          : agent.provider === 'manus'
+            ? 'Manus Cue HTTPS/MCP 대기'
+            : `${agent.name} 구독 앱 전달 대기`;
 
-  const simOutput = `### ${agent.name} 실행 보고서
-> **실행 방식**: ${modeNote}
+  if (helperModel) {
+    try {
+      const { text } = await generateText({
+        model: helperModel.model,
+        system: `당신은 CEO 비서(LG K-EXAONE 2.5)입니다. 외부 AI(${agent.name})에게 넘길 사전 준비 체크리스트와 초안을 간결한 한국어 마크다운으로 작성하세요. 절대로 전화 예약·결제·이메일 발송을 "이미 완료했다"고 거짓으로 쓰지 말고, "사전 준비 완료 / ${agent.name} 실행 대기" 형태로 쓰세요.`,
+        prompt: `미션: ${mission.title}\n담당 외부 AI: ${agent.name} (${channelLabel})\n작업: ${task.title}\n상세: ${task.description}${contextBlock}`
+      });
+      return {
+        output: `> **상태**: ${channelLabel} (EXAONE 사전 정리 완료)\n\n${text.trim()}`,
+        executionModeUsed: `handoff_brief:${helperModel.label}`,
+        live: true
+      };
+    } catch {
+      // fall through to deterministic handoff brief
+    }
+  }
 
-#### 1. 핵심 요약
-- **${task.title}** 작업을 CEO 지시("${mission.title}") 기준에 맞춰 구조화했습니다.
-- ${task.description}
+  const handoffBrief = `### ${agent.name} 전달 준비 완료
+> **연동 상태**: ${channelLabel}
 
-#### 2. 주요 산출물 · 점검표
-| 항목 | 상태 | 비고 |
-| --- | --- | --- |
-| 요구사항 및 선행 맥락 반영 | 완료 | 팀장 분배 전략 기준 적용 |
-| 초안 / 후보안 작성 | 완료 | 바로 검토·수정 가능한 형태 |
-| 외부 실행 · 결제 안전장치 | ${task.requiresApproval ? '**CEO 결재 대기**' : '해당 없음'} | ${task.requiresApproval ? '승인 전 실행 중단됨' : '내부 산출물'} |
+- **작업**: ${task.title}
+- **내용**: ${task.description}
+- **진행 방식**: ${agent.provider === 'pickle' || agent.provider === 'manus' || agent.provider === 'muse' ? `${agent.name}가 수신함/MCP에서 이 업무를 가져가 처리하면 자동으로 결과가 등록됩니다.` : `지시서 복사 버튼으로 ${agent.name} 앱에 전달한 뒤 결과를 등록하세요.`}
+- **결재 게이트**: ${task.requiresApproval ? '실제 예약 확정·결제·외부 발송 전 CEO 결재 필요' : '해당 없음'}`;
 
-- [x] 핵심 요구사항 충족 및 근거 정리
-- [${task.requiresApproval ? ' ' : 'x'}] ${task.requiresApproval ? '예약 확정 · 결제 · 외부 발송 전 **CEO 결재함 상신**' : '팀장 종합 보고서 취합 준비 완료'}`;
-
-  return { output: simOutput, executionModeUsed: 'simulation', live: false };
+  return { output: handoffBrief, executionModeUsed: 'handoff_queue', live: false };
 }
 
 export async function synthesizeMissionReport({ mission, tasks, agents, settings }) {
@@ -542,7 +571,7 @@ export async function synthesizeMissionReport({ mission, tasks, agents, settings
     })
     .join('\n\n');
 
-  const resolved = resolveLanguageModel(leadAgent, settings);
+  const resolved = resolveLanguageModel(leadAgent, settings) || resolveLiveBackendModel(settings);
   if (resolved) {
     try {
       const { text } = await generateText({
@@ -577,8 +606,7 @@ export async function synthesizeMissionReport({ mission, tasks, agents, settings
 ${rows}
 
 #### CEO 다음 권장 액션
-- 결재함에서 대기 중인 외부 실행(예약·결제·발송) 안건을 최종 확인해 주세요.
-- 반복 수행할 리서치·브리핑은 **부이(vooy)** 또는 **Meta Muse** 루틴으로 고정하면 매주 자동 실행됩니다.`;
+- 결재함에서 대기 중인 외부 실행(예약·결제·발송) 안건을 최종 확인해 주세요.`;
 }
 
 export function createApprovalForTask(task, agent, mission, reason, proposedAction) {
@@ -613,24 +641,23 @@ function pickResponders(text, agents, mission, tasks) {
   const matched = [];
 
   const aliasMap = [
-    { id: 'agent_gemini_neon', re: /제미나이|gemini|네온|neon|총괄|팀장/ },
-    { id: 'agent_claude', re: /클로드|claude|수석|개발|코드|제안서/ },
-    { id: 'agent_exaone', re: /엑사원|exaone|lg|무료|요약|정리|리서치|조사|단순|번역/ },
-    { id: 'agent_muse', re: /뮤즈|muse|취향|일정|spaces/ },
-    { id: 'agent_cue', re: /큐|cue|마누스|manus|이메일|메일/ },
-    { id: 'agent_pickle', re: /피클|pickle|식당|예약|전화|병원|ktx/ },
-    { id: 'agent_vooy', re: /부이|vooy|브리핑|뉴스|매일|모니터링|가격/ },
-    { id: 'agent_instinct', re: /인스팅스|인스팅트|instinct|문자|심부름/ }
+    { id: 'agent_exaone', re: /@?엑사원|exaone/ },
+    { id: 'agent_pickle', re: /@?피클|알렉스|pickle/ },
+    { id: 'agent_muse', re: /@?뮤즈|muse/ },
+    { id: 'agent_cue', re: /@?큐이|@?큐\b|cue|마누스|manus/ },
+    { id: 'agent_vooy', re: /@?부이|vooy/ },
+    { id: 'agent_claude', re: /@?클로드|claude/ },
+    { id: 'agent_gemini_neon', re: /@?제미나이|gemini|네온|neon/ },
+    { id: 'agent_instinct', re: /@?인스팅스|인스팅트|instinct/ }
   ];
 
-  if (/@전체|모두|전원|다들|보고해/.test(lower)) {
-    const lead = active.find((a) => a.id === mission?.leadAgentId) || active[0];
-    const assignedIds = [...new Set(tasks.map((t) => t.assigneeId))].filter((id) => id !== lead.id);
-    const workers = assignedIds
+  if (/@전체|모두|전원|다들/.test(lower)) {
+    const exa = active.find((a) => a.id === 'agent_exaone');
+    const assigned = [...new Set(tasks.map((t) => t.assigneeId))]
       .map((id) => active.find((a) => a.id === id))
-      .filter(Boolean)
-      .slice(0, 3);
-    return [lead, ...workers];
+      .filter((a) => a && a.id !== exa?.id)
+      .slice(0, 2);
+    return [exa, ...assigned].filter(Boolean);
   }
 
   for (const item of aliasMap) {
@@ -640,87 +667,90 @@ function pickResponders(text, agents, mission, tasks) {
     }
   }
 
+  // Default (no specific @mention): ONLY the Team Lead responds concisely to the CEO
   if (matched.length === 0) {
-    const lead = active.find((a) => a.id === mission?.leadAgentId) || active[0];
-    const firstWorker = active.find((a) => tasks.some((t) => t.assigneeId === a.id && a.id !== lead.id));
+    const lead =
+      active.find((a) => a.id === mission?.leadAgentId) ||
+      active.find((a) => a.tier === 'lead') ||
+      active.find((a) => a.id === 'agent_exaone') ||
+      active[0];
     if (lead) matched.push(lead);
-    if (firstWorker) matched.push(firstWorker);
   }
 
   return matched.slice(0, 3);
 }
 
-function buildPersonaFallbackReply(agent, userMessage, mission, agentTasks, priorInTurn, ceoName) {
+function buildHonestDispatchNotice(agent, userMessage, agentTasks) {
   const myTask = agentTasks[0];
-  const prevSpeaker = priorInTurn[priorInTurn.length - 1];
-  const prevRef = prevSpeaker ? `@${prevSpeaker.senderName} 님 의견 이어서 말씀드리면, ` : '';
-
-  if (agent.tier === 'lead') {
-    const taskList = agentTasks.length
-      ? `현재 담당 중인 "${myTask.title}" 포함 전체 진척을 체크했습니다.`
-      : `현재 미션("${mission?.title || '전사 운영'}") 기준으로 팀원들에게 우선순위를 재조정하겠습니다.`;
-    return `${ceoName} 확인했습니다! "${userMessage.slice(0, 48)}${userMessage.length > 48 ? '…' : ''}" 요청을 반영해 ${taskList} 추가 비용이 발생하거나 외부 실행이 필요한 단계는 반드시 결재함으로 올리겠습니다.`;
-  }
-
+  const taskRef = myTask ? ` (관련 업무: "${myTask.title}")` : '';
   switch (agent.provider) {
-    case 'exaone':
-      return `${prevRef}${ceoName}, LG K-EXAONE 2.5입니다! 한국어 요약·문서 초안·단순 반복 정리는 비용 0원 무료 API로 빠르게 처리하겠습니다. ${myTask ? `("${myTask.title}" 기준)` : '필요한 초안 바로 뽑아 팀장님께 넘기겠습니다!'}`;
     case 'pickle':
-      return `${prevRef}${ceoName}, 피클입니다! 전화 문의·국내 예약 조건을 바로 반영하겠습니다. ${myTask ? `("${myTask.title}" 기준)` : ''} 실제 예약 확정이나 예약금 결제 전에는 절대 먼저 결제하지 않고 후보와 금액을 정리해서 결재 올리겠습니다!`;
-    case 'vooy':
-      return `${prevRef}부이(vooy)입니다! 무료 기본 모델 기준으로 반복 수집·가격 비교 조건을 업데이트해 두겠습니다. ${myTask ? `("${myTask.title}" 루틴 반영)` : ''} 매일 아침 핵심 5줄 브리핑으로 바로 받아보실 수 있게 정리할게요.`;
-    case 'muse':
-      return `${prevRef}Meta Muse입니다. 대표님 평소 취향과 일정 제약을 대조해 보니 충돌 없이 배치 가능합니다. Spaces 보드 형식으로 정리해 두고, MCP 커넥터로 결과를 동기화하겠습니다.`;
+      return `[수신함 전달됨] 피클(알렉스) HTTPS 수신함에 대표님 메시지를 등록했습니다${taskRef}. 피클이 다음 체크 시 확인하고 이곳 회의실로 실제 결과를 보고합니다.`;
     case 'manus':
-      return `${prevRef}Manus Cue입니다. 전용 에이전트 이메일과 가상 컴퓨터 환경에서 심층 자료를 정리하고 초안을 준비하겠습니다. 외부 수신자에게 실제 메일을 보내기 전에 꼭 CEO 승인을 요청드리겠습니다.`;
+      return `[수신함/MCP 전달됨] Manus Cue가 수신함 또는 MCP로 이 요청을 확인하면 이곳 회의실로 결과를 보고합니다${taskRef}.`;
+    case 'muse':
+      return `[MCP 전달됨] Meta Muse에서 CEO Office 커넥터로 이 요청을 조회·보고할 수 있습니다${taskRef}.`;
+    case 'vooy':
+      return `[연동 대기 중] 부이(vooy)는 아직 연결 대기 상태입니다. 연동 완료 후 자동 수신됩니다.`;
     case 'instinct':
-      return `${prevRef}인스팅스입니다! 복잡한 절차 없이 문자 한 통으로 바로 확인해 회신드리겠습니다. 확정이나 결제가 필요하면 즉시 멈추고 여쭤볼게요.`;
+      return `[문자 전달 대기] 인스팅스는 외부 앱입니다. 업무 상세에서 지시서를 복사해 전달해 주세요.`;
     default:
-      return `${prevRef}${agent.name}입니다. "${userMessage.slice(0, 40)}${userMessage.length > 40 ? '…' : ''}" 내용을 반영해 ${myTask ? `"${myTask.title}" 작업의 산출물` : '담당 초안과 체크리스트'}을 즉시 업데이트하고 팀장님께 보고하겠습니다.`;
+      return `[구독 앱 안내] ${agent.name}은(는) 월정액 구독(추가 과금 0원)으로 연결되어 있습니다. "${userMessage.slice(0, 36)}" 내용을 복사해 ${agent.name} 앱에서 실행하거나 @엑사원을 호출해 무료 API로 즉시 처리하세요.`;
   }
 }
 
 /**
- * Multi-agent live conversation in #전사-회의실 when CEO speaks
+ * Multi-agent live conversation in #전사-회의실 when CEO speaks.
+ * - General CEO message (no @mention): ONLY Team Lead responds concisely (powered by live EXAONE backend).
+ * - Explicit @mention of API agent (EXAONE): answers LIVE.
+ * - Explicit @mention of external bot (Pickle / Cue / Muse / Vooy): honestly confirms inbox/MCP handoff.
  */
 export async function generateTeamChatReplies({ userMessage, mission, tasks, agents, recentMessages, settings }) {
   const responders = pickResponders(userMessage, agents, mission, tasks);
   const ceoName = settings?.ceoName || '대표님';
   const replies = [];
+  const hasExplicitMention = /@(?:엑사원|피클|알렉스|뮤즈|큐|큐이|부이|클로드|제미나이|네온|인스팅스|전체)/i.test(userMessage);
 
   for (const ag of responders) {
     const agTasks = tasks.filter((t) => t.assigneeId === ag.id);
-    const resolved = resolveLanguageModel(ag, settings);
+    // Use agent's direct API if available, or live EXAONE backend when Team Lead is responding to general CEO direction
+    const resolved =
+      resolveLanguageModel(ag, settings) ||
+      (!hasExplicitMention && ag.tier === 'lead' ? resolveLiveBackendModel(settings) : null);
     let replyText = '';
     let live = false;
+    let statusText = '수신함 전달됨';
 
     if (resolved) {
-      const threadContext = [...recentMessages.slice(-6), ...replies]
+      const missionMessages = (recentMessages || [])
+        .filter((m) => !mission?.id || !m.missionId || m.missionId === mission.id)
+        .slice(-8);
+      const threadContext = [...missionMessages, ...replies]
         .map((m) => `${m.senderName}: ${m.text}`)
         .join('\n');
-      const taskContext = agTasks.length
-        ? agTasks.map((t) => `- ${t.title} (상태: ${t.status})`).join('\n')
-        : '현재 배정된 세부 업무 없음 (협업 지원)';
-      const system = `당신은 AI 회사 "${settings?.companyName || 'CEO Office'}"의 직원 "${ag.name}" (${ag.roleTitle})입니다.
-강점: ${ag.strengths}
-동료 AI들과 사내 회의실(#전사-회의실)에서 대화하고 있습니다.
-자연스럽고 간결한 한국어 사내 메신저 말투(2~3문장)로 대답하세요. 필요하면 앞선 동료(@이름)나 ${ceoName}을 멘션하며 협업·핸드오프·리스크 점검을 말하세요.`;
+      const taskContext = tasks.length
+        ? tasks.map((t) => `- [${t.status}] ${t.title} (담당: ${agents.find((a) => a.id === t.assigneeId)?.name || t.assigneeId})`).join('\n')
+        : '현재 등록된 업무 없음';
+      const system = `당신은 "${settings?.companyName || 'CEO Office'}"의 ${ag.tier === 'lead' ? '총괄 팀장' : 'AI 실무 에이전트'} "${ag.name}" (${ag.roleTitle})입니다.
+${ceoName}의 지시나 질문에 팀 대표로 핵심만 간결하고 정확하게 한국어로 답하세요 (2~4문장).
+다른 외부 봇(피클, Cue, Muse)이 해야 할 전화 예약·결제 등을 "이미 전화했다/완료했다"고 거짓말하지 말고, 현재 실제 진행 상태와 다음 조치만 사실대로 보고하세요.`;
 
       try {
         const { text } = await generateText({
           model: resolved.model,
           system,
-          prompt: `현재 미션: ${mission?.title || '전사 운영'}\n내 담당 업무:\n${taskContext}\n\n[최근 회의실 대화]\n${threadContext}\n\n${ceoName}: ${userMessage}\n\n당신(${ag.name})의 응답:`
+          prompt: `현재 채널 업무: ${mission?.title || '전체 자유 대화'}\n현재 업무 목록:\n${taskContext}\n\n[최근 대화]\n${threadContext || '(없음)'}\n\n${ceoName}: ${userMessage}\n\n${ag.name}의 실제 응답:`
         });
         replyText = text.trim();
         live = true;
-      } catch {
-        replyText = '';
+        statusText = '실시간 AI 응답';
+      } catch (err) {
+        replyText = `[AI 응답 오류] ${err.message.slice(0, 120)}`;
+        statusText = 'API 오류';
       }
-    }
-
-    if (!replyText) {
-      replyText = buildPersonaFallbackReply(ag, userMessage, mission, agTasks, replies, ceoName);
+    } else {
+      replyText = buildHonestDispatchNotice(ag, userMessage, agTasks);
+      statusText = ag.provider === 'vooy' ? '연동 대기 중' : '수신함 대기';
     }
 
     const prevMsg = replies[replies.length - 1];
@@ -732,8 +762,8 @@ export async function generateTeamChatReplies({ userMessage, mission, tasks, age
       senderShortCode: ag.shortCode,
       senderAccent: ag.accent,
       targetAgentId: prevMsg ? prevMsg.senderId : 'ceo',
-      statusText: live ? '실시간 AI 응답' : ag.tier === 'lead' ? '팀 조율 중' : '업무 협업 중',
-      type: prevMsg ? 'handoff' : 'reply',
+      statusText,
+      type: live ? 'reply' : 'handoff',
       text: replyText
     });
   }
@@ -760,12 +790,12 @@ export async function generateStandupSession({ mission, tasks, agents, settings 
     senderShortCode: lead.shortCode,
     senderAccent: lead.accent,
     targetAgentId: tasks[0]?.assigneeId || null,
-    statusText: '스탠드업 주재 중',
+    statusText: '회의 진행',
     type: 'plan',
-    text: `팀 스탠드업 시작하겠습니다! 미션 "${mission.title}" 점검합니다. 참여 팀원(${participantNames.join(', ')}) 분들, 현재 진행 현황과 다음 담당자에게 넘길 내용 공유해 주세요.`
+    text: `"${mission.title}" 현황 점검을 시작합니다. 참여: ${participantNames.join(', ') || '전체'}`
   });
 
-  // 2. Each task assignee speaks & hands off to the next teammate
+  // 2. Each task assignee reports actual real status (live EXAONE for API tasks, honest real status for external bots)
   for (let i = 0; i < tasks.length; i++) {
     const t = tasks[i];
     const ag = agentMap[t.assigneeId] || agents[0];
@@ -776,11 +806,10 @@ export async function generateStandupSession({ mission, tasks, agents, settings 
     let text = '';
     if (resolved) {
       try {
-        const prevTurn = turns[turns.length - 1];
         const { text: liveText } = await generateText({
           model: resolved.model,
-          system: `당신은 "${ag.name}" (${ag.roleTitle})입니다. 팀 스탠드업에서 자기 업무의 진행 상황을 2문장으로 생생하게 보고하세요.${nextAg && nextAg.id !== ag.id ? ` 다음 순서인 @${nextAg.name} 님에게 자연스럽게 바통을 넘겨주세요.` : ''}`,
-          prompt: `미션: ${mission.title}\n내 업무: ${t.title} (상태: ${t.status}, 승인필요: ${t.requiresApproval})\n기존 산출물 요약: ${(t.output || t.description).slice(0, 260)}\n직전 발언(${prevTurn.senderName}): ${prevTurn.text}`
+          system: `당신은 "${ag.name}"입니다. 현재 업무의 실제 상태(${t.status})만 근거로 2문장 이내로 사실대로 보고하세요. 완료되지 않은 작업을 완료했다고 지어내지 마세요.`,
+          prompt: `미션: ${mission.title}\n업무: ${t.title} (상태: ${t.status})\n현재 산출물: ${(t.output || '아직 실행 전').slice(0, 260)}`
         });
         text = liveText.trim();
       } catch {
@@ -789,16 +818,16 @@ export async function generateStandupSession({ mission, tasks, agents, settings 
     }
 
     if (!text) {
-      const nextCallout =
-        nextAg && nextAg.id !== ag.id ? ` 다음 단계인 @${nextAg.name} 님께 맥락 넘겨드리겠습니다!` : '';
       if (t.status === 'completed') {
-        text = `"${t.title}" 작업 완료했습니다! 핵심 산출물과 근거 표를 공유함에 올려두었습니다.${nextCallout}`;
+        text = `[완료] "${t.title}" 결과가 등록되어 있습니다.`;
       } else if (t.status === 'awaiting_approval') {
-        text = `"${t.title}" 사전 확인을 마쳤고, 실제 실행/결제 직전이라 멈춰두었습니다. @${ceoName} 결재함에서 승인해 주시면 바로 확정 처리하겠습니다!`;
-      } else if (t.status === 'awaiting_bridge') {
-        text = `"${t.title}" 실행 지시서 준비 끝났습니다! 지시서 복사 버튼으로 제 앱(${ag.name})에 전달해 주시면 바로 처리해서 결과 보고 올리겠습니다.${nextCallout}`;
+        text = `[결재 대기] "${t.title}" — @${ceoName} 결재함 승인 대기 중입니다.`;
+      } else if (ag.provider === 'pickle' || ag.provider === 'manus' || ag.provider === 'muse') {
+        text = `[수신함/MCP 대기] "${t.title}" — ${ag.name}가 수신함에서 가져가 처리 대기 중입니다.`;
+      } else if (ag.provider === 'vooy') {
+        text = `[연동 대기] "${t.title}" — 부이(vooy) 연동 대기 상태입니다.`;
       } else {
-        text = `"${t.title}" 바로 착수할 준비가 되어 있습니다. 선행 자료 반영해서 초안 빠르게 뽑아 올리겠습니다.${nextCallout}`;
+        text = `[대기] "${t.title}" — 실행 또는 외부 앱 전달 대기 중입니다.`;
       }
     }
 
@@ -812,16 +841,16 @@ export async function generateStandupSession({ mission, tasks, agents, settings 
       targetAgentId: t.status === 'awaiting_approval' ? 'ceo' : nextAg?.id || lead.id,
       statusText:
         t.status === 'completed'
-          ? '완료 보고 중'
+          ? '완료'
           : t.status === 'awaiting_approval'
-            ? 'CEO 결재 요청 중'
-            : '실무 협업 중',
+            ? '결재 대기'
+            : '대기',
       type: t.status === 'awaiting_approval' ? 'approval' : nextAg ? 'handoff' : 'work',
       text
     });
   }
 
-  // 3. Team Lead wraps up to CEO
+  // 3. Summary
   const pendingApprovals = tasks.filter((t) => t.status === 'awaiting_approval').length;
   const doneCount = tasks.filter((t) => t.status === 'completed').length;
   turns.push({
@@ -832,9 +861,9 @@ export async function generateStandupSession({ mission, tasks, agents, settings 
     senderShortCode: lead.shortCode,
     senderAccent: lead.accent,
     targetAgentId: 'ceo',
-    statusText: 'CEO 보고 완료',
+    statusText: '요약 완료',
     type: 'plan',
-    text: `@${ceoName} 스탠드업 요약 보고드립니다. 전체 ${tasks.length}건 중 ${doneCount}건 완료${pendingApprovals > 0 ? `, CEO 결재 대기 ${pendingApprovals}건` : ''}입니다. 회의실에서 특정 팀원을 @멘션해 바로 수정 지시를 내리실 수 있습니다!`
+    text: `@${ceoName} "${mission.title}" 현황: 전체 ${tasks.length}건 중 ${doneCount}건 완료${pendingApprovals > 0 ? `, 결재 대기 ${pendingApprovals}건` : ''}.`
   });
 
   return turns;

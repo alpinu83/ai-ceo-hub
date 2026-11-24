@@ -1268,6 +1268,104 @@ textarea:focus {
 
 .empty-state { padding: 24px 16px; text-align: center; color: var(--ink-muted); font-size: 13px; background: var(--bg-subtle); border-radius: var(--radius-md); }
 
+.office-channel-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border-hairline);
+  background: var(--bg-subtle);
+  overflow-x: auto;
+  scrollbar-width: none;
+  max-width: 100%;
+}
+.office-channel-bar::-webkit-scrollbar { display: none; }
+
+.channel-pill {
+  border: 1px solid var(--border-hairline);
+  background: var(--bg-surface);
+  color: var(--ink-secondary);
+  border-radius: 99px;
+  padding: 5px 11px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.channel-pill.active {
+  background: var(--ink-primary);
+  color: var(--bg-surface);
+  border-color: var(--ink-primary);
+}
+
+.token-copy-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  max-width: 100%;
+  min-width: 0;
+}
+
+/* Global mobile-safe overflow containment */
+.app-shell,
+.main-column,
+.content-area,
+.view,
+.card,
+.sheet,
+.mission-main,
+.activity-column,
+.lounge-sheet,
+.approval-queue-col,
+.approval-memo-col,
+.home-item,
+.chat-body,
+.mcp-meta-box,
+.kv-row,
+.simple-row {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.chat-bubble,
+.prompt-box,
+.kv-row code,
+.home-item-title,
+.task-title,
+.task-desc,
+.activity-msg,
+.memo-title {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.code-block,
+.flow-graph-sheet {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.markdown-body {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.markdown-body table {
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.simple-row {
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+
 .toast-region { position: fixed; right: 20px; bottom: 20px; display: flex; flex-direction: column; gap: 8px; z-index: 80; }
 .toast { background: var(--ink-primary); color: var(--bg-surface); padding: 11px 16px; border-radius: 12px; font-size: 13px; font-weight: 500; box-shadow: var(--shadow-float); animation: fadeIn 0.16s ease; }
 .toast.error { background: var(--accent-danger); color: #fff; }
@@ -1277,12 +1375,12 @@ textarea:focus {
 /* ==================== RESPONSIVE & NATIVE MOBILE ==================== */
 @media (max-width: 1100px) {
   .kanban-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .mission-layout, .integrations-grid, .approval-desk { grid-template-columns: 1fr; }
+  .mission-layout, .integrations-grid, .approval-desk { grid-template-columns: minmax(0, 1fr); }
 }
 
 @media (max-width: 960px) {
-  .home-grid { grid-template-columns: 1fr; }
-  .office-layout { grid-template-columns: 1fr; }
+  .home-grid { grid-template-columns: minmax(0, 1fr); }
+  .office-layout { grid-template-columns: minmax(0, 1fr); }
 
   .mobile-participants-btn { display: inline-flex; }
   .mobile-participants-close { display: grid; }
@@ -1309,7 +1407,7 @@ textarea:focus {
 
 @media (max-width: 820px) {
   .desktop-only { display: none !important; }
-  .app-shell { grid-template-columns: 1fr; }
+  .app-shell { grid-template-columns: minmax(0, 1fr); width: 100%; overflow-x: clip; }
 
   .sidebar {
     position: fixed;
@@ -1325,26 +1423,37 @@ textarea:focus {
   .mobile-menu-btn { display: inline-flex; }
   #btn-topbar-settings { display: grid; }
 
-  .topbar { padding: 10px 14px; }
-  .page-title { font-size: 18px; }
+  .topbar { padding: 10px 12px; gap: 8px; }
+  .page-title { font-size: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-  .content-area { padding: 6px 14px calc(86px + env(safe-area-inset-bottom, 0px)); }
-  .card, .sheet { padding: 16px; border-radius: 16px; }
+  .content-area { padding: 6px 12px calc(86px + env(safe-area-inset-bottom, 0px)); }
+  .card, .sheet { padding: 14px; border-radius: 14px; }
 
   .kpi-strip { gap: 8px; margin-bottom: 12px; }
-  .kpi-card { padding: 13px 12px; border-radius: 14px; }
+  .kpi-card { padding: 12px 10px; border-radius: 12px; min-width: 0; }
   .kpi-label { font-size: 11px; }
-  .kpi-value { font-size: 16px; }
+  .kpi-value { font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .kpi-sub { font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .composer-bar { flex-wrap: wrap; gap: 8px; }
+  .preset-row { width: 100%; }
+  .composer-send-group { margin-left: auto; }
+
+  .kv-row { flex-direction: column; align-items: flex-start; gap: 4px; }
+  .kv-row code { font-size: 11.5px; max-width: 100%; }
+
+  .lounge-header { padding: 10px 12px; flex-wrap: wrap; gap: 6px; }
+  .office-channel-bar { padding: 8px 12px; }
 
   input[type="text"], input[type="password"], input[type="email"],
   input[type="url"], input[type="number"], select, textarea {
     font-size: 16px;
+    max-width: 100%;
   }
 
   .form-row-two, .form-row-three, .inline-inputs,
   .kanban-grid, .memo-facts, .roster-grid, .oss-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .lounge-sheet {
@@ -1352,18 +1461,18 @@ textarea:focus {
     min-height: 440px;
   }
   .lounge-feed { padding: 12px; }
-  .chat-body { max-width: 86%; }
+  .chat-body { max-width: calc(100% - 40px); }
 
-  .memo-sheet { padding: 18px 16px; }
+  .memo-sheet { padding: 16px 14px; }
   .memo-decision-actions { flex-direction: column; }
   .memo-decision-actions .btn { width: 100%; padding: 11px; }
 
   .mission-toolbar { flex-direction: column; align-items: stretch; }
-  .segmented { width: 100%; display: grid; grid-template-columns: repeat(3, 1fr); }
+  .segmented { width: 100%; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .seg-btn { text-align: center; }
 
   .drawer { width: 100%; }
-  .toast-region { left: 14px; right: 14px; bottom: calc(76px + env(safe-area-inset-bottom, 0px)); }
+  .toast-region { left: 12px; right: 12px; bottom: calc(76px + env(safe-area-inset-bottom, 0px)); }
 
   .mobile-bottom-nav {
     display: grid;

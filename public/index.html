@@ -6,7 +6,7 @@
   <title>CEO Office</title>
   <meta name="description" content="멀티 AI 팀 지휘본부" />
   <link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" />
-  <link rel="stylesheet" href="./styles.css?v=20261124e" />
+  <link rel="stylesheet" href="./styles.css?v=20261124f" />
   <script src="./vendor/marked.umd.js" defer></script>
   <script src="./vendor/lucide.min.js" defer></script>
 </head>
@@ -27,7 +27,7 @@
           <span class="nav-left"><i data-lucide="home" class="icon-sm"></i><span>홈</span></span>
         </button>
         <button class="nav-item" data-view="missions" id="nav-missions">
-          <span class="nav-left"><i data-lucide="layout-kanban" class="icon-sm"></i><span>업무</span></span>
+          <span class="nav-left"><i data-lucide="clipboard-list" class="icon-sm"></i><span>업무</span></span>
         </button>
         <button class="nav-item" data-view="office" id="nav-office">
           <span class="nav-left"><i data-lucide="messages-square" class="icon-sm"></i><span>회의실</span></span>
@@ -99,7 +99,7 @@
           <!-- Clean Command Bar with Korean Voice Input -->
           <div class="card composer-card" id="directive-sheet">
             <form id="directive-form" class="composer-form">
-              <textarea id="input-directive" rows="2" placeholder="말하거나 입력해서 AI 팀에게 지시하세요" required></textarea>
+              <textarea id="input-directive" rows="2" placeholder="말하거나 입력해서 AI 팀에게 지시하세요 (지시 즉시 팀장이 분배하고 자동 착수)" required></textarea>
               <div class="composer-bar">
                 <div class="preset-row" aria-label="빠른 입력">
                   <button type="button" class="pill-chip" data-preset="business">제안서·미팅</button>
@@ -198,19 +198,20 @@
         <section class="view" id="view-office" aria-label="회의실">
           <div class="participants-backdrop" id="participants-backdrop" aria-hidden="true"></div>
           <div class="office-layout" id="office-layout">
-            <!-- Center: Clean Messaging Feed -->
+            <!-- Center: Clean Messaging Feed with Per-Mission Channel Switcher -->
             <div class="card lounge-sheet">
               <div class="lounge-header">
                 <div class="lounge-channel">
                   <i data-lucide="hash" class="icon-sm"></i>
-                  <span>전사-회의실</span>
+                  <span id="lounge-channel-title">전사-회의실</span>
                   <span class="live-pill">LIVE</span>
                 </div>
                 <div class="lounge-header-actions">
                   <button type="button" class="btn btn-primary btn-sm" id="btn-start-standup">
                     <i data-lucide="play" class="icon-xs"></i>
-                    <span>회의 시작</span>
+                    <span>현황 점검</span>
                   </button>
+                  <button type="button" class="btn btn-ghost btn-sm" id="btn-clear-chat" title="현재 채널 대화 비우기">비우기</button>
                   <button type="button" class="btn btn-ghost btn-sm mobile-participants-btn" id="btn-toggle-participants" aria-label="참석자 보기">
                     <i data-lucide="users" class="icon-xs"></i>
                     <span id="office-participant-count">8</span>
@@ -218,27 +219,29 @@
                 </div>
               </div>
 
+              <!-- Per-Mission Channel Selector -->
+              <div class="office-channel-bar" id="office-channel-bar" aria-label="업무별 회의 채널"></div>
+
               <div class="lounge-feed" id="lounge-feed"></div>
 
               <div class="typing-banner" id="lounge-typing-banner">
                 <i data-lucide="loader" class="icon-xs"></i>
-                <span id="lounge-typing-text">입력 중…</span>
+                <span id="lounge-typing-text">응답 중…</span>
               </div>
 
               <form class="lounge-composer" id="lounge-chat-form">
                 <div class="quick-mention-row">
-                  <button type="button" class="pill-chip" data-quick-chat="@전체 진행 상황 한 줄씩 보고해줘">@전체 보고</button>
+                  <button type="button" class="pill-chip" data-quick-chat="현재 진행 상황 핵심만 보고해줘">팀장 보고</button>
                   <button type="button" class="pill-chip" data-quick-chat="@엑사원 핵심 요약하고 초안 잡아줘">@엑사원</button>
                   <button type="button" class="pill-chip" data-quick-chat="@피클 예약 조건 확인해줘">@피클</button>
                   <button type="button" class="pill-chip" data-quick-chat="@Muse 일정과 취향 체크해줘">@Muse</button>
                   <button type="button" class="pill-chip" data-quick-chat="@Cue 자료 조사해줘">@Cue</button>
-                  <button type="button" class="pill-chip" data-quick-chat="@Claude 검토해줘">@Claude</button>
                 </div>
                 <div class="chat-input-row">
                   <button type="button" class="icon-btn voice-btn" id="btn-voice-chat" title="음성 입력" aria-label="음성 입력">
                     <i data-lucide="mic" class="icon-sm"></i>
                   </button>
-                  <textarea id="lounge-chat-input" rows="1" placeholder="메시지 입력 (@이름으로 호출)"></textarea>
+                  <textarea id="lounge-chat-input" rows="1" placeholder="메시지 입력 (일반 지시는 팀장 대응 · @이름으로 특정 봇 호출)"></textarea>
                   <button type="submit" class="btn btn-primary" id="btn-send-chat" aria-label="전송">
                     <i data-lucide="send" class="icon-xs"></i>
                   </button>
@@ -281,7 +284,7 @@
           </div>
         </section>
 
-        <!-- 5. AI TEAM & BUDGET -->
+        <!-- 5. AI TEAM -->
         <section class="view" id="view-roster" aria-label="AI 팀">
           <div class="section-intro">
             <h2 class="section-heading">AI 조직</h2>
@@ -318,29 +321,33 @@
             <button type="button" class="hub-tab" data-hub-tab="mcp">MCP · HTTPS 연동</button>
           </div>
 
-          <!-- TAB 1: ACTIVE CONNECTIONS + EXAONE + TELEGRAM + BASIC -->
+          <!-- TAB 1: LIVE SYNC + ACTIVE CONNECTIONS + EXAONE + TELEGRAM + BASIC -->
           <div class="hub-panel active" id="hub-panel-quickstart">
             <div class="card" style="margin-bottom:14px;">
               <div class="card-head">
-                <h3 class="card-title">AI 연결 현황</h3>
+                <h3 class="card-title">연결 현황</h3>
                 <button type="button" class="btn btn-ghost btn-sm" data-hub-tab="mcp">토큰 · 명령어</button>
               </div>
               <div class="simple-list">
+                <div class="simple-row">
+                  <div><strong>서버 · PC/모바일 동기화</strong></div>
+                  <span class="key-status" id="status-sync-live">확인 중…</span>
+                </div>
                 <div class="simple-row">
                   <div><strong>LG K-EXAONE 2.5</strong> <span class="mono" style="color:var(--ink-muted);">API 자동</span></div>
                   <span class="key-status" id="status-exaone-quick">미연결</span>
                 </div>
                 <div class="simple-row">
                   <div><strong>Meta Muse</strong> <span class="mono" style="color:var(--ink-muted);">공식 MCP</span></div>
-                  <span class="badge badge-green">연결됨</span>
+                  <span class="badge badge-neutral" id="status-muse-live">통신 대기</span>
                 </div>
                 <div class="simple-row">
-                  <div><strong>피클 (알렉스)</strong> <span class="mono" style="color:var(--ink-muted);">HTTPS · 30분 스케줄</span></div>
-                  <span class="badge badge-green">연결됨</span>
+                  <div><strong>피클 (알렉스)</strong> <span class="mono" style="color:var(--ink-muted);">HTTPS 수신함</span></div>
+                  <span class="badge badge-neutral" id="status-pickle-live">통신 대기</span>
                 </div>
                 <div class="simple-row">
-                  <div><strong>Manus Cue</strong> <span class="mono" style="color:var(--ink-muted);">HTTPS · 보안 폼</span></div>
-                  <span class="badge badge-green">연결됨</span>
+                  <div><strong>Manus Cue</strong> <span class="mono" style="color:var(--ink-muted);">HTTPS · MCP</span></div>
+                  <span class="badge badge-neutral" id="status-cue-live">통신 대기</span>
                 </div>
                 <div class="simple-row">
                   <div><strong>부이 (vooy)</strong> <span class="mono" style="color:var(--ink-muted);">HTTPS 수신함</span></div>
@@ -417,7 +424,7 @@
                   </div>
                   <div class="kv-row">
                     <span>Token</span>
-                    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                    <div class="token-copy-row">
                       <code id="mcp-token-value">-</code>
                       <button type="button" class="btn btn-primary btn-sm" id="btn-copy-raw-token">토큰만 복사</button>
                     </div>
@@ -443,12 +450,12 @@
 
               <div class="card">
                 <div class="card-head">
-                  <h2 class="card-title">MCP 테스트</h2>
+                  <h2 class="card-title">연동 테스트</h2>
                 </div>
                 <div class="tester-btns" style="margin-bottom: 12px;">
-                  <button type="button" class="btn btn-primary btn-sm" data-mcp-test="tools/list">tools/list</button>
+                  <button type="button" class="btn btn-primary btn-sm" id="btn-test-pickle-inbox">피클 수신함 테스트</button>
+                  <button type="button" class="btn btn-ghost btn-sm" data-mcp-test="tools/list">MCP tools</button>
                   <button type="button" class="btn btn-ghost btn-sm" data-mcp-test="get_company_brief">brief</button>
-                  <button type="button" class="btn btn-ghost btn-sm" data-mcp-test="list_my_tasks">tasks</button>
                 </div>
                 <pre class="code-block tall" id="mcp-test-output">버튼을 눌러 테스트하세요.</pre>
               </div>
@@ -542,7 +549,7 @@
       <i data-lucide="home" class="icon-sm"></i><span>홈</span>
     </button>
     <button type="button" class="mobile-nav-item" data-view="missions">
-      <i data-lucide="layout-kanban" class="icon-sm"></i><span>업무</span>
+      <i data-lucide="clipboard-list" class="icon-sm"></i><span>업무</span>
     </button>
     <button type="button" class="mobile-nav-item" data-view="office">
       <i data-lucide="messages-square" class="icon-sm"></i><span>회의실</span>
@@ -554,6 +561,6 @@
   </nav>
 
   <div class="toast-region" id="toast-region" aria-live="polite"></div>
-  <script type="module" src="./app.js?v=20261124e"></script>
+  <script type="module" src="./app.js?v=20261124f"></script>
 </body>
 </html>

@@ -124,6 +124,15 @@ async function runTests() {
     assert.ok(synthRes.report.length > 50, 'synthesized executive report should be non-empty');
 
     // 8. Live Office Chat & Team Standup tests
+    const leadOnlyChat = await (
+      await fetch(`${BASE}/api/chat/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: '현재 진행 상황 알려줘', missionId: created.mission.id })
+      })
+    ).json();
+    assert.equal(leadOnlyChat.replies.length, 1, 'general CEO chat without @mention should get 1 concise Team Lead reply');
+
     const chatRes = await (
       await fetch(`${BASE}/api/chat/send`, {
         method: 'POST',
@@ -131,7 +140,7 @@ async function runTests() {
         body: JSON.stringify({ text: '@피클 @Claude 진행 상황 공유해줘', missionId: created.mission.id })
       })
     ).json();
-    assert.ok(chatRes.replies.length >= 2, 'chat should produce multi-agent replies');
+    assert.ok(chatRes.replies.length >= 2, 'explicit multi-@mention chat should produce multi-agent replies');
 
     const standupRes = await (
       await fetch(`${BASE}/api/missions/${created.mission.id}/standup`, { method: 'POST' })
@@ -146,32 +155,40 @@ async function runTests() {
     });
     assert.equal(tgRes.status, 200, 'Telegram webhook should acknowledge updates with 200');
 
-    // 10. Async External Agent HTTPS Inbox (Pickle / Vooy real pull & post)
+    // 10. Async External Agent HTTPS Inbox (Pickle / Vooy real pull, flexible POST, & heartbeat tracking)
     const inboxRes = await fetch(`${BASE}/api/agent-inbox/pickle?token=${encodeURIComponent(mcpToken)}`);
     const inbox = await inboxRes.json();
     assert.equal(inboxRes.status, 200, 'agent inbox GET should return 200');
     assert.equal(inbox.ok, true);
     assert.equal(inbox.agent.id, 'agent_pickle');
 
-    const replyRes = await fetch(`${BASE}/api/agent-inbox/pickle/reply?token=${encodeURIComponent(mcpToken)}`, {
+    const replyRes = await fetch(`${BASE}/api/agent-inbox/pickle?token=${encodeURIComponent(mcpToken)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        message: '알렉스입니다! 성수역 식당 3곳 전화 확인 완료했습니다. 예약금 3만원 결제 전 승인 부탁드립니다.',
+        text: '알렉스입니다! 식당 3곳 전화 확인 완료했습니다. 예약금 3만원 결제 전 승인 부탁드립니다.',
         requestApproval: true,
-        approvalTitle: '피클(알렉스) 성수역 식당 예약 승인',
+        approvalTitle: '피클(알렉스) 식당 예약 승인',
         estimatedCostKRW: 30000
       })
     });
     const replyData = await replyRes.json();
-    assert.equal(replyRes.status, 200, 'agent inbox POST reply should return 200');
+    assert.equal(replyRes.status, 200, 'agent inbox direct POST should return 200');
     assert.equal(replyData.ok, true);
     assert.ok(replyData.postedMessageId);
     assert.ok(replyData.approvalId);
 
+    const stateAfterPickle = await (await fetch(`${BASE}/api/state`)).json();
+    assert.ok(stateAfterPickle.agentConnections?.agent_pickle?.lastSeenAt, 'Pickle heartbeat must be recorded');
+
+    // 11. Deleting a mission also deletes its meeting room messages
+    const delRes = await (await fetch(`${BASE}/api/missions/${created.mission.id}`, { method: 'DELETE' })).json();
+    const leftoverMsgs = (delRes.state.messages || []).filter((m) => m.missionId === created.mission.id);
+    assert.equal(leftoverMsgs.length, 0, 'deleting a mission must delete its meeting room messages');
+
     // Clean reset after tests
     await fetch(`${BASE}/api/reset`, { method: 'POST' });
-    console.log('✅ All AI CEO Hub E2E tests (REST + Parallel + Official MCP SDK + Async Pickle/Vooy HTTPS Inbox + Live Office Chat + Standup + Telegram) passed!');
+    console.log('✅ All AI CEO Hub E2E tests (REST + Auto-Start + Team Lead Chat + Official MCP SDK + Async Pickle HTTPS Inbox + Heartbeat + Cascade Delete + Telegram) passed!');
   } finally {
     child.kill('SIGTERM');
   }

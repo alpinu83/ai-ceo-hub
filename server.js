@@ -8,6 +8,8 @@ import { getRequestListener } from '@hono/node-server';
 import {
   loadDb,
   saveDb,
+  flushCloudBackup,
+  recordAgentHeartbeat,
   appendLog,
   appendMessage,
   initCloudPersistence,
@@ -164,7 +166,98 @@ async function createMissionInDb({ title = '', directive, domain = 'business', c
   });
 
   saveDb(db);
+  flushCloudBackup(db).catch(() => {});
+
+  // Auto-start live API workers (e.g. LG K-EXAONE 2.5) immediately without requiring CEO to click "실행"
+  autoStartLiveMissionTasks(mission.id).catch(() => {});
+
   return { mission, tasks: createdTasks, db };
+}
+
+async function autoStartLiveMissionTasks(missionId) {
+  const db = loadDb();
+  const mission = db.missions.find((m) => m.id === missionId);
+  if (!mission) return;
+
+  const agentMap = Object.fromEntries(db.agents.map((a) => [a.id, a]));
+  const liveTargets = db.tasks.filter((t) => {
+    if (t.missionId !== missionId || t.status !== 'queued') return false;
+    const ag = agentMap[t.assigneeId];
+    if (!ag || ag.connectionMode !== 'api') return false;
+    const pCfg = db.settings?.providers?.[ag.provider];
+    return Boolean(pCfg?.apiKey);
+  });
+
+  if (liveTargets.length === 0) return;
+
+  // Mark as running immediately so UI shows employees actively working
+  const startIso = new Date().toISOString();
+  for (const t of liveTargets) {
+    t.status = 'running';
+    t.updatedAt = startIso;
+  }
+  saveDb(db);
+
+  await Promise.all(
+    liveTargets.map(async (target) => {
+      const ag = agentMap[target.assigneeId];
+      try {
+        const res = await executeAgentTask({ task: target, mission, agent: ag, settings: db.settings });
+        const fresh = loadDb();
+        const taskRow = fresh.tasks.find((x) => x.id === target.id);
+        if (!taskRow) return;
+        const doneIso = new Date().toISOString();
+        taskRow.output = res.output;
+        taskRow.executionModeUsed = res.executionModeUsed;
+        taskRow.updatedAt = doneIso;
+
+        if (taskRow.requiresApproval) {
+          taskRow.status = 'awaiting_approval';
+          const existing = fresh.approvals.find((a) => a.taskId === taskRow.id && a.status === 'pending');
+          if (!existing) {
+            const apr = createApprovalForTask(taskRow, ag, mission);
+            fresh.approvals.unshift(apr);
+            notifyAllApprovalChannels(fresh.settings, apr, ag.name);
+          }
+          appendLog(fresh, ag.name, `"${taskRow.title}" 자동 처리 완료 → CEO 결재함 상신.`, 'approval');
+        } else {
+          taskRow.status = 'completed';
+          appendLog(fresh, ag.name, `"${taskRow.title}" 자동 처리 완료.`, 'success');
+        }
+
+        const firstLine = (res.output || '')
+          .split('\n')
+          .find((l) => l.trim() && !l.startsWith('#') && !l.startsWith('|') && !l.startsWith('>'))
+          ?.replace(/^[-*]\s*/, '')
+          .slice(0, 140);
+        appendMessage(fresh, {
+          missionId: mission.id,
+          senderId: ag.id,
+          senderName: ag.name,
+          senderRole: ag.roleTitle,
+          senderShortCode: ag.shortCode,
+          senderAccent: ag.accent,
+          targetAgentId: 'ceo',
+          statusText: taskRow.requiresApproval ? '결재 상신' : '자동 완료',
+          type: taskRow.requiresApproval ? 'approval' : 'work',
+          text: `[자동 보고] "${taskRow.title}" ${taskRow.requiresApproval ? '사전 준비를 마치고 결재함에 올렸습니다.' : '완료했습니다.'}${firstLine ? ` — ${firstLine}` : ''}`
+        });
+
+        updateMissionStatus(fresh, mission.id);
+        saveDb(fresh);
+        await flushCloudBackup(fresh);
+      } catch (err) {
+        const fresh = loadDb();
+        const taskRow = fresh.tasks.find((x) => x.id === target.id);
+        if (taskRow) {
+          taskRow.status = 'queued';
+          taskRow.updatedAt = new Date().toISOString();
+        }
+        appendLog(fresh, ag.name, `"${target.title}" 자동 실행 오류: ${err.message}`, 'warning');
+        saveDb(fresh);
+      }
+    })
+  );
 }
 
 function applyApprovalDecisionInDb(aprId, decision, ceoNote = '') {
@@ -399,15 +492,18 @@ app.post('/api/telegram/webhook', async (c) => {
   return c.json({ ok: true, ...res });
 });
 
-// Live Team Lounge Chat — CEO talks to AI employees & watches them collaborate
+// Live Team Lounge Chat — CEO talks to AI employees
 app.post('/api/chat/send', async (c) => {
   const body = await c.req.json();
   const text = String(body.text || '').trim();
   if (!text) return c.json({ error: '메시지를 입력해 주세요.' }, 400);
 
   const db = loadDb();
+  const reqMissionId = String(body.missionId || '').trim();
   const mission =
-    db.missions.find((m) => m.id === body.missionId) || db.missions[0] || null;
+    reqMissionId && reqMissionId !== 'all'
+      ? db.missions.find((m) => m.id === reqMissionId) || null
+      : null;
   const missionTasks = mission ? db.tasks.filter((t) => t.missionId === mission.id) : [];
 
   const ceoMsg = appendMessage(db, {
@@ -435,11 +531,12 @@ app.post('/api/chat/send', async (c) => {
   const savedReplies = replies.map((r) => appendMessage(db, r));
   appendLog(
     db,
-    '사내 회의실',
-    `CEO 메시지에 ${savedReplies.map((r) => r.senderName).join(', ')} 직원이 응답했습니다.`,
+    '회의실',
+    `CEO 메시지에 ${savedReplies.map((r) => r.senderName).join(', ')} 응답.`,
     'info'
   );
   saveDb(db);
+  flushCloudBackup(db).catch(() => {});
 
   return c.json({
     ceoMessage: ceoMsg,
@@ -448,7 +545,20 @@ app.post('/api/chat/send', async (c) => {
   });
 });
 
-// Live Team Standup — watch Lead & team members report, hand off, and request CEO approval
+app.delete('/api/chat', async (c) => {
+  const missionId = String(c.req.query('missionId') || '').trim();
+  const db = loadDb();
+  if (missionId && missionId !== 'all') {
+    db.messages = (db.messages || []).filter((m) => m.missionId !== missionId);
+  } else {
+    db.messages = [];
+  }
+  saveDb(db);
+  await flushCloudBackup(db);
+  return c.json({ state: sanitizeStateForClient(db) });
+});
+
+// Live Team Standup — watch Lead & team members report real current status
 app.post('/api/missions/:id/standup', async (c) => {
   const missionId = c.req.param('id');
   const db = loadDb();
@@ -464,8 +574,9 @@ app.post('/api/missions/:id/standup', async (c) => {
   });
 
   const savedTurns = turns.map((t) => appendMessage(db, t));
-  appendLog(db, '사내 회의실', `"${mission.title}" 실시간 팀 스탠드업(${savedTurns.length}턴)을 진행했습니다.`, 'info');
+  appendLog(db, '회의실', `"${mission.title}" 현황 점검(${savedTurns.length}건).`, 'info');
   saveDb(db);
+  flushCloudBackup(db).catch(() => {});
 
   return c.json({
     turns: savedTurns,
@@ -473,7 +584,7 @@ app.post('/api/missions/:id/standup', async (c) => {
   });
 });
 
-// ==================== ASYNC AGENT INBOX HTTPS API (Pickle / Vooy / Instinct) ====================
+// ==================== ASYNC AGENT INBOX HTTPS API (Pickle / Cue / Vooy / Instinct) ====================
 function resolveInboxAgent(db, rawKey) {
   const key = String(rawKey || '').trim().toLowerCase();
   const alias = {
@@ -490,7 +601,7 @@ function resolveInboxAgent(db, rawKey) {
     manus: 'agent_cue',
     exaone: 'agent_exaone',
     claude: 'agent_claude',
-    gemini: 'agent_gemini_free',
+    gemini: 'agent_gemini_neon',
     neon: 'agent_gemini_neon'
   };
   const targetId = alias[key] || rawKey;
@@ -533,8 +644,11 @@ app.get('/api/agent-inbox/:agentKey', (c) => {
   }
   const agent = resolveInboxAgent(db, c.req.param('agentKey'));
   if (!agent) {
-    return c.json({ error: `알 수 없는 에이전트입니다: ${c.req.param('agentKey')} (예: pickle, vooy, instinct)` }, 404);
+    return c.json({ error: `알 수 없는 에이전트입니다: ${c.req.param('agentKey')} (예: pickle, cue, vooy)` }, 404);
   }
+
+  recordAgentHeartbeat(db, agent.id, 'GET inbox');
+  saveDb(db);
 
   const origin = new URL(c.req.url).origin;
   const token = db.settings?.mcpToken || '';
@@ -554,6 +668,7 @@ app.get('/api/agent-inbox/:agentKey', (c) => {
   const recentMeetingRoom = (db.messages || []).slice(-15).map((m) => ({
     sender: m.senderName,
     role: m.senderRole,
+    missionId: m.missionId || '',
     text: m.text,
     timestamp: m.timestamp
   }));
@@ -592,19 +707,27 @@ app.get('/api/agent-inbox/:agentKey', (c) => {
       url: replyUrl,
       contentType: 'application/json',
       exampleBody: {
-        message: '성수역 식당 3곳 전화 확인 완료했습니다. 예약 확정 전 CEO 결재 부탁드립니다.',
+        message: '조사 결과를 보고합니다. 확정 전 CEO 결재 부탁드립니다.',
         taskId: pendingTasks[0]?.id || '',
-        deliverable: '1. 식당A (목 19시 가능, 예약금 4만원)\n2. 식당B (만석)\n3. 식당C (목 19시 가능, 예약금 없음)',
+        deliverable: '상세 결과 내용',
         requestApproval: true,
-        approvalTitle: '성수역 4인 식당 예약 확정 승인 요청',
-        estimatedCostKRW: 40000
+        approvalTitle: '예약/실행 승인 요청',
+        estimatedCostKRW: 0
       }
     }
   });
 });
 
-app.post('/api/agent-inbox/:agentKey/reply', async (c) => {
-  const body = await c.req.json().catch(() => ({}));
+async function handleAgentInboxReply(c) {
+  let body = {};
+  const rawText = await c.req.text().catch(() => '');
+  if (rawText.trim()) {
+    try {
+      body = JSON.parse(rawText);
+    } catch {
+      body = { message: rawText.trim() };
+    }
+  }
   const db = loadDb();
   if (!checkInboxToken(c, db, body)) {
     return c.json({ error: '유효한 토큰이 필요합니다.' }, 401);
@@ -614,23 +737,28 @@ app.post('/api/agent-inbox/:agentKey/reply', async (c) => {
     return c.json({ error: `알 수 없는 에이전트입니다: ${c.req.param('agentKey')}` }, 404);
   }
 
-  const message = String(body.message || body.deliverable || '').trim();
+  recordAgentHeartbeat(db, agent.id, 'POST reply');
+
+  const message = String(
+    body.message || body.text || body.reply || body.content || body.summary || body.deliverable || body.result || ''
+  ).trim();
   if (!message) {
+    saveDb(db);
     return c.json({ error: 'message 또는 deliverable 내용을 보내주세요.' }, 400);
   }
 
-  const deliverable = String(body.deliverable || body.message || '').trim();
-  const requestApproval = Boolean(body.requestApproval);
-  const estimatedCostKRW = Number(body.estimatedCostKRW) || 0;
+  const deliverable = String(body.deliverable || body.result || body.content || message).trim();
+  const requestApproval = Boolean(body.requestApproval || body.requiresApproval || body.request_approval);
+  const estimatedCostKRW = Number(body.estimatedCostKRW || body.estimated_cost_krw || 0) || 0;
   const now = new Date().toISOString();
 
-  let task = body.taskId ? db.tasks.find((t) => t.id === body.taskId) : null;
-  if (!task && (body.deliverable || requestApproval)) {
+  let task = body.taskId || body.task_id ? db.tasks.find((t) => t.id === (body.taskId || body.task_id)) : null;
+  if (!task && (body.deliverable || body.result || requestApproval)) {
     task = db.tasks.find((t) => t.assigneeId === agent.id && t.status !== 'completed' && t.status !== 'rejected') || null;
   }
 
   const postedMsg = appendMessage(db, {
-    missionId: task?.missionId || db.missions[0]?.id || '',
+    missionId: body.missionId || task?.missionId || db.missions[0]?.id || '',
     senderId: agent.id,
     senderName: agent.name,
     senderRole: `${agent.roleTitle} · 실제 앱 보고`,
@@ -712,6 +840,7 @@ app.post('/api/agent-inbox/:agentKey/reply', async (c) => {
   }
 
   saveDb(db);
+  await flushCloudBackup(db);
   return c.json({
     ok: true,
     agent: agent.name,
@@ -720,7 +849,10 @@ app.post('/api/agent-inbox/:agentKey/reply', async (c) => {
     taskStatus: task?.status || null,
     approvalId
   });
-});
+}
+
+app.post('/api/agent-inbox/:agentKey/reply', handleAgentInboxReply);
+app.post('/api/agent-inbox/:agentKey', handleAgentInboxReply);
 
 // Create Mission & Decompose via Team Lead
 app.post('/api/missions', async (c) => {
@@ -822,14 +954,16 @@ app.post('/api/missions/:id/synthesize', async (c) => {
   return c.json({ report, state: sanitizeStateForClient(db) });
 });
 
-app.delete('/api/missions/:id', (c) => {
+app.delete('/api/missions/:id', async (c) => {
   const missionId = c.req.param('id');
   const db = loadDb();
   db.missions = db.missions.filter((m) => m.id !== missionId);
   db.tasks = db.tasks.filter((t) => t.missionId !== missionId);
   db.approvals = db.approvals.filter((a) => a.missionId !== missionId);
-  appendLog(db, 'CEO', `미션(${missionId})을 삭제했습니다.`, 'info');
+  db.messages = (db.messages || []).filter((m) => m.missionId !== missionId);
+  appendLog(db, 'CEO', `미션(${missionId})과 관련 대화를 삭제했습니다.`, 'info');
   saveDb(db);
+  await flushCloudBackup(db);
   return c.json({ state: sanitizeStateForClient(db) });
 });
 
@@ -972,6 +1106,7 @@ app.post('/api/approvals/:id/decide', async (c) => {
   const body = await c.req.json();
   const res = applyApprovalDecisionInDb(aprId, body.decision, body.ceoNote);
   if (!res.ok) return c.json({ error: res.error }, res.status || 400);
+  await flushCloudBackup(res.db);
   return c.json({ approval: res.approval, state: sanitizeStateForClient(res.db) });
 });
 
@@ -990,7 +1125,7 @@ app.post('/api/agents', async (c) => {
     roleTitle: String(body.roleTitle || '맞춤 전문 팀원').trim(),
     tier,
     reportsTo: tier === 'lead' ? 'ceo' : 'agent_gemini_neon',
-    provider: String(body.provider || 'litellm').trim(),
+    provider: String(body.provider || 'custom').trim(),
     modelId: String(body.modelId || '').trim(),
     connectionMode: ['api', 'litellm', 'mcp', 'bridge'].includes(body.connectionMode) ? body.connectionMode : 'bridge',
     costTier: ['free', 'freemium', 'paid_or_sub'].includes(body.costTier) ? body.costTier : 'free',
@@ -998,7 +1133,7 @@ app.post('/api/agents', async (c) => {
     spentKRW: 0,
     domains: Array.isArray(body.domains) && body.domains.length ? body.domains : ['business'],
     strengths: String(body.strengths || 'CEO 지시에 맞춘 전문 실무 처리').trim(),
-    bridgeGuide: String(body.bridgeGuide || '지시서를 복사하거나 API/LiteLLM/MCP로 연결해 사용합니다.').trim(),
+    bridgeGuide: String(body.bridgeGuide || '지시서를 복사하거나 API/MCP로 연결해 사용합니다.').trim(),
     active: true,
     accent: String(body.accent || '#0E6245')
   };
@@ -1006,6 +1141,7 @@ app.post('/api/agents', async (c) => {
   db.agents.push(newAgent);
   appendLog(db, 'CEO', `새 AI 팀원 "${newAgent.name}" (${newAgent.roleTitle})을(를) 채용했습니다.`, 'success');
   saveDb(db);
+  await flushCloudBackup(db);
   return c.json({ agent: newAgent, state: sanitizeStateForClient(db) }, 201);
 });
 
@@ -1030,6 +1166,7 @@ app.patch('/api/agents/:id', async (c) => {
 
   appendLog(db, 'CEO', `"${agent.name}" 설정 업데이트 (${agent.connectionMode.toUpperCase()} / ${agent.active ? '활성' : '휴직'}).`, 'info');
   saveDb(db);
+  await flushCloudBackup(db);
   return c.json({ agent, state: sanitizeStateForClient(db) });
 });
 
@@ -1079,8 +1216,9 @@ app.put('/api/settings', async (c) => {
     }
   }
 
-  appendLog(db, 'CEO', '연동 설정 · 텔레그램 봇 · 예산 거버넌스 정책을 저장했습니다.', 'info');
+  appendLog(db, 'CEO', '설정을 저장했습니다.', 'info');
   saveDb(db);
+  await flushCloudBackup(db);
   syncTelegramPolling(db.settings, getTelegramCallbacks());
   return c.json({ state: sanitizeStateForClient(db) });
 });
@@ -1108,9 +1246,10 @@ app.post('/api/webhook/test', async (c) => {
   return c.json({ ok: result.sent, ...result });
 });
 
-app.post('/api/reset', (c) => {
+app.post('/api/reset', async (c) => {
   const fresh = createDefaultState();
   saveDb(fresh);
+  await flushCloudBackup(fresh);
   syncTelegramPolling(fresh.settings, getTelegramCallbacks());
   return c.json({ state: sanitizeStateForClient(fresh) });
 });

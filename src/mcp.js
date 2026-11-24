@@ -1,14 +1,14 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
-import { loadDb, saveDb, appendLog, uid } from './store.js';
+import { loadDb, saveDb, appendLog, recordAgentHeartbeat, uid } from './store.js';
 import { notifyWebhook } from './orchestrator.js';
 import { sendTelegramApprovalCard } from './telegram.js';
 
 export const MCP_TOOL_CATALOG = [
   {
     name: 'get_company_brief',
-    description: '현재 CEO Office의 활성 미션, 예산 현황, 조직도 및 대기 중인 결재 수를 조회합니다.'
+    description: '현재 CEO Office의 활성 미션, 조직도 및 대기 중인 결재 수를 조회합니다.'
   },
   {
     name: 'list_my_tasks',
@@ -36,19 +36,18 @@ export function createCeoMcpServer() {
 
   server.tool(
     'get_company_brief',
-    '현재 CEO Office의 활성 미션, 예산 현황, 조직도 및 대기 중인 결재 수를 조회합니다.',
+    '현재 CEO Office의 활성 미션, 조직도 및 대기 중인 결재 수를 조회합니다.',
     {},
     async () => {
       const db = loadDb();
+      recordAgentHeartbeat(db, 'agent_muse', 'MCP brief');
+      saveDb(db);
       const activeMissions = db.missions.filter((m) => m.status !== 'completed');
       const pendingApprovals = db.approvals.filter((a) => a.status === 'pending').length;
       const data = {
         companyName: db.settings.companyName,
         ceoName: db.settings.ceoName,
         defaultCostPolicy: db.settings.defaultCostPolicy,
-        monthlyBudgetKRW: db.settings.monthlyBudgetKRW,
-        spentThisMonthKRW: db.settings.spentThisMonthKRW,
-        approvalThresholdKRW: db.settings.approvalThresholdKRW,
         pendingApprovals,
         activeMissions: activeMissions.map((m) => ({
           id: m.id,
@@ -80,6 +79,10 @@ export function createCeoMcpServer() {
     },
     async ({ agent_id, include_completed = false }) => {
       const db = loadDb();
+      if (agent_id) {
+        recordAgentHeartbeat(db, agent_id, 'MCP tasks');
+        saveDb(db);
+      }
       const tasks = db.tasks.filter((t) => {
         if (agent_id && t.assigneeId !== agent_id) return false;
         if (!include_completed && t.status === 'completed') return false;

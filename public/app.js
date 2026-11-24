@@ -118,11 +118,13 @@ const STATUS_META = {
   rejected: { label: '반려', cls: 'badge-red' }
 };
 
+const RENDER_BACKEND_URL = 'https://ai-ceo-hub.onrender.com';
+
 let state = null;
-let ossStack = null;
 let currentView = 'command';
 let missionViewMode = 'board'; // 'board' | 'list' | 'graph'
 let selectedMissionId = null;
+let officeMissionFilter = 'all'; // 'all' | missionId
 let selectedApprovalId = null;
 let currentHubTab = 'quickstart';
 let currentMcpTab = 'pickle';
@@ -145,6 +147,17 @@ function formatKRW(amount) {
 function formatTime(iso) {
   if (!iso) return '';
   return new Date(iso).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+}
+
+function formatRelativeTime(iso) {
+  if (!iso) return '통신 기록 없음';
+  const diffSec = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+  if (diffSec < 60) return '방금 전';
+  const min = Math.floor(diffSec / 60);
+  if (min < 60) return `${min}분 전`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}시간 전`;
+  return `${Math.floor(hr / 24)}일 전`;
 }
 
 function renderMarkdown(md = '') {
@@ -172,28 +185,70 @@ function toast(msg, isError = false) {
 }
 
 let runtimeMode = 'detecting'; // 'server' | 'standalone'
+let apiBase = ''; // '' (same-origin) | RENDER_BACKEND_URL
 
-async function detectRuntime() {
+function getPublicServerOrigin() {
+  if (apiBase) return apiBase;
+  if (runtimeMode === 'server') return window.location.origin;
+  return RENDER_BACKEND_URL;
+}
+
+async function probeHealth(baseUrl, timeoutMs = 10000) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const res = await fetch('./api/health', { cache: 'no-store' });
+    const res = await fetch(`${baseUrl}/api/health`, { cache: 'no-store', signal: ctrl.signal });
     if (res.ok) {
       const data = await res.json().catch(() => null);
-      if (data && data.ok === true) {
-        runtimeMode = 'server';
-        return;
-      }
+      if (data && data.ok === true) return true;
     }
   } catch {
-    // static hosting (e.g. GitHub Pages)
+    // retry or fallback
+  } finally {
+    clearTimeout(timer);
   }
+  return false;
+}
+
+async function detectRuntime() {
+  const host = window.location.hostname || '';
+  const isStaticPages = host.endsWith('github.io');
+
+  if (!isStaticPages) {
+    // Same-origin Node/Render server: retry up to 3 times to survive Render cold starts without dropping to localStorage
+    for (let i = 0; i < 3; i++) {
+      if (await probeHealth('.', i === 0 ? 8000 : 18000)) {
+        runtimeMode = 'server';
+        apiBase = '';
+        return;
+      }
+      if (i === 0) toast('서버 깨우는 중… 잠시만 기다려 주세요');
+    }
+  }
+
+  // On GitHub Pages (or remote static host): auto-connect to unified Render server so PC and mobile share 1 DB!
+  for (let i = 0; i < 2; i++) {
+    if (await probeHealth(RENDER_BACKEND_URL, i === 0 ? 10000 : 20000)) {
+      runtimeMode = 'server';
+      apiBase = RENDER_BACKEND_URL;
+      return;
+    }
+    if (i === 0) toast('Render 서버 연결 중…');
+  }
+
   runtimeMode = 'standalone';
+  apiBase = '';
 }
 
 async function api(url, options = {}) {
   if (runtimeMode === 'standalone') {
     return standaloneApi(url, options);
   }
-  const targetUrl = url.startsWith('/') ? `.${url}` : url;
+  const targetUrl = apiBase
+    ? `${apiBase}${url.startsWith('/') ? url : `/${url}`}`
+    : url.startsWith('/')
+      ? `.${url}`
+      : url;
   const res = await fetch(targetUrl, {
     headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
     ...options
@@ -493,11 +548,44 @@ function renderOfficeView() {
   const leadWrap = document.getElementById('office-lead-desks');
   const workerWrap = document.getElementById('office-worker-desks');
   const feedEl = document.getElementById('lounge-feed');
+  const channelBar = document.getElementById('office-channel-bar');
+  const titleEl = document.getElementById('lounge-channel-title');
   if (!leadWrap || !workerWrap || !feedEl) return;
 
-  const activeMission = state.missions.find((m) => m.id === selectedMissionId) || state.missions[0] || null;
-  const missionTasks = activeMission ? state.tasks.filter((t) => t.missionId === activeMission.id) : [];
-  const messages = state.messages || [];
+  // Validate officeMissionFilter against current missions
+  if (officeMissionFilter !== 'all' && !state.missions.some((m) => m.id === officeMissionFilter)) {
+    officeMissionFilter = state.missions[0]?.id || 'all';
+  }
+
+  const allMessages = state.messages || [];
+  const activeMission =
+    officeMissionFilter === 'all'
+      ? null
+      : state.missions.find((m) => m.id === officeMissionFilter) || null;
+  const missionTasks = activeMission
+    ? state.tasks.filter((t) => t.missionId === activeMission.id)
+    : state.tasks;
+
+  if (titleEl) {
+    titleEl.textContent = activeMission ? activeMission.title : '전체 회의실';
+  }
+
+  if (channelBar) {
+    const pills = [
+      `<button type="button" class="channel-pill ${officeMissionFilter === 'all' ? 'active' : ''}" data-office-channel="all">전체 <span class="mono">${allMessages.length}</span></button>`,
+      ...state.missions.map((m) => {
+        const cnt = allMessages.filter((msg) => msg.missionId === m.id).length;
+        const shortTitle = m.title.length > 18 ? `${m.title.slice(0, 18)}…` : m.title;
+        return `<button type="button" class="channel-pill ${officeMissionFilter === m.id ? 'active' : ''}" data-office-channel="${esc(m.id)}">${esc(shortTitle)} <span class="mono">${cnt}</span></button>`;
+      })
+    ];
+    channelBar.innerHTML = pills.join('');
+  }
+
+  const messages =
+    officeMissionFilter === 'all'
+      ? allMessages
+      : allMessages.filter((m) => m.missionId === officeMissionFilter);
 
   const partCount = document.getElementById('office-participant-count');
   if (partCount) {
@@ -507,11 +595,13 @@ function renderOfficeView() {
   const renderDesk = (ag) => {
     const myTasks = missionTasks.filter((t) => t.assigneeId === ag.id);
     const hasApproval = myTasks.some((t) => t.status === 'awaiting_approval');
+    const isRunning = myTasks.some((t) => t.status === 'running');
     const isSpeaking = activeSpeakerId === ag.id;
 
     let statusLabel = '대기';
     if (!ag.active) statusLabel = '휴직';
     else if (isSpeaking) statusLabel = '발언 중';
+    else if (isRunning) statusLabel = '작업 중';
     else if (hasApproval) statusLabel = '결재';
     else if (myTasks.some((t) => t.status === 'completed')) statusLabel = '완료';
     else if (myTasks.length > 0) statusLabel = '배정';
@@ -535,31 +625,37 @@ function renderOfficeView() {
   leadWrap.innerHTML = leads.map(renderDesk).join('');
   workerWrap.innerHTML = workers.map(renderDesk).join('');
 
-  // Render #전사-회의실 feed
+  // Render filtered channel feed
   const typeBadges = {
     directive: { label: 'CEO 지시', cls: 'badge-neutral' },
     plan: { label: '팀장 분배', cls: 'badge-green' },
-    handoff: { label: '팀원 핸드오프', cls: 'badge-blue' },
+    handoff: { label: '전달', cls: 'badge-blue' },
     approval: { label: '결재 상신', cls: 'badge-amber' },
-    work: { label: '실무 보고', cls: 'badge-neutral' },
-    ceo_chat: { label: 'CEO 발언', cls: 'badge-neutral' },
+    work: { label: '보고', cls: 'badge-neutral' },
+    ceo_chat: { label: 'CEO', cls: 'badge-neutral' },
     reply: { label: '응답', cls: 'badge-green' }
   };
 
+  const missionTitleMap = Object.fromEntries(state.missions.map((m) => [m.id, m.title]));
+
   feedEl.innerHTML =
     messages.length === 0
-      ? '<div class="empty-state">아직 회의실 대화가 없습니다. 팀 스탠드업을 시작하거나 직원에게 말을 걸어보세요!</div>'
+      ? '<div class="empty-state">이 채널에 아직 대화가 없습니다. 메시지를 보내면 팀장이 대응합니다.</div>'
       : messages
           .map((m) => {
             const isCeo = m.senderId === 'ceo';
             const tb = typeBadges[m.type] || { label: '대화', cls: 'badge-neutral' };
+            const mTag =
+              officeMissionFilter === 'all' && m.missionId && missionTitleMap[m.missionId]
+                ? `<span class="badge badge-neutral">${esc(missionTitleMap[m.missionId].slice(0, 14))}</span>`
+                : '';
             return `<div class="chat-msg ${isCeo ? 'from-ceo' : ''} ${m.type === 'approval' ? 'msg-approval' : ''}">
               <span class="agent-avatar" style="background:${esc(m.senderAccent || '#0E6245')}">${esc(m.senderShortCode || 'AI')}</span>
               <div class="chat-body">
                 <div class="chat-meta">
                   <span class="chat-sender">${esc(m.senderName)}</span>
-                  <span>${esc(m.senderRole || '')}</span>
                   <span class="badge ${tb.cls}">${esc(tb.label)}</span>
+                  ${mTag}
                   <span class="mono">${esc(formatTime(m.timestamp))}</span>
                 </div>
                 <div class="chat-bubble">${formatMentions(m.text)}</div>
@@ -1028,6 +1124,39 @@ function renderIntegrationsView() {
   setKeyStatus('status-exaone', p.exaone);
   setKeyStatus('status-exaone-quick', p.exaone);
 
+  // Live server + Gist cloud sync status
+  const syncEl = document.getElementById('status-sync-live');
+  if (syncEl) {
+    const cb = state.cloudBackup || {};
+    if (runtimeMode === 'server') {
+      syncEl.textContent = cb.enabled
+        ? `Render + Gist 동기화됨 (${formatRelativeTime(cb.lastSyncAt)})`
+        : 'Render 서버 연결됨 (Gist 미설정)';
+      syncEl.classList.add('ok');
+    } else {
+      syncEl.textContent = '로컬 단독 모드 (동기화 불가)';
+      syncEl.classList.remove('ok');
+    }
+  }
+
+  // Real live heartbeats for external bots (Muse / Pickle / Cue)
+  const conns = state.agentConnections || {};
+  const setConnBadge = (elId, agentId) => {
+    const el = document.getElementById(elId);
+    if (!el) return;
+    const info = conns[agentId];
+    if (info?.lastSeenAt) {
+      el.textContent = `통신됨 (${formatRelativeTime(info.lastSeenAt)})`;
+      el.className = 'badge badge-green';
+    } else {
+      el.textContent = '통신 기록 없음';
+      el.className = 'badge badge-neutral';
+    }
+  };
+  setConnBadge('status-muse-live', 'agent_muse');
+  setConnBadge('status-pickle-live', 'agent_pickle');
+  setConnBadge('status-cue-live', 'agent_cue');
+
   const tg = s.telegram || {};
   document.getElementById('tg-chat-id').value = tg.chatId || '';
   document.getElementById('tg-polling-enabled').checked = Boolean(tg.pollingEnabled);
@@ -1042,7 +1171,7 @@ function renderIntegrationsView() {
     }
   }
 
-  const endpoint = `${window.location.origin}/api/mcp`;
+  const endpoint = `${getPublicServerOrigin()}/api/mcp`;
   document.getElementById('mcp-endpoint-url').textContent = endpoint;
   document.getElementById('mcp-token-value').textContent = `Bearer ${s.mcpToken || ''}`;
   renderMcpSnippet(endpoint, s.mcpToken || '');
@@ -1215,7 +1344,7 @@ function renderTaskDrawer(task) {
     const prompt = buildAsyncAgentPrompt(
       btn.dataset.asyncKey || 'pickle',
       btn.dataset.asyncLabel || ag.name,
-      window.location.origin,
+      getPublicServerOrigin(),
       state.settings?.mcpToken || ''
     );
     copyText(prompt, `${ag.name} 앱에 붙여넣을 HTTPS 수신함 호출 명령을 복사했습니다!`);
@@ -1226,7 +1355,7 @@ function renderTaskDrawer(task) {
       await navigator.share({
         title: `[CEO Office] ${task.title}`,
         text: isAsyncPullAgent
-          ? buildAsyncAgentPrompt(asyncAgentKey, ag.name, window.location.origin, state.settings?.mcpToken || '')
+          ? buildAsyncAgentPrompt(asyncAgentKey, ag.name, getPublicServerOrigin(), state.settings?.mcpToken || '')
           : task.dispatchPrompt
       });
     } catch {
@@ -1380,7 +1509,7 @@ function bindEvents() {
     });
   });
 
-  // Submit directive
+  // Submit directive (Team Lead decomposes and employees start working automatically!)
   document.getElementById('directive-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const submitBtn = document.getElementById('btn-submit-directive');
@@ -1398,11 +1527,12 @@ function bindEvents() {
       });
       state = res.state;
       selectedMissionId = res.mission.id;
+      officeMissionFilter = res.mission.id;
       document.getElementById('input-mission-title').value = '';
       document.getElementById('input-directive').value = '';
       renderAll();
       switchView('missions');
-      toast(`총괄 팀장이 ${res.tasks.length}개 실무 작업으로 분배했습니다.`);
+      toast(`팀장이 ${res.tasks.length}개 업무로 분배하고 자동 착수했습니다.`);
     } catch (err) {
       toast(err.message, true);
     } finally {
@@ -1424,6 +1554,29 @@ function bindEvents() {
     const target = e.target.closest('button');
     if (!target) return;
 
+    if (target.dataset.officeChannel) {
+      officeMissionFilter = target.dataset.officeChannel;
+      if (officeMissionFilter !== 'all') selectedMissionId = officeMissionFilter;
+      renderOfficeView();
+      refreshIcons();
+      return;
+    }
+
+    if (target.id === 'btn-clear-chat') {
+      const label = officeMissionFilter === 'all' ? '전체 회의실 대화' : '현재 업무 채널 대화';
+      if (!confirm(`${label}를 모두 비울까요?`)) return;
+      try {
+        const qs = officeMissionFilter !== 'all' ? `?missionId=${encodeURIComponent(officeMissionFilter)}` : '';
+        const res = await api(`/api/chat${qs}`, { method: 'DELETE' });
+        state = res.state;
+        renderAll();
+        toast('회의실 대화를 비웠습니다.');
+      } catch (err) {
+        toast(err.message, true);
+      }
+      return;
+    }
+
     if (target.dataset.jumpView) {
       switchView(target.dataset.jumpView);
       return;
@@ -1431,6 +1584,7 @@ function bindEvents() {
 
     if (target.dataset.openMissionBoard) {
       selectedMissionId = target.dataset.openMissionBoard;
+      officeMissionFilter = target.dataset.openMissionBoard;
       renderCommandView();
       switchView('missions');
       refreshIcons();
@@ -1460,13 +1614,14 @@ function bindEvents() {
       } catch (err) {
         toast(err.message, true);
         target.disabled = false;
-        target.textContent = '원터치 승인';
+        target.textContent = '승인';
       }
       return;
     }
 
     if (target.dataset.selectMission) {
       selectedMissionId = target.dataset.selectMission;
+      officeMissionFilter = target.dataset.selectMission;
       renderCommandView();
       refreshIcons();
       return;
@@ -1494,12 +1649,12 @@ function bindEvents() {
     if (target.id === 'btn-run-all-mission') {
       const missionId = target.dataset.missionId;
       target.disabled = true;
-      target.textContent = '팀원 병렬 실행 중…';
+      target.textContent = '병렬 실행 중…';
       try {
         const res = await api(`/api/missions/${missionId}/run-all`, { method: 'POST' });
         state = res.state;
         renderAll();
-        toast(`${res.ranCount}개 업무를 병렬 처리했습니다. 결재 대기 항목을 확인하세요.`);
+        toast(`${res.ranCount}개 업무를 처리했습니다.`);
       } catch (err) {
         toast(err.message, true);
       }
@@ -1507,6 +1662,7 @@ function bindEvents() {
     }
 
     if (target.id === 'btn-open-office-mission') {
+      if (selectedMissionId) officeMissionFilter = selectedMissionId;
       switchView('office');
       renderOfficeView();
       refreshIcons();
@@ -1535,20 +1691,22 @@ function bindEvents() {
 
     if (target.id === 'btn-start-standup' || target.id === 'btn-start-standup-mobile') {
       if (isPlayingLiveSession) return;
-      const missionId = selectedMissionId || state.missions[0]?.id;
+      const missionId =
+        officeMissionFilter !== 'all' ? officeMissionFilter : selectedMissionId || state.missions[0]?.id;
       if (!missionId) {
-        toast('먼저 CEO 홈에서 미션을 생성해 주세요.', true);
+        toast('먼저 홈에서 업무 지시를 생성해 주세요.', true);
         return;
       }
+      officeMissionFilter = missionId;
       setOfficeMobileTab('chat');
       const prevHtml = target.innerHTML;
       target.disabled = true;
-      target.textContent = '회의 소집 중…';
+      target.textContent = '점검 중…';
       try {
         const baseMsgs = [...(state.messages || [])];
         const res = await api(`/api/missions/${missionId}/standup`, { method: 'POST' });
         await playLiveMessages(baseMsgs, res.turns || [], res.state);
-        toast('팀 스탠드업 및 협업 보고가 완료되었습니다.');
+        toast('업무 현황 점검을 완료했습니다.');
       } catch (err) {
         toast(err.message, true);
       } finally {
@@ -1588,13 +1746,16 @@ function bindEvents() {
 
     if (target.id === 'btn-delete-mission') {
       const missionId = target.dataset.missionId;
-      if (!confirm('이 미션과 하위 업무를 삭제할까요?')) return;
+      if (!confirm('이 미션과 관련 회의실 대화를 모두 삭제할까요?')) return;
       try {
         const res = await api(`/api/missions/${missionId}`, { method: 'DELETE' });
         state = res.state;
         selectedMissionId = state.missions[0]?.id || null;
+        if (officeMissionFilter === missionId) {
+          officeMissionFilter = state.missions[0]?.id || 'all';
+        }
         renderAll();
-        toast('미션을 삭제했습니다.');
+        toast('미션과 관련 대화를 삭제했습니다.');
       } catch (err) {
         toast(err.message, true);
       }
@@ -1700,7 +1861,7 @@ function bindEvents() {
     if (target.dataset.mcpTab) {
       currentMcpTab = target.dataset.mcpTab;
       document.querySelectorAll('[data-mcp-tab]').forEach((b) => b.classList.toggle('active', b === target));
-      renderMcpSnippet(`${window.location.origin}/api/mcp`, state.settings.mcpToken || '');
+      renderMcpSnippet(`${getPublicServerOrigin()}/api/mcp`, state.settings.mcpToken || '');
       return;
     }
 
@@ -1711,6 +1872,23 @@ function bindEvents() {
 
     if (target.id === 'btn-copy-raw-token') {
       copyText(state.settings?.mcpToken || '', '순수 토큰(ceo_mcp_...)만 복사했습니다. 보안 폼에 그대로 붙여넣으세요!');
+      return;
+    }
+
+    if (target.id === 'btn-test-pickle-inbox') {
+      const out = document.getElementById('mcp-test-output');
+      out.textContent = '피클 HTTPS 수신함 연결 테스트 중…';
+      try {
+        const tok = encodeURIComponent(state.settings?.mcpToken || '');
+        const res = await api(`/api/agent-inbox/pickle?token=${tok}`);
+        out.textContent = JSON.stringify(res, null, 2);
+        state = await api('/api/state');
+        renderIntegrationsView();
+        toast('피클 HTTPS 수신함이 정상 응답했습니다!');
+      } catch (err) {
+        out.textContent = `오류: ${err.message}`;
+        toast(`수신함 오류: ${err.message}`, true);
+      }
       return;
     }
 
@@ -1848,7 +2026,7 @@ function bindEvents() {
         if (el) el.value = '';
       });
       renderAll();
-      toast('설정을 저장했습니다.');
+      toast('설정을 저장하고 클라우드에 동기화했습니다.');
     } catch (err) {
       toast(err.message, true);
     }
@@ -1860,6 +2038,7 @@ function bindEvents() {
       const res = await api('/api/reset', { method: 'POST' });
       state = res.state;
       selectedMissionId = state.missions[0]?.id || null;
+      officeMissionFilter = state.missions[0]?.id || 'all';
       selectedApprovalId = state.approvals[0]?.id || null;
       renderAll();
       toast('초기 샘플 상태로 복원했습니다.');
@@ -1891,9 +2070,10 @@ function bindEvents() {
       loungeInput.value = '';
       try {
         const baseMsgs = [...(state.messages || [])];
+        const targetMissionId = officeMissionFilter === 'all' ? '' : officeMissionFilter;
         const res = await api('/api/chat/send', {
           method: 'POST',
-          body: JSON.stringify({ text, missionId: selectedMissionId })
+          body: JSON.stringify({ text, missionId: targetMissionId })
         });
         const withCeo = res.ceoMessage ? [...baseMsgs, res.ceoMessage] : baseMsgs;
         await playLiveMessages(withCeo, res.replies || [], res.state);
@@ -1986,7 +2166,7 @@ async function handleRunTask(taskId, btn) {
     if (res.task.status === 'awaiting_approval') {
       toast('사전 작업 완료 — CEO 결재함에 승인 안건이 상신되었습니다.');
     } else {
-      toast(res.live ? '실시간 실행을 완료했습니다.' : '시뮬레이션 실행을 완료했습니다.');
+      toast(res.live ? '실시간 실행을 완료했습니다.' : '전달 준비를 완료했습니다.');
     }
   } catch (err) {
     toast(err.message, true);
@@ -2001,11 +2181,13 @@ async function init() {
   try {
     await detectRuntime();
     state = await api('/api/state');
+    selectedMissionId = state.missions[0]?.id || null;
+    officeMissionFilter = state.missions[0]?.id || 'all';
     const policyEl = document.getElementById('input-cost-policy');
     if (policyEl) policyEl.value = state.settings.defaultCostPolicy || 'free_first';
     renderAll();
 
-    // Auto-sync live external reports from Pickle / Vooy / Muse / Cue when running on Render server
+    // Auto-sync live server state (auto-running EXAONE tasks, Pickle/Cue/Muse reports, PC↔Mobile changes)
     if (runtimeMode === 'server') {
       setInterval(async () => {
         if (isPlayingLiveSession || document.hidden) return;
@@ -2013,22 +2195,22 @@ async function init() {
         if (activeTag === 'INPUT' || activeTag === 'TEXTAREA' || activeTag === 'SELECT') return;
         try {
           const fresh = await api('/api/state');
-          const prevMsgLen = (state?.messages || []).length;
-          const prevAprLen = (state?.approvals || []).filter((a) => a.status === 'pending').length;
-          const newMsgLen = (fresh?.messages || []).length;
-          const newAprLen = (fresh?.approvals || []).filter((a) => a.status === 'pending').length;
-          if (newMsgLen !== prevMsgLen || newAprLen !== prevAprLen || (fresh?.logs || []).length !== (state?.logs || []).length) {
+          const prevSig = `${(state?.messages || []).length}|${(state?.tasks || []).map((t) => t.status).join(',')}|${(state?.approvals || []).filter((a) => a.status === 'pending').length}|${(state?.logs || []).length}`;
+          const newSig = `${(fresh?.messages || []).length}|${(fresh?.tasks || []).map((t) => t.status).join(',')}|${(fresh?.approvals || []).filter((a) => a.status === 'pending').length}|${(fresh?.logs || []).length}`;
+          if (newSig !== prevSig) {
+            const prevMsgLen = (state?.messages || []).length;
+            const newMsgLen = (fresh?.messages || []).length;
             state = fresh;
             renderAll();
             if (newMsgLen > prevMsgLen) {
               const latest = fresh.messages[fresh.messages.length - 1];
-              toast(`${latest.senderName} 님의 새 보고가 회의실에 도착했습니다!`);
+              toast(`${latest.senderName} 님의 새 보고가 도착했습니다.`);
             }
           }
         } catch {
           // ignore transient network glitches
         }
-      }, 8000);
+      }, 5000);
     }
   } catch (err) {
     toast(`초기 데이터 로드 실패: ${err.message}`, true);

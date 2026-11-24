@@ -497,6 +497,13 @@ export function loadDb() {
     }
     if (!Array.isArray(parsed.messages)) {
       parsed.messages = def.messages;
+    } else if (Array.isArray(parsed.missions)) {
+      // Remove orphaned messages belonging to deleted missions (e.g. deleted sample mission)
+      const validMissionIds = new Set(parsed.missions.map((m) => m.id));
+      parsed.messages = parsed.messages.filter((m) => !m.missionId || validMissionIds.has(m.missionId));
+    }
+    if (!parsed.agentConnections || typeof parsed.agentConnections !== 'object') {
+      parsed.agentConnections = {};
     }
     return parsed;
   } catch {
@@ -577,7 +584,6 @@ export async function initCloudPersistence() {
           if (parsed && parsed.settings && Array.isArray(parsed.agents)) {
             // Preserve current environment API keys, Telegram credentials & permanent token if present
             if (process.env.EXAONE_API_KEY) parsed.settings.providers.exaone.apiKey = process.env.EXAONE_API_KEY;
-            if (process.env.GEMINI_API_KEY) parsed.settings.providers.gemini.apiKey = process.env.GEMINI_API_KEY;
             if (process.env.ANTHROPIC_API_KEY) parsed.settings.providers.claude.apiKey = process.env.ANTHROPIC_API_KEY;
             if (process.env.TELEGRAM_BOT_TOKEN) parsed.settings.telegram.botToken = process.env.TELEGRAM_BOT_TOKEN;
             if (process.env.TELEGRAM_CHAT_ID) parsed.settings.telegram.chatId = process.env.TELEGRAM_CHAT_ID;
@@ -623,11 +629,10 @@ export async function initCloudPersistence() {
   }
 }
 
-function scheduleGistBackup(serialized) {
-  if (!isGistTokenSet() || !activeGistId) return;
-  if (gistSyncTimer) clearTimeout(gistSyncTimer);
-  gistSyncTimer = setTimeout(() => {
-    fetch(`https://api.github.com/gists/${encodeURIComponent(activeGistId)}`, {
+async function patchGistContent(serialized) {
+  if (!isGistTokenSet() || !activeGistId) return false;
+  try {
+    const res = await fetch(`https://api.github.com/gists/${encodeURIComponent(activeGistId)}`, {
       method: 'PATCH',
       headers: getGistHeaders(),
       body: JSON.stringify({
@@ -635,15 +640,36 @@ function scheduleGistBackup(serialized) {
           [GIST_FILENAME]: { content: serialized }
         }
       })
-    })
-      .then((res) => {
-        if (res.ok) {
-          cloudBackupState.lastSyncAt = new Date().toISOString();
-          cloudBackupState.error = '';
-        }
-      })
-      .catch(() => {});
-  }, 1500);
+    });
+    if (res.ok) {
+      cloudBackupState.lastSyncAt = new Date().toISOString();
+      cloudBackupState.error = '';
+      return true;
+    }
+    cloudBackupState.error = `Gist sync HTTP ${res.status}`;
+    return false;
+  } catch (err) {
+    cloudBackupState.error = err.message;
+    return false;
+  }
+}
+
+function scheduleGistBackup(serialized) {
+  if (!isGistTokenSet() || !activeGistId) return;
+  if (gistSyncTimer) clearTimeout(gistSyncTimer);
+  gistSyncTimer = setTimeout(() => {
+    patchGistContent(serialized);
+  }, 1000);
+}
+
+export async function flushCloudBackup(db) {
+  if (!isGistTokenSet() || !activeGistId) return false;
+  if (gistSyncTimer) {
+    clearTimeout(gistSyncTimer);
+    gistSyncTimer = null;
+  }
+  const serialized = JSON.stringify(db || loadDb(), null, 2);
+  return patchGistContent(serialized);
 }
 
 export function saveDb(db) {
@@ -653,6 +679,17 @@ export function saveDb(db) {
   const serialized = JSON.stringify(db, null, 2);
   fs.writeFileSync(DB_PATH, serialized, 'utf8');
   scheduleGistBackup(serialized);
+}
+
+export function recordAgentHeartbeat(db, agentId, action = 'ping') {
+  if (!agentId) return;
+  if (!db.agentConnections || typeof db.agentConnections !== 'object') {
+    db.agentConnections = {};
+  }
+  db.agentConnections[agentId] = {
+    lastSeenAt: new Date().toISOString(),
+    lastAction: action
+  };
 }
 
 export function appendLog(db, actor, message, level = 'info') {
@@ -702,5 +739,6 @@ export function sanitizeStateForClient(db) {
     clone.settings.telegram.botTokenPreview = rawTg ? `${rawTg.slice(0, 6)}••••${rawTg.slice(-4)}` : '';
     delete clone.settings.telegram.botToken;
   }
+  clone.cloudBackup = getCloudPersistenceStatus();
   return clone;
 }
