@@ -120,6 +120,10 @@
                   <button type="button" class="pill-chip" data-preset="dev">개발</button>
                 </div>
                 <div class="composer-send-group">
+                  <select id="input-mission-mode" class="assignee-select" aria-label="업무 유형">
+                    <option value="one_off">단발 업무</option>
+                    <option value="project">지속 프로젝트</option>
+                  </select>
                   <button type="button" class="icon-btn voice-btn" id="btn-voice-directive" title="음성 지시" aria-label="음성 지시">
                     <i data-lucide="mic" class="icon-sm"></i>
                   </button>
@@ -418,7 +422,7 @@
                   </div>
                 </div>
                 <div class="form-row-two" style="margin-top:12px;">
-                  <label class="field"><span class="field-label">API 키</span><input type="password" id="key-gemini" placeholder="AIza…" autocomplete="off" /></label>
+                  <label class="field"><span class="field-label">API 키</span><input type="password" id="key-gemini" placeholder="AQ.…" autocomplete="off" /></label>
                   <label class="field">
                     <span class="field-label">모델</span>
                     <select id="model-gemini">
@@ -629,6 +633,6 @@
   </nav>
 
   <div class="toast-region" id="toast-region" aria-live="polite"></div>
-  <script type="module" src="./app.js?v=20261124o"></script>
+  <script type="module" src="./app.js?v=20261124p"></script>
 </body>
 </html>

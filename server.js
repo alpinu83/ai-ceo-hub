@@ -24,6 +24,7 @@ import {
   buildDispatchPrompt,
   synthesizeMissionReport,
   createApprovalForTask,
+  proposeNextProjectPhase,
   testProviderConnection,
   notifyWebhook,
   generateTeamChatReplies,
@@ -72,12 +73,13 @@ function updateMissionStatus(db, missionId) {
   }
 }
 
-async function createMissionInDb({ title = '', directive, domain = 'business', costPolicy }) {
+async function createMissionInDb({ title = '', directive, domain = 'business', costPolicy, mode = 'one_off' }) {
   const db = loadDb();
   const safeDomain = ['business', 'life', 'content', 'dev'].includes(domain) ? domain : 'business';
   const safePolicy = ['free_first', 'balanced', 'max_quality'].includes(costPolicy)
     ? costPolicy
     : db.settings.defaultCostPolicy;
+  const safeMode = mode === 'project' ? 'project' : 'one_off';
 
   const autoTitle =
     String(title || '').trim() ||
@@ -99,6 +101,9 @@ async function createMissionInDb({ title = '', directive, domain = 'business', c
     directive,
     domain: safeDomain,
     costPolicy: safePolicy,
+    mode: safeMode,
+    phase: 1,
+    phaseHistory: [],
     leadAgentId: plan.leadAgentId,
     status: 'in_progress',
     createdAt: now,
@@ -112,6 +117,7 @@ async function createMissionInDb({ title = '', directive, domain = 'business', c
     const taskObj = {
       id: uid('tsk'),
       missionId: mission.id,
+      phase: 1,
       title: t.title,
       description: t.description,
       assigneeId: ag.id,
@@ -301,10 +307,184 @@ async function autoStartLiveMissionTasks(missionId) {
       });
       saveDb(finalDb);
       await flushCloudBackup(finalDb);
+
+      // Continuous Project mode: Team Lead automatically analyzes results and proposes the next phase for CEO approval
+      if (freshMission.mode === 'project') {
+        await submitNextPhaseProposal(missionId);
+      }
     }
   } catch {
     // non-fatal
   }
+}
+
+async function submitNextPhaseProposal(missionId) {
+  const db = loadDb();
+  const mission = db.missions.find((m) => m.id === missionId);
+  if (!mission) return { ok: false, error: '미션을 찾을 수 없습니다.' };
+
+  const currentPhase = Number(mission.phase) || 1;
+  const nextPhase = currentPhase + 1;
+  const existing = db.approvals.find(
+    (a) =>
+      a.missionId === missionId &&
+      a.kind === 'next_phase' &&
+      a.status === 'pending' &&
+      Number(a.proposedPhase) === nextPhase
+  );
+  if (existing) {
+    return { ok: true, approval: existing, alreadyPending: true, db };
+  }
+
+  const missionTasks = db.tasks.filter((t) => t.missionId === missionId);
+  const proposal = await proposeNextProjectPhase({
+    mission,
+    tasks: missionTasks,
+    agents: db.agents,
+    settings: db.settings
+  });
+
+  const leadId = mission.leadAgentId || 'agent_gemini_neon';
+  const lead = db.agents.find((a) => a.id === leadId) || db.agents[0];
+  const now = new Date().toISOString();
+  const stepsText = (proposal.suggestedSteps || []).map((s, i) => `${i + 1}. ${s}`).join('\n');
+
+  const apr = {
+    id: uid('apr'),
+    missionId: mission.id,
+    taskId: '',
+    kind: 'next_phase',
+    proposedPhase: proposal.nextPhase,
+    proposedDirective: proposal.nextDirective,
+    proposedSteps: proposal.suggestedSteps || [],
+    agentId: leadId,
+    title: `[Phase ${proposal.nextPhase} 제안] ${proposal.nextPhaseTitle}`,
+    category: '다음 단계 제안',
+    riskLevel: 'low',
+    estimatedCostKRW: 0,
+    depositKRW: 0,
+    summary: `${proposal.rationale}\n\n기대 효과: ${proposal.expectedImpact}`,
+    proposedAction: `승인 시 총괄 팀장(${lead?.name || 'Gemini 4 Neon'})이 Phase ${proposal.nextPhase} 작업을 자동 분배·착수합니다:\n${stepsText}`,
+    status: 'pending',
+    ceoNote: '',
+    createdAt: now,
+    decidedAt: null
+  };
+
+  db.approvals.unshift(apr);
+  mission.status = 'waiting_approval';
+
+  appendLog(
+    db,
+    `${lead?.name || 'Gemini 4 Neon'} (총괄 팀장)`,
+    `프로젝트 "${mission.title}" Phase ${proposal.nextPhase} 후속 추진안을 CEO 결재함에 제안했습니다.`,
+    'approval'
+  );
+  appendMessage(db, {
+    missionId: mission.id,
+    senderId: leadId,
+    senderName: lead?.name || 'Gemini 4 Neon',
+    senderRole: lead?.roleTitle || '총괄 팀장',
+    senderShortCode: lead?.shortCode || 'GN',
+    senderAccent: lead?.accent || '#0E6245',
+    targetAgentId: 'ceo',
+    statusText: `Phase ${proposal.nextPhase} 제안`,
+    type: 'approval',
+    text: `@대표님 Phase ${currentPhase} 결과를 검토하고 다음 단계(Phase ${proposal.nextPhase}: ${proposal.nextPhaseTitle}) 추진안을 결재함에 올렸습니다. 승인해 주시면 바로 착수하겠습니다.`
+  });
+
+  saveDb(db);
+  await flushCloudBackup(db);
+  notifyAllApprovalChannels(db.settings, apr, lead?.name || 'Gemini 4 Neon');
+  return { ok: true, approval: apr, proposal, db };
+}
+
+async function launchNextProjectPhase(missionId, nextDirective, ceoNote = '') {
+  const db = loadDb();
+  const mission = db.missions.find((m) => m.id === missionId);
+  if (!mission) return null;
+
+  const prevPhase = Number(mission.phase) || 1;
+  const nextPhase = prevPhase + 1;
+  const now = new Date().toISOString();
+
+  mission.mode = 'project';
+  mission.phaseHistory = Array.isArray(mission.phaseHistory) ? mission.phaseHistory : [];
+  if (mission.finalReport) {
+    mission.phaseHistory.unshift({
+      phase: prevPhase,
+      report: mission.finalReport,
+      completedAt: now
+    });
+  }
+  mission.phase = nextPhase;
+  mission.finalReport = '';
+  mission.status = 'in_progress';
+
+  const combinedDirective = ceoNote
+    ? `${nextDirective}\n[CEO 승인 메모 반영] ${ceoNote}`
+    : nextDirective;
+
+  const plan = await decomposeDirective({
+    directive: combinedDirective,
+    title: `${mission.title} (Phase ${nextPhase})`,
+    domain: mission.domain,
+    costPolicy: mission.costPolicy,
+    agents: db.agents,
+    settings: db.settings
+  });
+
+  const agentMap = Object.fromEntries(db.agents.map((a) => [a.id, a]));
+  const newTasks = plan.tasks.map((t) => {
+    const ag = agentMap[t.assigneeId] || db.agents[0];
+    const taskObj = {
+      id: uid('tsk'),
+      missionId: mission.id,
+      phase: nextPhase,
+      title: t.title,
+      description: t.description,
+      assigneeId: ag.id,
+      domain: t.domain || mission.domain,
+      status: ag.connectionMode === 'bridge' ? 'awaiting_bridge' : 'queued',
+      requiresApproval: Boolean(t.requiresApproval),
+      estimatedCostKRW: Number(t.estimatedCostKRW) || 0,
+      dispatchPrompt: '',
+      output: '',
+      executionModeUsed: '',
+      createdAt: now,
+      updatedAt: now
+    };
+    taskObj.dispatchPrompt = buildDispatchPrompt(ag, taskObj, mission);
+    return taskObj;
+  });
+
+  db.tasks.unshift(...newTasks);
+  mission.leadPlanSummary = plan.planSummary;
+
+  const lead = agentMap[mission.leadAgentId || 'agent_gemini_neon'];
+  appendLog(
+    db,
+    `${lead?.name || 'Gemini 4 Neon'} (총괄 팀장)`,
+    `CEO 승인을 받아 "${mission.title}" Phase ${nextPhase} (${newTasks.length}개 실무)에 자동 착수했습니다.`,
+    'success'
+  );
+  appendMessage(db, {
+    missionId: mission.id,
+    senderId: lead?.id || 'agent_gemini_neon',
+    senderName: lead?.name || 'Gemini 4 Neon',
+    senderRole: lead?.roleTitle || '총괄 팀장',
+    senderShortCode: lead?.shortCode || 'GN',
+    senderAccent: lead?.accent || '#0E6245',
+    targetAgentId: newTasks[0]?.assigneeId || null,
+    statusText: `Phase ${nextPhase} 착수`,
+    type: 'plan',
+    text: `CEO 승인으로 Phase ${nextPhase}를 시작합니다! ${newTasks.map((t) => `@${agentMap[t.assigneeId]?.name || '팀원'} → "${t.title}"`).join(' / ')}`
+  });
+
+  saveDb(db);
+  await flushCloudBackup(db);
+  autoStartLiveMissionTasks(mission.id).catch(() => {});
+  return { mission, newTasks, db };
 }
 
 function applyApprovalDecisionInDb(aprId, decision, ceoNote = '') {
@@ -373,7 +553,13 @@ function getTelegramCallbacks() {
       saveDb(db);
       await flushCloudBackup(db);
     },
-    onDecision: async (aprId, decision, note) => applyApprovalDecisionInDb(aprId, decision, note),
+    onDecision: async (aprId, decision, note) => {
+      const res = applyApprovalDecisionInDb(aprId, decision, note);
+      if (res.ok && res.approval?.kind === 'next_phase' && decision === 'approved' && res.approval.proposedDirective) {
+        await launchNextProjectPhase(res.approval.missionId, res.approval.proposedDirective, note);
+      }
+      return res;
+    },
     onStatus: async () => {
       const db = loadDb();
       const pending = db.approvals.filter((a) => a.status === 'pending').length;
@@ -1031,10 +1217,55 @@ app.post('/api/missions', async (c) => {
     title: body.title,
     directive,
     domain: body.domain,
-    costPolicy: body.costPolicy
+    costPolicy: body.costPolicy,
+    mode: body.mode
   });
 
   return c.json({ mission, tasks, state: sanitizeStateForClient(db) }, 201);
+});
+
+app.patch('/api/missions/:id/mode', async (c) => {
+  const missionId = c.req.param('id');
+  const body = await c.req.json().catch(() => ({}));
+  const nextMode = body.mode === 'project' ? 'project' : 'one_off';
+  const db = loadDb();
+  const mission = db.missions.find((m) => m.id === missionId);
+  if (!mission) return c.json({ error: '미션을 찾을 수 없습니다.' }, 404);
+
+  mission.mode = nextMode;
+  if (!mission.phase) mission.phase = 1;
+  if (!Array.isArray(mission.phaseHistory)) mission.phaseHistory = [];
+  appendLog(
+    db,
+    'CEO',
+    `"${mission.title}"을(를) ${nextMode === 'project' ? '지속 프로젝트' : '단발 업무'}로 전환했습니다.`,
+    'info'
+  );
+  saveDb(db);
+  await flushCloudBackup(db);
+  return c.json({ mission, state: sanitizeStateForClient(db) });
+});
+
+app.post('/api/missions/:id/propose-next', async (c) => {
+  const missionId = c.req.param('id');
+  const db = loadDb();
+  const mission = db.missions.find((m) => m.id === missionId);
+  if (!mission) return c.json({ error: '미션을 찾을 수 없습니다.' }, 404);
+
+  if (mission.mode !== 'project') {
+    mission.mode = 'project';
+    if (!mission.phase) mission.phase = 1;
+    if (!Array.isArray(mission.phaseHistory)) mission.phaseHistory = [];
+    saveDb(db);
+  }
+
+  const res = await submitNextPhaseProposal(missionId);
+  if (!res.ok) return c.json({ error: res.error || '제안 생성 실패' }, 400);
+  return c.json({
+    approval: res.approval,
+    alreadyPending: Boolean(res.alreadyPending),
+    state: sanitizeStateForClient(res.db)
+  });
 });
 
 // Run all queued/non-completed tasks in a mission in parallel
@@ -1286,8 +1517,19 @@ app.post('/api/approvals/:id/decide', async (c) => {
   const body = await c.req.json();
   const res = applyApprovalDecisionInDb(aprId, body.decision, body.ceoNote);
   if (!res.ok) return c.json({ error: res.error }, res.status || 400);
-  await flushCloudBackup(res.db);
-  return c.json({ approval: res.approval, state: sanitizeStateForClient(res.db) });
+
+  let latestDb = res.db;
+  if (res.approval?.kind === 'next_phase' && body.decision === 'approved' && res.approval.proposedDirective) {
+    const launched = await launchNextProjectPhase(
+      res.approval.missionId,
+      res.approval.proposedDirective,
+      body.ceoNote
+    );
+    if (launched?.db) latestDb = launched.db;
+  } else {
+    await flushCloudBackup(latestDb);
+  }
+  return c.json({ approval: res.approval, state: sanitizeStateForClient(latestDb) });
 });
 
 // Agents CRUD

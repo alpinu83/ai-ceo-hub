@@ -201,9 +201,45 @@ async function runTests() {
     assert.equal(pushKeyRes.ok, true, 'push public-key must return ok');
     assert.ok(pushKeyRes.publicKey && pushKeyRes.publicKey.length > 40, 'VAPID publicKey must be generated');
 
+    // 13. Continuous Project loop (Phase 1 -> Team Lead proposes Phase 2 -> CEO approves -> Phase 2 tasks launched)
+    const projCreated = await (
+      await fetch(`${BASE}/api/missions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: '지속 성장 프로젝트 테스트',
+          domain: 'business',
+          mode: 'project',
+          directive: '웹사이트 트래픽과 수익을 단계적으로 키우는 장기 전략을 실행해줘'
+        })
+      })
+    ).json();
+    assert.equal(projCreated.mission.mode, 'project', 'mission mode must be project');
+    assert.equal(projCreated.mission.phase, 1, 'initial phase must be 1');
+
+    const propRes = await (
+      await fetch(`${BASE}/api/missions/${projCreated.mission.id}/propose-next`, { method: 'POST' })
+    ).json();
+    assert.equal(propRes.approval?.kind, 'next_phase', 'proposal approval must be kind=next_phase');
+    assert.equal(propRes.approval?.proposedPhase, 2, 'proposedPhase must be 2');
+
+    const approvePhase2 = await (
+      await fetch(`${BASE}/api/approvals/${propRes.approval.id}/decide`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ decision: 'approved', ceoNote: '광고비 0원 조건 유지해줘' })
+      })
+    ).json();
+    const updatedProj = approvePhase2.state.missions.find((m) => m.id === projCreated.mission.id);
+    assert.equal(updatedProj.phase, 2, 'approving next_phase must advance project to phase 2');
+    const phase2Tasks = approvePhase2.state.tasks.filter(
+      (t) => t.missionId === projCreated.mission.id && Number(t.phase) === 2
+    );
+    assert.ok(phase2Tasks.length >= 2, 'Phase 2 must automatically create follow-up tasks');
+
     // Clean reset after tests
     await fetch(`${BASE}/api/reset`, { method: 'POST' });
-    console.log('✅ All AI CEO Hub E2E tests (REST + Auto-Start + Team Lead Chat + Official MCP SDK + Async Pickle HTTPS Inbox + Heartbeat + Cascade Delete + Web Push + Telegram) passed!');
+    console.log('✅ All AI CEO Hub E2E tests (REST + Continuous Project Loop + Team Lead Chat + Official MCP SDK + Async Pickle HTTPS Inbox + Heartbeat + Cascade Delete + Web Push + Telegram) passed!');
   } finally {
     child.kill('SIGTERM');
   }

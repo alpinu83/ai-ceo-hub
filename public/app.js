@@ -471,26 +471,45 @@ function renderActiveMission(mission) {
   const runnableCount = tasks.filter((t) => t.status === 'queued' || t.status === 'awaiting_bridge').length;
   const pct = tasks.length ? Math.round((completed / tasks.length) * 100) : 0;
   const lead = getAgent(mission.leadAgentId);
+  const isProject = mission.mode === 'project';
+  const currentPhase = Number(mission.phase) || 1;
+  const pendingNextPhase = state.approvals.find(
+    (a) => a.missionId === mission.id && a.kind === 'next_phase' && a.status === 'pending'
+  );
 
   const missionHeader = `
     <div class="sheet mission-header-sheet">
       <div class="sheet-header compact">
         <div style="min-width:0;">
           <div class="mission-meta-row">
-            <span class="badge badge-neutral">${esc(DOMAIN_LABELS[mission.domain] || mission.domain)}</span>
+            ${
+              isProject
+                ? `<span class="badge badge-blue">지속 프로젝트 · Phase ${currentPhase}</span>`
+                : `<span class="badge badge-neutral">${esc(DOMAIN_LABELS[mission.domain] || mission.domain)}</span>`
+            }
             <span class="badge badge-green">총괄 팀장: ${esc(lead?.name || '팀장')}</span>
           </div>
           <h2 class="sheet-title">${esc(mission.title)}</h2>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;">
           ${
+            pendingNextPhase
+              ? `<button type="button" class="btn btn-amber btn-sm" data-jump-view="approvals">Phase ${pendingNextPhase.proposedPhase} 제안 결재</button>`
+              : isProject
+                ? `<button type="button" class="btn btn-primary btn-sm" id="btn-propose-next-phase" data-mission-id="${esc(mission.id)}">다음 단계 제안</button>`
+                : ''
+          }
+          ${
             runnableCount > 0
-              ? `<button type="button" class="btn btn-primary btn-sm" id="btn-run-all-mission" data-mission-id="${esc(mission.id)}">
+              ? `<button type="button" class="btn ${isProject ? 'btn-ghost' : 'btn-primary'} btn-sm" id="btn-run-all-mission" data-mission-id="${esc(mission.id)}">
                   <i data-lucide="play" class="icon-xs"></i>
                   <span>팀장 일괄 추진 (${runnableCount})</span>
                 </button>`
               : ''
           }
+          <button type="button" class="btn btn-ghost btn-sm" id="btn-toggle-project-mode" data-mission-id="${esc(mission.id)}" data-next-mode="${isProject ? 'one_off' : 'project'}">
+            ${isProject ? '단발 전환' : '프로젝트 전환'}
+          </button>
           <button type="button" class="btn btn-ghost btn-sm" id="btn-open-office-mission">
             <i data-lucide="messages-square" class="icon-xs"></i>
             <span>회의실</span>
@@ -513,7 +532,7 @@ function renderActiveMission(mission) {
   const bodyHtml =
     missionViewMode === 'report'
       ? renderMissionReportAndFlow(mission, lead, tasks)
-      : renderUnifiedTasksView(tasks);
+      : renderUnifiedTasksView(tasks, mission);
 
   container.innerHTML = `${missionHeader}${bodyHtml}`;
 }
@@ -687,7 +706,8 @@ async function playLiveMessages(baseMessages, newTurns, finalState) {
   renderAll();
 }
 
-function renderUnifiedTasksView(tasks) {
+function renderUnifiedTasksView(tasks, mission = null) {
+  const isProject = mission?.mode === 'project';
   const filters = [
     { key: 'all', label: '전체', match: () => true },
     { key: 'active', label: '추진 중', match: (t) => t.status === 'queued' || t.status === 'running' },
@@ -738,6 +758,7 @@ function renderUnifiedTasksView(tasks) {
             <p class="task-desc">${esc(t.description)}</p>
           </div>
           <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;align-items:flex-start;">
+            ${isProject ? `<span class="badge badge-neutral">P${Number(t.phase) || 1}</span>` : ''}
             ${t.requiresApproval && t.status !== 'awaiting_approval' ? '<span class="badge badge-amber">CEO 결재</span>' : ''}
             <span class="badge ${st.cls}">${esc(st.label)}</span>
           </div>
@@ -819,9 +840,11 @@ function renderMissionReportAndFlow(mission, lead, tasks) {
       </div>
       <div class="flow-step-title">
         ${
-          approvalTasks.length > 0
-            ? `중대 의사결정 ${approvalTasks.length}건만 총괄 팀장 검토 후 CEO 결재함 상신`
-            : '전 항목 일반 실무 — 총괄 팀장 전결 자동 처리'
+          mission.mode === 'project'
+            ? `지속 프로젝트 (Phase ${Number(mission.phase) || 1}) — 단계 완료 시 팀장이 다음 단계 전략을 결재함에 자동 제안`
+            : approvalTasks.length > 0
+              ? `중대 의사결정 ${approvalTasks.length}건만 총괄 팀장 검토 후 CEO 결재함 상신`
+              : '전 항목 일반 실무 — 총괄 팀장 전결 자동 처리'
         }
       </div>
     </div>
@@ -830,7 +853,7 @@ function renderMissionReportAndFlow(mission, lead, tasks) {
   const reportHtml = mission.finalReport
     ? `<div class="sheet final-report-sheet">
         <div class="sheet-header compact">
-          <h3 class="sheet-title">총괄 팀장 최종 임원 보고서</h3>
+          <h3 class="sheet-title">총괄 팀장 최종 임원 보고서${mission.mode === 'project' ? ` (Phase ${Number(mission.phase) || 1})` : ''}</h3>
           <div style="display:flex;gap:6px;flex-wrap:wrap;">
             <button type="button" class="btn btn-ghost btn-sm" id="btn-synthesize-report" data-mission-id="${esc(mission.id)}">갱신</button>
             <button type="button" class="btn btn-ghost btn-sm" id="btn-copy-final-report">복사</button>
@@ -844,10 +867,25 @@ function renderMissionReportAndFlow(mission, lead, tasks) {
           <h3 class="sheet-title">총괄 팀장 최종 임원 보고서</h3>
           <button type="button" class="btn btn-primary btn-sm" id="btn-synthesize-report" data-mission-id="${esc(mission.id)}">보고서 생성</button>
         </div>
-        <p class="form-hint" style="margin:0;">내부 업무가 끝나면 자동 생성되며, 위 버튼으로 지금 바로 취합할 수도 있습니다.</p>
+        <p class="form-hint" style="margin:0;">내부 업무가 끝나면 자동 생성되며, 위 버튼으로 바로 취합할 수도 있습니다.</p>
       </div>`;
 
-  return `${flowHtml}${reportHtml}`;
+  const historyHtml =
+    Array.isArray(mission.phaseHistory) && mission.phaseHistory.length > 0
+      ? `<div class="sheet final-report-sheet">
+          <h3 class="sheet-title" style="margin-bottom:10px;">이전 단계 보고서 이력</h3>
+          ${mission.phaseHistory
+            .map(
+              (h) => `<details style="margin-bottom:8px;">
+                <summary style="cursor:pointer;font-weight:700;font-size:13.5px;">Phase ${h.phase} 완료 보고 (${esc(formatTime(h.completedAt))})</summary>
+                <div class="markdown-body" style="margin-top:8px;">${renderMarkdown(h.report || '')}</div>
+              </details>`
+            )
+            .join('')}
+        </div>`
+      : '';
+
+  return `${flowHtml}${reportHtml}${historyHtml}`;
 }
 
 function renderApprovalsView() {
@@ -1536,6 +1574,7 @@ function bindEvents() {
     const title = document.getElementById('input-mission-title').value.trim();
     const domain = document.getElementById('input-mission-domain').value;
     const costPolicy = document.getElementById('input-cost-policy').value;
+    const mode = document.getElementById('input-mission-mode')?.value || 'one_off';
     if (!directive) return;
 
     isSubmittingDirective = true;
@@ -1544,7 +1583,7 @@ function bindEvents() {
     try {
       const res = await api('/api/missions', {
         method: 'POST',
-        body: JSON.stringify({ title, directive, domain, costPolicy })
+        body: JSON.stringify({ title, directive, domain, costPolicy, mode })
       });
       state = res.state;
       selectedMissionId = res.mission.id;
@@ -1672,6 +1711,50 @@ function bindEvents() {
 
     if (target.dataset.runTask) {
       await handleRunTask(target.dataset.runTask, target);
+      return;
+    }
+
+    if (target.id === 'btn-toggle-project-mode') {
+      const missionId = target.dataset.missionId;
+      const nextMode = target.dataset.nextMode || 'project';
+      target.disabled = true;
+      try {
+        const res = await api(`/api/missions/${missionId}/mode`, {
+          method: 'PATCH',
+          body: JSON.stringify({ mode: nextMode })
+        });
+        state = res.state;
+        renderAll();
+        toast(nextMode === 'project' ? '지속 프로젝트로 전환했습니다.' : '단발 업무로 전환했습니다.');
+      } catch (err) {
+        toast(err.message, true);
+        target.disabled = false;
+      }
+      return;
+    }
+
+    if (target.id === 'btn-propose-next-phase') {
+      const missionId = target.dataset.missionId;
+      target.disabled = true;
+      target.textContent = '다음 단계 구상 중…';
+      try {
+        const res = await api(`/api/missions/${missionId}/propose-next`, { method: 'POST' });
+        state = res.state;
+        if (res.approval?.id) selectedApprovalId = res.approval.id;
+        renderAll();
+        switchView('approvals');
+        renderApprovalsView();
+        refreshIcons();
+        toast(
+          res.alreadyPending
+            ? '이미 결재 대기 중인 다음 단계 제안이 있습니다.'
+            : '총괄 팀장이 다음 단계 제안을 결재함에 올렸습니다.'
+        );
+      } catch (err) {
+        toast(err.message, true);
+        target.disabled = false;
+        target.textContent = '다음 단계 제안';
+      }
       return;
     }
 

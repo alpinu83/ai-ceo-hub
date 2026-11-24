@@ -643,6 +643,83 @@ export function createApprovalForTask(task, agent, mission, reason, proposedActi
   };
 }
 
+export async function proposeNextProjectPhase({ mission, tasks, agents, settings }) {
+  const currentPhase = Number(mission?.phase) || 1;
+  const nextPhase = currentPhase + 1;
+  const leadAgent = agents.find((a) => a.id === (mission?.leadAgentId || 'agent_gemini_neon')) || agents[0];
+  const agentMap = Object.fromEntries(agents.map((a) => [a.id, a]));
+
+  const phaseTasks = tasks.filter((t) => (Number(t.phase) || 1) === currentPhase);
+  const targetTasks = phaseTasks.length > 0 ? phaseTasks : tasks;
+  const digest = targetTasks
+    .map((t, i) => {
+      const ag = agentMap[t.assigneeId];
+      const snippet = (t.output || '(진행 중)').replace(/\s+/g, ' ').slice(0, 260);
+      return `${i + 1}. [${t.title}] (${ag?.name || '팀원'} · ${t.status}): ${snippet}`;
+    })
+    .join('\n');
+
+  const resolved = resolveLanguageModel(leadAgent, settings) || resolveLiveBackendModel(settings);
+  if (resolved) {
+    try {
+      const schema = z.object({
+        nextPhaseTitle: z.string().min(4),
+        rationale: z.string().min(10),
+        expectedImpact: z.string().min(6),
+        nextDirective: z.string().min(15),
+        suggestedSteps: z.array(z.string()).min(2).max(5)
+      });
+
+      const system = `당신은 AI 조직의 총괄 팀장(${leadAgent.name})입니다.
+지속 프로젝트의 Phase ${currentPhase} 결과를 분석하고, 목표를 한 단계 더 진전시킬 **Phase ${nextPhase} 후속 추진 제안서**를 작성하세요.
+- 이미 완료된 리서치/초안을 반복하지 말고, 실제 성과·전환·개선·확장으로 이어지는 구체적 다음 단계를 제안하세요.
+- nextDirective는 CEO가 승인하는 즉시 팀원들에게 분배해 자동 실행할 수 있는 명확한 한국어 지시문으로 작성하세요.`;
+
+      const prompt = `프로젝트명: ${mission.title}
+원래 목표: ${mission.directive}
+현재 완료 단계: Phase ${currentPhase}
+[Phase ${currentPhase} 결과 요약]
+${digest}
+${mission.finalReport ? `\n[임원 보고서 발췌]\n${mission.finalReport.slice(0, 700)}` : ''}`;
+
+      const { object } = await generateObject({
+        model: resolved.model,
+        schema,
+        system,
+        prompt
+      });
+
+      return {
+        nextPhase,
+        nextPhaseTitle: object.nextPhaseTitle.trim(),
+        rationale: object.rationale.trim(),
+        expectedImpact: object.expectedImpact.trim(),
+        nextDirective: object.nextDirective.trim(),
+        suggestedSteps: object.suggestedSteps.map((s) => s.trim()).filter(Boolean),
+        usedLiveApi: true
+      };
+    } catch {
+      // Fall through to deterministic next-phase proposal
+    }
+  }
+
+  const nextPhaseTitle = `Phase ${nextPhase}: ${mission.title} 고도화 · 실행 확장`;
+  const suggestedSteps = [
+    `Phase ${currentPhase} 산출물 기반 핵심 개선점 및 우선순위 3가지 확정`,
+    `실제 트래픽·성과·전환을 끌어올릴 실행 콘텐츠 및 기능 구체화`,
+    `성과 측정 지표(KPI) 점검 및 다음 라운드 자동화 루틴 설계`
+  ];
+  return {
+    nextPhase,
+    nextPhaseTitle,
+    rationale: `Phase ${currentPhase} 기본 작업(${targetTasks.length}건)이 마무리되었습니다. 일회성으로 끝내지 않고 실제 성과로 연결하기 위해 검증·고도화 단계(Phase ${nextPhase}) 추진을 제안합니다.`,
+    expectedImpact: `Phase ${currentPhase} 초안을 실행 가능한 개선안과 성과 측정 체계로 연결해 프로젝트 완성도를 높입니다.`,
+    nextDirective: `[${mission.title} — Phase ${nextPhase}] 이전 단계 결과를 바탕으로 ① 핵심 병목·개선 과제 3건 도출, ② 바로 적용 가능한 실행안·콘텐츠 고도화, ③ 성과 지표(KPI) 추적 및 후속 확장 전략을 수립해줘.`,
+    suggestedSteps,
+    usedLiveApi: false
+  };
+}
+
 /**
  * Resolve which AI team members should speak in response to a CEO chat message
  */
