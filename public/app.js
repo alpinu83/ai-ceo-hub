@@ -1942,11 +1942,15 @@ function bindEvents() {
       try {
         const res = await api('/api/providers/test', {
           method: 'POST',
-          body: JSON.stringify({ provider })
+          body: JSON.stringify({ provider }),
+          signal: AbortSignal.timeout(18000)
         });
         toast(`${provider} 연결 성공 (${res.model}): ${res.reply}`);
       } catch (err) {
-        toast(err.message, true);
+        const msg = err?.name === 'TimeoutError' || err?.name === 'AbortError'
+          ? '응답 시간이 초과되었습니다. 잠시 후 다시 시도해 주세요.'
+          : err.message;
+        toast(msg, true);
       } finally {
         target.disabled = false;
         target.textContent = prev;

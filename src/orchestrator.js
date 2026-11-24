@@ -112,14 +112,48 @@ export async function testProviderConnection(providerKey, settings) {
 
   if (providerKey === 'gemini') {
     if (!p.apiKey) throw new Error('Gemini API 키가 설정되지 않았습니다.');
-    const google = createGoogleGenerativeAI({ apiKey: p.apiKey });
     const rawModel = String(p.freeModel || '').trim();
     const modelName = rawModel && rawModel !== 'gemini-2.5-flash' ? rawModel : 'gemini-4-hydrogen';
-    const { text } = await generateText({
-      model: google(modelName),
-      prompt: 'Respond with exactly: OK'
-    });
-    return { ok: true, model: modelName, reply: text.trim().slice(0, 60) };
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelName)}:generateContent`;
+    let res;
+    const bodyObj = {
+      contents: [{ role: 'user', parts: [{ text: 'Reply with OK' }] }]
+    };
+    if (/^gemini-[34]/.test(modelName)) {
+      bodyObj.generationConfig = { thinkingConfig: { thinkingLevel: 'low' } };
+    }
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': p.apiKey.trim()
+        },
+        body: JSON.stringify(bodyObj),
+        signal: AbortSignal.timeout(12000)
+      });
+    } catch (err) {
+      if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
+        throw new Error(`Gemini 응답 시간 초과 (12초) — 모델(${modelName}) 응답이 지연되고 있습니다.`);
+      }
+      throw err;
+    }
+
+    const rawText = await res.text();
+    let data = {};
+    try {
+      data = JSON.parse(rawText);
+    } catch {
+      // non-JSON body
+    }
+    if (!res.ok) {
+      const msg = data?.error?.message || rawText.slice(0, 180) || `HTTP ${res.status}`;
+      const reason = data?.error?.details?.[0]?.reason || data?.error?.status || '';
+      throw new Error(`Gemini 오류 (${res.status}${reason ? ` · ${reason}` : ''}): ${msg}`);
+    }
+    const parts = data?.candidates?.[0]?.content?.parts || [];
+    const reply = parts.map((pt) => pt?.text || '').join('').trim() || 'OK';
+    return { ok: true, model: modelName, reply: reply.slice(0, 60) };
   }
 
   if (providerKey === 'claude') {
@@ -128,7 +162,9 @@ export async function testProviderConnection(providerKey, settings) {
     const modelName = p.model || 'claude-sonnet-4-5';
     const { text } = await generateText({
       model: anthropic(modelName),
-      prompt: 'Respond with exactly: OK'
+      prompt: 'Respond with exactly: OK',
+      maxRetries: 0,
+      abortSignal: AbortSignal.timeout(15000)
     });
     return { ok: true, model: modelName, reply: text.trim().slice(0, 60) };
   }
@@ -143,7 +179,9 @@ export async function testProviderConnection(providerKey, settings) {
     const modelName = p.model || 'k-exaone_v2.5';
     const { text } = await generateText({
       model: exaone(modelName),
-      prompt: '간단히 "연결 OK"라고 답하세요.'
+      prompt: '간단히 "연결 OK"라고 답하세요.',
+      maxRetries: 0,
+      abortSignal: AbortSignal.timeout(15000)
     });
     return { ok: true, model: modelName, reply: text.trim().slice(0, 60) };
   }
@@ -158,7 +196,9 @@ export async function testProviderConnection(providerKey, settings) {
     const modelName = p.model || (providerKey === 'ollama' ? 'qwen2.5:14b' : 'gemini-free');
     const { text } = await generateText({
       model: client(modelName),
-      prompt: 'Respond with exactly: OK'
+      prompt: 'Respond with exactly: OK',
+      maxRetries: 0,
+      abortSignal: AbortSignal.timeout(15000)
     });
     return { ok: true, model: modelName, reply: text.trim().slice(0, 60) };
   }
