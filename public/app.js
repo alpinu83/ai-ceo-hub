@@ -1161,8 +1161,9 @@ function renderIntegrationsView() {
   const tg = s.telegram || {};
   document.getElementById('tg-chat-id').value = tg.chatId || '';
   document.getElementById('tg-polling-enabled').checked = Boolean(tg.pollingEnabled);
-  const tgStatus = document.getElementById('status-telegram');
-  if (tgStatus) {
+  for (const tgId of ['status-telegram', 'status-telegram-quick']) {
+    const tgStatus = document.getElementById(tgId);
+    if (!tgStatus) continue;
     if (tg.hasBotToken) {
       tgStatus.textContent = `연결됨 (${tg.botTokenPreview})`;
       tgStatus.classList.add('ok');
@@ -1172,11 +1173,59 @@ function renderIntegrationsView() {
     }
   }
 
-  const endpoint = `${getPublicServerOrigin()}/api/mcp`;
-  document.getElementById('mcp-endpoint-url').textContent = endpoint;
-  document.getElementById('mcp-token-value').textContent = `Bearer ${s.mcpToken || ''}`;
-  renderMcpSnippet(endpoint, s.mcpToken || '');
+  selectConfigAgent(currentConfigAgent);
   refreshPushUi().catch(() => {});
+}
+
+let currentConfigAgent = 'exaone';
+
+const BRIDGE_AGENT_META = {
+  pickle: { title: '피클 (알렉스) 연결 설정', inboxKey: 'pickle' },
+  vooy: { title: '부이 (vooy) 연결 설정 (대기 중)', inboxKey: 'vooy' },
+  instinct: { title: '인스팅스 (Instinct) 연결 설정', inboxKey: 'instinct' },
+  muse: { title: 'Meta Muse 연결 설정', inboxKey: 'muse' },
+  cue: { title: 'Manus Cue 연결 설정', inboxKey: 'cue' },
+  claude: { title: 'Claude 연결 설정', inboxKey: 'claude' },
+  gemini: { title: 'Gemini 4 Neon 연결 설정', inboxKey: 'gemini' }
+};
+
+function selectConfigAgent(agentKey = 'exaone') {
+  currentConfigAgent = agentKey;
+  document.querySelectorAll('[data-config-agent]').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.configAgent === agentKey);
+  });
+
+  const formPanels = ['exaone', 'telegram', 'general'];
+  const isFormPanel = formPanels.includes(agentKey);
+  formPanels.forEach((key) => {
+    document.getElementById(`agent-panel-${key}`)?.classList.toggle('active', agentKey === key);
+  });
+  document.getElementById('agent-panel-bridge')?.classList.toggle('active', !isFormPanel);
+
+  if (!isFormPanel && state?.settings) {
+    currentMcpTab = agentKey;
+    const meta = BRIDGE_AGENT_META[agentKey] || { title: '연결 설정', inboxKey: 'pickle' };
+    const titleEl = document.getElementById('bridge-agent-title');
+    if (titleEl) titleEl.textContent = meta.title;
+
+    const origin = getPublicServerOrigin();
+    const isInboxPrimary = ['pickle', 'vooy', 'instinct'].includes(agentKey);
+    const endpoint = `${origin}/api/mcp`;
+    const displayUrl = isInboxPrimary
+      ? `${origin}/api/agent-inbox/${agentKey}`
+      : endpoint;
+    const urlEl = document.getElementById('mcp-endpoint-url');
+    if (urlEl) urlEl.textContent = displayUrl;
+    const tokEl = document.getElementById('mcp-token-value');
+    if (tokEl) tokEl.textContent = `Bearer ${state.settings.mcpToken || ''}`;
+    renderMcpSnippet(endpoint, state.settings.mcpToken || '');
+
+    const inboxBtn = document.getElementById('btn-test-pickle-inbox');
+    if (inboxBtn) {
+      inboxBtn.textContent = `${agentKey === 'pickle' ? '피클' : agentKey === 'vooy' ? '부이' : agentKey === 'instinct' ? '인스팅스' : agentKey} 수신함 테스트`;
+      inboxBtn.dataset.testInboxKey = meta.inboxKey;
+    }
+  }
 }
 
 function setKeyStatus(elId, providerObj) {
@@ -1865,10 +1914,16 @@ function bindEvents() {
       return;
     }
 
-    if (target.dataset.mcpTab) {
-      currentMcpTab = target.dataset.mcpTab;
-      document.querySelectorAll('[data-mcp-tab]').forEach((b) => b.classList.toggle('active', b === target));
-      renderMcpSnippet(`${getPublicServerOrigin()}/api/mcp`, state.settings.mcpToken || '');
+    if (target.dataset.openAgentConfig) {
+      switchHubTab('mcp');
+      selectConfigAgent(target.dataset.openAgentConfig);
+      refreshIcons();
+      return;
+    }
+
+    if (target.dataset.configAgent) {
+      selectConfigAgent(target.dataset.configAgent);
+      refreshIcons();
       return;
     }
 
@@ -1883,15 +1938,16 @@ function bindEvents() {
     }
 
     if (target.id === 'btn-test-pickle-inbox') {
+      const inboxKey = target.dataset.testInboxKey || 'pickle';
       const out = document.getElementById('mcp-test-output');
-      out.textContent = '피클 HTTPS 수신함 연결 테스트 중…';
+      out.textContent = `${inboxKey} 수신함 연결 테스트 중…`;
       try {
         const tok = encodeURIComponent(state.settings?.mcpToken || '');
-        const res = await api(`/api/agent-inbox/pickle?token=${tok}`);
+        const res = await api(`/api/agent-inbox/${encodeURIComponent(inboxKey)}?token=${tok}`);
         out.textContent = JSON.stringify(res, null, 2);
         state = await api('/api/state');
         renderIntegrationsView();
-        toast('피클 HTTPS 수신함이 정상 응답했습니다!');
+        toast(`${inboxKey} 수신함이 정상 응답했습니다!`);
       } catch (err) {
         out.textContent = `오류: ${err.message}`;
         toast(`수신함 오류: ${err.message}`, true);

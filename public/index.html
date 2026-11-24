@@ -14,7 +14,7 @@
   <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png" />
   <link rel="apple-touch-icon" href="./icons/icon-192.png" />
   <link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" />
-  <link rel="stylesheet" href="./styles.css?v=20261124h" />
+  <link rel="stylesheet" href="./styles.css?v=20261124k" />
   <script src="./vendor/marked.umd.js" defer></script>
   <script src="./vendor/lucide.min.js" defer></script>
 </head>
@@ -326,19 +326,19 @@
           </div>
         </section>
 
-        <!-- 6. SETTINGS & CONNECTIONS (CLEAN 2-TAB) -->
+        <!-- 6. SETTINGS & CONNECTIONS (PURE SUMMARY + UNIFIED PER-AGENT CONFIG) -->
         <section class="view" id="view-integrations" aria-label="설정">
           <div class="hub-tab-bar" role="tablist">
             <button type="button" class="hub-tab active" data-hub-tab="quickstart">연결 현황</button>
-            <button type="button" class="hub-tab" data-hub-tab="mcp">MCP · HTTPS 연동</button>
+            <button type="button" class="hub-tab" data-hub-tab="mcp">연결 설정</button>
           </div>
 
-          <!-- TAB 1: LIVE SYNC + ACTIVE CONNECTIONS + EXAONE + TELEGRAM + BASIC -->
+          <!-- TAB 1: PURE SUMMARY ONLY -->
           <div class="hub-panel active" id="hub-panel-quickstart">
-            <div class="card" style="margin-bottom:14px;">
+            <div class="card">
               <div class="card-head">
                 <h3 class="card-title">연결 현황</h3>
-                <button type="button" class="btn btn-ghost btn-sm" data-hub-tab="mcp">토큰 · 명령어</button>
+                <button type="button" class="btn btn-ghost btn-sm" data-hub-tab="mcp">연결 설정</button>
               </div>
               <div class="simple-list">
                 <div class="simple-row">
@@ -353,136 +353,150 @@
                   <div><strong>서버 · PC/모바일 동기화</strong></div>
                   <span class="key-status" id="status-sync-live">확인 중…</span>
                 </div>
-                <div class="simple-row">
+                <button type="button" class="simple-row clickable" data-open-agent-config="exaone">
                   <div><strong>LG K-EXAONE 2.5</strong> <span class="mono" style="color:var(--ink-muted);">API 자동</span></div>
                   <span class="key-status" id="status-exaone-quick">미연결</span>
-                </div>
-                <div class="simple-row">
-                  <div><strong>Meta Muse</strong> <span class="mono" style="color:var(--ink-muted);">공식 MCP</span></div>
+                </button>
+                <button type="button" class="simple-row clickable" data-open-agent-config="telegram">
+                  <div><strong>텔레그램 결재 봇</strong> <span class="mono" style="color:var(--ink-muted);">결재 · 지시</span></div>
+                  <span class="key-status" id="status-telegram-quick">미연결</span>
+                </button>
+                <button type="button" class="simple-row clickable" data-open-agent-config="muse">
+                  <div><strong>Meta Muse</strong> <span class="mono" style="color:var(--ink-muted);">MCP</span></div>
                   <span class="badge badge-neutral" id="status-muse-live">통신 대기</span>
-                </div>
-                <div class="simple-row">
-                  <div><strong>피클 (알렉스)</strong> <span class="mono" style="color:var(--ink-muted);">HTTPS 수신함</span></div>
+                </button>
+                <button type="button" class="simple-row clickable" data-open-agent-config="pickle">
+                  <div><strong>피클 (알렉스)</strong> <span class="mono" style="color:var(--ink-muted);">HTTPS</span></div>
                   <span class="badge badge-neutral" id="status-pickle-live">통신 대기</span>
-                </div>
-                <div class="simple-row">
+                </button>
+                <button type="button" class="simple-row clickable" data-open-agent-config="cue">
                   <div><strong>Manus Cue</strong> <span class="mono" style="color:var(--ink-muted);">HTTPS · MCP</span></div>
                   <span class="badge badge-neutral" id="status-cue-live">통신 대기</span>
-                </div>
-                <div class="simple-row">
-                  <div><strong>부이 (vooy)</strong> <span class="mono" style="color:var(--ink-muted);">HTTPS 수신함</span></div>
+                </button>
+                <button type="button" class="simple-row clickable" data-open-agent-config="vooy">
+                  <div><strong>부이 (vooy)</strong> <span class="mono" style="color:var(--ink-muted);">HTTPS</span></div>
                   <span class="badge badge-amber">대기 중</span>
-                </div>
-                <div class="simple-row">
+                </button>
+                <button type="button" class="simple-row clickable" data-open-agent-config="instinct">
                   <div><strong>인스팅스 (Instinct)</strong> <span class="mono" style="color:var(--ink-muted);">HTTPS · 문자</span></div>
                   <span class="badge badge-neutral" id="status-instinct-live">통신 대기</span>
-                </div>
-                <div class="simple-row">
+                </button>
+                <button type="button" class="simple-row clickable" data-open-agent-config="gemini">
                   <div><strong>Gemini 4 Neon · Claude</strong> <span class="mono" style="color:var(--ink-muted);">구독 · MCP</span></div>
                   <span class="badge badge-blue">구독 (0원)</span>
-                </div>
+                </button>
               </div>
             </div>
+          </div>
 
-            <div class="card">
-              <form id="settings-form" class="settings-form">
-                <div class="provider-group" style="padding-top:0;border-top:none;">
-                  <div class="provider-head">
-                    <h3>LG K-EXAONE 2.5 (무료 API)</h3>
-                    <div class="provider-right">
-                      <span class="key-status" id="status-exaone">미연결</span>
-                      <button type="button" class="btn btn-ghost btn-sm" data-ping-provider="exaone">테스트</button>
-                    </div>
-                  </div>
-                  <div class="form-row-two">
-                    <label class="field"><span class="field-label">API 키</span><input type="password" id="key-exaone" placeholder="변경 시 입력" autocomplete="off" /></label>
-                    <label class="field"><span class="field-label">모델</span><input type="text" id="model-exaone" placeholder="k-exaone_v2.5" /></label>
+          <!-- TAB 2: UNIFIED PER-AGENT CONNECTION SETTINGS -->
+          <div class="hub-panel" id="hub-panel-mcp">
+            <div class="agent-picker-bar" role="tablist" aria-label="에이전트별 연결 설정">
+              <button type="button" class="tab-pill active" data-config-agent="exaone">엑사원</button>
+              <button type="button" class="tab-pill" data-config-agent="telegram">텔레그램</button>
+              <button type="button" class="tab-pill" data-config-agent="pickle">피클</button>
+              <button type="button" class="tab-pill" data-config-agent="vooy">부이</button>
+              <button type="button" class="tab-pill" data-config-agent="instinct">인스팅스</button>
+              <button type="button" class="tab-pill" data-config-agent="muse">Muse</button>
+              <button type="button" class="tab-pill" data-config-agent="cue">Cue</button>
+              <button type="button" class="tab-pill" data-config-agent="claude">Claude</button>
+              <button type="button" class="tab-pill" data-config-agent="gemini">Gemini</button>
+              <button type="button" class="tab-pill" data-config-agent="general">기본</button>
+            </div>
+
+            <!-- Form-based panels: EXAONE / Telegram / General -->
+            <form id="settings-form" class="settings-form">
+              <div class="card agent-config-panel active" id="agent-panel-exaone">
+                <div class="provider-head">
+                  <h3>LG K-EXAONE 2.5</h3>
+                  <div class="provider-right">
+                    <span class="key-status" id="status-exaone">미연결</span>
+                    <button type="button" class="btn btn-ghost btn-sm" data-ping-provider="exaone">테스트</button>
                   </div>
                 </div>
-
-                <div class="provider-group">
-                  <div class="provider-head">
-                    <h3>텔레그램 결재 봇</h3>
-                    <div class="provider-right">
-                      <span class="key-status" id="status-telegram">미연결</span>
-                      <button type="button" class="btn btn-ghost btn-sm" id="btn-test-telegram">테스트</button>
-                    </div>
-                  </div>
-                  <div class="form-row-two">
-                    <label class="field"><span class="field-label">Bot Token (숫자:영문 전체)</span><input type="password" id="tg-bot-token" placeholder="1234567890:AAH..." autocomplete="off" /></label>
-                    <label class="field"><span class="field-label">Chat ID (숫자 — 비워두고 /start 시 자동)</span><input type="text" id="tg-chat-id" placeholder="숫자 ID (봇 이름 아님)" /></label>
-                  </div>
-                  <label class="checkbox-row">
-                    <input type="checkbox" id="tg-polling-enabled" />
-                    <span>실시간 수신 활성화 (<code>/start</code>, <code>/order</code>, <code>/status</code>, 결재 버튼)</span>
-                  </label>
+                <div class="form-row-two" style="margin-top:12px;">
+                  <label class="field"><span class="field-label">API 키</span><input type="password" id="key-exaone" placeholder="변경 시 입력" autocomplete="off" /></label>
+                  <label class="field"><span class="field-label">모델</span><input type="text" id="model-exaone" placeholder="k-exaone_v2.5" /></label>
                 </div>
+                <div class="form-actions">
+                  <span></span>
+                  <button type="submit" class="btn btn-primary">저장</button>
+                </div>
+              </div>
 
-                <div class="provider-group">
-                  <div class="provider-head"><h3>기본 정보</h3></div>
-                  <div class="form-row-two">
-                    <label class="field"><span class="field-label">조직명</span><input type="text" id="set-company-name" /></label>
-                    <label class="field"><span class="field-label">CEO 호칭</span><input type="text" id="set-ceo-name" /></label>
+              <div class="card agent-config-panel" id="agent-panel-telegram">
+                <div class="provider-head">
+                  <h3>텔레그램 결재 봇</h3>
+                  <div class="provider-right">
+                    <span class="key-status" id="status-telegram">미연결</span>
+                    <button type="button" class="btn btn-ghost btn-sm" id="btn-test-telegram">테스트</button>
                   </div>
                 </div>
+                <div class="form-row-two" style="margin-top:12px;">
+                  <label class="field"><span class="field-label">Bot Token (숫자:영문 전체)</span><input type="password" id="tg-bot-token" placeholder="1234567890:AAH..." autocomplete="off" /></label>
+                  <label class="field"><span class="field-label">Chat ID (숫자 — 비워두고 /start 시 자동)</span><input type="text" id="tg-chat-id" placeholder="숫자 ID (봇 이름 아님)" /></label>
+                </div>
+                <label class="checkbox-row" style="margin-top:10px;">
+                  <input type="checkbox" id="tg-polling-enabled" />
+                  <span>실시간 수신 활성화 (<code>/start</code>, <code>/order</code>, <code>/status</code>, 결재 버튼)</span>
+                </label>
+                <div class="form-actions">
+                  <span></span>
+                  <button type="submit" class="btn btn-primary">저장</button>
+                </div>
+              </div>
 
+              <div class="card agent-config-panel" id="agent-panel-general">
+                <div class="provider-head"><h3>기본 정보</h3></div>
+                <div class="form-row-two" style="margin-top:12px;">
+                  <label class="field"><span class="field-label">조직명</span><input type="text" id="set-company-name" /></label>
+                  <label class="field"><span class="field-label">CEO 호칭</span><input type="text" id="set-ceo-name" /></label>
+                </div>
                 <div class="form-actions">
                   <button type="button" class="btn btn-ghost btn-sm" id="btn-reset-demo">초기화</button>
                   <button type="submit" class="btn btn-primary">저장</button>
                 </div>
-              </form>
-            </div>
-          </div>
+              </div>
+            </form>
 
-          <!-- TAB 2: MCP & PICKLE/VOOY/INSTINCT HTTPS -->
-          <div class="hub-panel" id="hub-panel-mcp">
-            <div class="integrations-grid">
-              <div class="card">
-                <div class="card-head">
-                  <h2 class="card-title">연동 주소 · 토큰</h2>
-                </div>
-                <div class="mcp-meta-box">
-                  <div class="kv-row">
-                    <span>MCP URL</span>
-                    <code id="mcp-endpoint-url">/api/mcp</code>
+            <!-- Unified External Agent Config Panel (Pickle / Vooy / Instinct / Muse / Cue / Claude / Gemini) -->
+            <div class="agent-config-panel" id="agent-panel-bridge">
+              <div class="integrations-grid">
+                <div class="card">
+                  <div class="card-head">
+                    <h2 class="card-title" id="bridge-agent-title">연동 설정</h2>
+                    <button type="button" class="btn btn-primary btn-sm" id="btn-copy-mcp-snippet">
+                      <i data-lucide="copy" class="icon-xs"></i>
+                      <span>명령어 복사</span>
+                    </button>
                   </div>
-                  <div class="kv-row">
-                    <span>Token</span>
-                    <div class="token-copy-row">
-                      <code id="mcp-token-value">-</code>
-                      <button type="button" class="btn btn-primary btn-sm" id="btn-copy-raw-token">토큰만 복사</button>
+                  <div class="mcp-meta-box">
+                    <div class="kv-row">
+                      <span>주소</span>
+                      <code id="mcp-endpoint-url">/api/mcp</code>
+                    </div>
+                    <div class="kv-row">
+                      <span>Token</span>
+                      <div class="token-copy-row">
+                        <code id="mcp-token-value">-</code>
+                        <button type="button" class="btn btn-primary btn-sm" id="btn-copy-raw-token">토큰만 복사</button>
+                      </div>
                     </div>
                   </div>
+                  <pre class="code-block" id="mcp-snippet-box"></pre>
                 </div>
 
-                <div class="mcp-tabs">
-                  <button type="button" class="tab-pill active" data-mcp-tab="pickle">피클</button>
-                  <button type="button" class="tab-pill" data-mcp-tab="vooy">부이</button>
-                  <button type="button" class="tab-pill" data-mcp-tab="instinct">인스팅스</button>
-                  <button type="button" class="tab-pill" data-mcp-tab="muse">Muse</button>
-                  <button type="button" class="tab-pill" data-mcp-tab="cue">Cue</button>
-                  <button type="button" class="tab-pill" data-mcp-tab="claude">Claude</button>
-                  <button type="button" class="tab-pill" data-mcp-tab="gemini">Gemini</button>
+                <div class="card">
+                  <div class="card-head">
+                    <h2 class="card-title">연동 테스트</h2>
+                  </div>
+                  <div class="tester-btns" style="margin-bottom: 12px;">
+                    <button type="button" class="btn btn-primary btn-sm" id="btn-test-pickle-inbox">수신함 테스트</button>
+                    <button type="button" class="btn btn-ghost btn-sm" data-mcp-test="tools/list">MCP tools</button>
+                    <button type="button" class="btn btn-ghost btn-sm" data-mcp-test="get_company_brief">brief</button>
+                  </div>
+                  <pre class="code-block tall" id="mcp-test-output">버튼을 눌러 테스트하세요.</pre>
                 </div>
-                <pre class="code-block" id="mcp-snippet-box"></pre>
-                <div class="snippet-actions">
-                  <button type="button" class="btn btn-primary btn-sm" id="btn-copy-mcp-snippet">
-                    <i data-lucide="copy" class="icon-xs"></i>
-                    <span>복사</span>
-                  </button>
-                </div>
-              </div>
-
-              <div class="card">
-                <div class="card-head">
-                  <h2 class="card-title">연동 테스트</h2>
-                </div>
-                <div class="tester-btns" style="margin-bottom: 12px;">
-                  <button type="button" class="btn btn-primary btn-sm" id="btn-test-pickle-inbox">피클 수신함 테스트</button>
-                  <button type="button" class="btn btn-ghost btn-sm" data-mcp-test="tools/list">MCP tools</button>
-                  <button type="button" class="btn btn-ghost btn-sm" data-mcp-test="get_company_brief">brief</button>
-                </div>
-                <pre class="code-block tall" id="mcp-test-output">버튼을 눌러 테스트하세요.</pre>
               </div>
             </div>
           </div>
@@ -586,6 +600,6 @@
   </nav>
 
   <div class="toast-region" id="toast-region" aria-live="polite"></div>
-  <script type="module" src="./app.js?v=20261124j"></script>
+  <script type="module" src="./app.js?v=20261124k"></script>
 </body>
 </html>
