@@ -92,8 +92,8 @@ const VIEW_META = {
     subtitle: 'Paperclip 패턴의 조직 계층과 팀원별 월 예산 한도·연동 방식을 한곳에서 관리합니다.'
   },
   integrations: {
-    title: '오픈소스 · MCP 허브',
-    subtitle: 'Vercel AI SDK, 공식 MCP SDK(/api/mcp), LiteLLM, Ollama 및 앱 브릿지를 연결합니다.'
+    title: '연결 · 설정',
+    subtitle: '무료·구독 최적 조합이 미리 설정되어 있습니다. 필요할 때만 Gemini 무료 키나 고급 옵션을 추가하세요.'
   }
 };
 
@@ -105,16 +105,16 @@ const DOMAIN_LABELS = {
 };
 
 const POLICY_LABELS = {
-  free_first: '무료 · 구독 우선',
+  free_first: '무료 · 구독 우선 (0원)',
   balanced: '균형 배분',
   max_quality: '최고 성능'
 };
 
 const MODE_LABELS = {
-  api: 'API 자동',
-  litellm: 'LiteLLM 프록시',
-  mcp: '공식 MCP',
-  bridge: '구독 · 앱 브릿지'
+  api: '자동 실행 (API)',
+  litellm: 'LiteLLM',
+  mcp: 'MCP 자동',
+  bridge: '구독 · 앱 (0원)'
 };
 
 const COST_LABELS = {
@@ -1035,6 +1035,7 @@ function renderIntegrationsView() {
   document.getElementById('model-ollama').value = p.ollama?.model || 'qwen2.5:14b';
 
   setKeyStatus('status-gemini', p.gemini);
+  setKeyStatus('status-gemini-quick', p.gemini);
   setKeyStatus('status-claude', p.claude);
   setKeyStatus('status-manus', p.manus);
   setKeyStatus('status-litellm', p.litellm);
@@ -1158,9 +1159,10 @@ function renderTaskDrawer(task) {
       <div class="prompt-box">${esc(task.dispatchPrompt)}</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
         <button type="button" class="btn btn-primary btn-sm" id="btn-copy-dispatch">지시서 원클릭 복사</button>
+        ${ag.appUrl ? `<a class="btn btn-ghost btn-sm" href="${esc(ag.appUrl)}" target="_blank" rel="noreferrer">${esc(ag.name)} 바로 열기 ↗</a>` : ''}
         ${mailtoLink ? `<a class="btn btn-ghost btn-sm" href="${mailtoLink}">Cue 전용 이메일로 발송</a>` : ''}
         <button type="button" class="btn btn-ghost btn-sm" data-run-task="${esc(task.id)}">
-          ${ag.connectionMode === 'api' || ag.connectionMode === 'litellm' ? 'AI SDK 즉시 실행' : '드라이런 시뮬레이션'}
+          ${ag.connectionMode === 'api' || ag.connectionMode === 'litellm' ? '자동 실행' : '시뮬레이션 미리보기'}
         </button>
       </div>
     </div>
@@ -1864,6 +1866,46 @@ function bindEvents() {
       } finally {
         sendBtn.disabled = false;
         loungeInput.focus();
+      }
+    });
+  }
+
+  // Quick 1-step Gemini Free Key save & live test
+  const quickGeminiForm = document.getElementById('quick-gemini-form');
+  if (quickGeminiForm) {
+    quickGeminiForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const keyInput = document.getElementById('quick-key-gemini');
+      const btn = document.getElementById('btn-save-quick-gemini');
+      const apiKey = keyInput.value.trim();
+      if (!apiKey) {
+        toast('Google AI Studio 무료 API 키(AIza...)를 입력해 주세요.', true);
+        return;
+      }
+      const prev = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = '저장 및 연결 확인 중…';
+      try {
+        const saved = await api('/api/settings', {
+          method: 'PUT',
+          body: JSON.stringify({
+            defaultCostPolicy: 'free_first',
+            providers: { gemini: { apiKey } }
+          })
+        });
+        state = saved.state;
+        keyInput.value = '';
+        renderAll();
+        const ping = await api('/api/providers/test', {
+          method: 'POST',
+          body: JSON.stringify({ provider: 'gemini' })
+        });
+        toast(`연결 완료! (${ping.model}) 이제 팀장과 회의실이 무료 Gemini AI로 실시간 가동됩니다.`);
+      } catch (err) {
+        toast(`저장되었으나 연결 확인 중 오류: ${err.message}`, true);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = prev;
       }
     });
   }
