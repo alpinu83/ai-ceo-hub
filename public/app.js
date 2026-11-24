@@ -75,65 +75,47 @@ const HIRE_PRESETS = {
 };
 
 const VIEW_META = {
-  command: {
-    title: 'CEO 홈',
-    subtitle: '대표님이 지금 결정할 결재와 핵심 지시, 진행 미션만 깔끔하게 모아 보여드립니다.'
-  },
-  missions: {
-    title: '업무 보드',
-    subtitle: '미션별 칸반 보드 · 리스트 · 조직 흐름도와 실시간 조직 보고 로그를 관리합니다.'
-  },
-  office: {
-    title: '라이브 회의실',
-    subtitle: 'AI 팀장과 팀원들이 각자 자리에서 일하고 서로 대화·협업하는 모습을 실시간으로 보고 지시합니다.'
-  },
-  approvals: {
-    title: 'CEO 결재함',
-    subtitle: '결제, 예약 확정, 외부 발송 등 되돌리기 어려운 실행은 반드시 CEO 승인 후 진행됩니다.'
-  },
-  roster: {
-    title: 'AI 조직 · 예산',
-    subtitle: '조직 계층과 팀원별 월 예산 한도·연동 방식을 한곳에서 관리합니다.'
-  },
-  integrations: {
-    title: '연결 · 설정',
-    subtitle: '무료·구독 최적 조합이 미리 설정되어 있습니다. 보유 키나 무료 MCP 서버를 간편하게 연결하세요.'
-  }
+  command: { title: '홈', subtitle: '' },
+  missions: { title: '업무', subtitle: '' },
+  office: { title: '회의실', subtitle: '' },
+  approvals: { title: '결재함', subtitle: '' },
+  roster: { title: 'AI 팀', subtitle: '' },
+  integrations: { title: '설정', subtitle: '' }
 };
 
 const DOMAIN_LABELS = {
-  business: '1인 기업 · 비즈니스',
-  life: '일상 · 예약',
-  content: '콘텐츠 · 마케팅',
-  dev: '개발 · 프로덕트'
+  business: '비즈니스',
+  life: '일상·예약',
+  content: '콘텐츠',
+  dev: '개발'
 };
 
 const POLICY_LABELS = {
-  free_first: '무료 · 구독 우선 (0원)',
-  balanced: '균형 배분',
+  free_first: '무료 우선',
+  balanced: '균형',
   max_quality: '최고 성능'
 };
 
 const MODE_LABELS = {
-  api: '자동 실행 (API)',
+  api: 'API 자동',
   litellm: 'LiteLLM',
-  mcp: 'MCP 자동',
-  bridge: '구독 · 앱 (0원)'
+  mcp: 'MCP',
+  bridge: '앱·구독'
 };
 
 const COST_LABELS = {
   free: '무료',
   freemium: '부분 무료',
-  paid_or_sub: '유료 · 구독'
+  paid_or_sub: '구독'
 };
 
 const STATUS_META = {
-  queued: { label: '실행 대기', cls: 'badge-neutral' },
+  queued: { label: '대기', cls: 'badge-neutral' },
   running: { label: '진행 중', cls: 'badge-blue' },
-  awaiting_bridge: { label: '앱 · MCP 전달', cls: 'badge-blue' },
-  awaiting_approval: { label: 'CEO 결재 대기', cls: 'badge-amber' },
+  awaiting_bridge: { label: '전달 대기', cls: 'badge-blue' },
+  awaiting_approval: { label: '결재 대기', cls: 'badge-amber' },
   completed: { label: '완료', cls: 'badge-green' },
-  rejected: { label: '반려됨', cls: 'badge-red' }
+  rejected: { label: '반려', cls: 'badge-red' }
 };
 
 let state = null;
@@ -295,10 +277,6 @@ function renderChrome() {
   const doneTasks = state.tasks.filter((t) => t.status === 'completed').length;
   const taskPct = totalTasks ? Math.round((doneTasks / totalTasks) * 100) : 0;
 
-  const budget = Number(s.monthlyBudgetKRW) || 150000;
-  const spent = Number(s.spentThisMonthKRW) || 0;
-  const pct = budget > 0 ? Math.min(100, Math.round((spent / budget) * 100)) : 0;
-
   document.getElementById('sidebar-company-name').textContent = s.companyName || 'CEO Office';
   document.getElementById('sidebar-ceo-name').textContent = s.ceoName || '대표님';
   document.getElementById('nav-mission-count').textContent = String(state.missions.length);
@@ -317,27 +295,21 @@ function renderChrome() {
   const topPending = document.getElementById('topbar-pending-count');
   if (topPending) topPending.textContent = String(pendingCount);
 
-  document.getElementById('sidebar-budget-text').textContent = `${formatKRW(spent)} / ${formatKRW(budget)}`;
-  const bar = document.getElementById('sidebar-budget-bar');
-  bar.style.width = `${pct}%`;
-  bar.className = `progress-fill${pct >= 90 ? ' danger' : pct >= 70 ? ' warn' : ''}`;
-
-  document.getElementById('stat-active-agents').textContent = `${activeAgents.length} / ${state.agents.length}명`;
-  document.getElementById('stat-live-apis').textContent = liveProviderCount > 0 ? `${liveProviderCount}개 연결됨` : '무료 · 브릿지';
+  document.getElementById('stat-active-agents').textContent = `${activeAgents.length}명`;
+  document.getElementById('stat-live-apis').textContent = liveProviderCount > 0 ? `${liveProviderCount}개` : '대기';
   document.getElementById('stat-cost-policy').textContent = POLICY_LABELS[s.defaultCostPolicy] || s.defaultCostPolicy;
 
   document.getElementById('nav-api-dot').classList.toggle('connected', liveProviderCount > 0);
 
-  // Executive 3-Cell KPI Strip
-  document.getElementById('kpi-approvals-val').textContent = pendingCount > 0 ? `${pendingCount}건 대기` : '0건';
-  document.getElementById('kpi-agents-val').textContent = `${state.missions.length}개 (${taskPct}%)`;
-  document.getElementById('kpi-agents-sub').textContent = `AI ${activeAgents.length}명 · ${doneTasks}/${totalTasks} 완료`;
-  document.getElementById('kpi-budget-val').textContent = `${formatKRW(spent)}`;
-  document.getElementById('kpi-budget-sub').textContent = `한도 ${formatKRW(budget)} (${pct}%)`;
+  // Executive 3-Cell KPI Strip (Approvals · Missions · Active AI)
+  document.getElementById('kpi-approvals-val').textContent = `${pendingCount}건`;
+  document.getElementById('kpi-agents-val').textContent = `${state.missions.length}건 · ${taskPct}%`;
+  document.getElementById('kpi-budget-val').textContent = `${activeAgents.length}명`;
 
   const meta = VIEW_META[currentView] || VIEW_META.command;
   document.getElementById('page-title').textContent = meta.title;
-  document.getElementById('page-subtitle').textContent = meta.subtitle;
+  const sub = document.getElementById('page-subtitle');
+  if (sub) sub.textContent = meta.subtitle || '';
 }
 
 function renderHomeView() {
@@ -348,23 +320,22 @@ function renderHomeView() {
 
   const pending = state.approvals.filter((a) => a.status === 'pending');
   if (pending.length === 0) {
-    aprWrap.innerHTML = '<div class="empty-state" style="padding:22px 14px;">현재 대기 중인 CEO 결재가 없습니다. 모든 안건이 깔끔히 정리되었습니다.</div>';
+    aprWrap.innerHTML = '<div class="empty-state">대기 중인 결재 없음</div>';
   } else {
     aprWrap.innerHTML = pending
       .slice(0, 3)
       .map((apr) => {
         const ag = getAgent(apr.agentId);
-        const costTxt = apr.estimatedCostKRW > 0 ? formatKRW(apr.estimatedCostKRW) : '비용 없음';
+        const costTxt = apr.estimatedCostKRW > 0 ? formatKRW(apr.estimatedCostKRW) : '';
         return `<div class="home-item pending-accent">
           <div class="home-item-top">
-            <span class="badge badge-amber">${esc(apr.category)}</span>
-            <span class="mono" style="font-size:12px;font-weight:600;">${esc(costTxt)}</span>
+            <span class="badge badge-amber">${esc(ag?.name || 'AI')}</span>
+            ${costTxt ? `<span class="mono" style="font-weight:700;">${esc(costTxt)}</span>` : ''}
           </div>
           <div class="home-item-title">${esc(apr.title)}</div>
-          <div class="home-item-sub">${esc(ag?.name || 'AI 팀원')} 상신 · ${esc((apr.summary || '').slice(0, 88))}${(apr.summary || '').length > 88 ? '…' : ''}</div>
           <div class="home-item-actions">
-            <button type="button" class="btn btn-primary btn-sm" data-quick-approve="${esc(apr.id)}">원터치 승인</button>
-            <button type="button" class="btn btn-ghost btn-sm" data-open-approval="${esc(apr.id)}">결재서 상세 보기</button>
+            <button type="button" class="btn btn-primary btn-sm" data-quick-approve="${esc(apr.id)}">승인</button>
+            <button type="button" class="btn btn-ghost btn-sm" data-open-approval="${esc(apr.id)}">상세</button>
           </div>
         </div>`;
       })
@@ -372,7 +343,7 @@ function renderHomeView() {
   }
 
   if (state.missions.length === 0) {
-    msnWrap.innerHTML = '<div class="empty-state" style="padding:22px 14px;">진행 중인 미션이 없습니다. 위에서 첫 CEO 지시를 내려보세요.</div>';
+    msnWrap.innerHTML = '<div class="empty-state">진행 중인 미션 없음</div>';
   } else {
     msnWrap.innerHTML = state.missions
       .slice(0, 3)
@@ -380,17 +351,15 @@ function renderHomeView() {
         const tasks = state.tasks.filter((t) => t.missionId === m.id);
         const done = tasks.filter((t) => t.status === 'completed').length;
         const pct = tasks.length ? Math.round((done / tasks.length) * 100) : 0;
-        const lead = getAgent(m.leadAgentId);
         return `<div class="home-item">
           <div class="home-item-top">
-            <span class="badge badge-green">팀장: ${esc(lead?.name || '팀장')}</span>
-            <span class="mono" style="font-size:12px;">${done}/${tasks.length} (${pct}%)</span>
+            <div class="home-item-title">${esc(m.title)}</div>
+            <span class="mono" style="color:var(--ink-muted);">${pct}%</span>
           </div>
-          <div class="home-item-title">${esc(m.title)}</div>
           <div class="progress-track thin"><div class="progress-fill" style="width:${pct}%"></div></div>
           <div class="home-item-actions">
-            <button type="button" class="btn btn-ghost btn-sm" data-open-mission-board="${esc(m.id)}">업무 보드 열기 →</button>
-            <button type="button" class="btn btn-ghost btn-sm" data-jump-view="office">회의실 보기</button>
+            <button type="button" class="btn btn-ghost btn-sm" data-open-mission-board="${esc(m.id)}">보드</button>
+            <button type="button" class="btn btn-ghost btn-sm" data-jump-view="office">회의실</button>
           </div>
         </div>`;
       })
@@ -402,10 +371,10 @@ function renderHomeView() {
     chatTeaser.innerHTML = lastMsg
       ? `<button type="button" class="home-chat-card" data-jump-view="office">
           <div style="min-width:0;">
-            <div style="font-size:11.5px;color:var(--ink-muted);margin-bottom:2px;">최근 사내 회의실 · <strong>${esc(lastMsg.senderName)}</strong></div>
+            <div style="font-size:11.5px;color:var(--ink-muted);"><strong>${esc(lastMsg.senderName)}</strong> · 회의실</div>
             <div style="font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(lastMsg.text)}</div>
           </div>
-          <span class="badge badge-blue">대화 참여 →</span>
+          <i data-lucide="chevron-right" class="icon-xs"></i>
         </button>`
       : '';
   }
@@ -1073,22 +1042,16 @@ function renderRosterView() {
           </div>
 
           <p class="agent-strengths">${esc(ag.strengths)}</p>
-          <p class="agent-guide">${esc(ag.bridgeGuide)}</p>
-
-          <div class="agent-budget-bar">
-            <span>월 예산 한도</span>
-            <span class="mono">${ag.monthlyCapKRW > 0 ? `${formatKRW(ag.spentKRW || 0)} / ${formatKRW(ag.monthlyCapKRW)}` : '무료 · 0원 상한'}</span>
-          </div>
 
           <div class="agent-card-controls">
             <select data-agent-mode="${esc(ag.id)}" aria-label="${esc(ag.name)} 연동 방식" style="width:auto;padding:5px 8px;font-size:12px;">
-              <option value="api" ${ag.connectionMode === 'api' ? 'selected' : ''}>API 자동 (AI SDK)</option>
-              <option value="litellm" ${ag.connectionMode === 'litellm' ? 'selected' : ''}>LiteLLM 프록시</option>
-              <option value="mcp" ${ag.connectionMode === 'mcp' ? 'selected' : ''}>공식 MCP</option>
-              <option value="bridge" ${ag.connectionMode === 'bridge' ? 'selected' : ''}>구독 · 앱 브릿지</option>
+              <option value="api" ${ag.connectionMode === 'api' ? 'selected' : ''}>API 자동</option>
+              <option value="litellm" ${ag.connectionMode === 'litellm' ? 'selected' : ''}>LiteLLM</option>
+              <option value="mcp" ${ag.connectionMode === 'mcp' ? 'selected' : ''}>MCP</option>
+              <option value="bridge" ${ag.connectionMode === 'bridge' ? 'selected' : ''}>앱·구독</option>
             </select>
             <button type="button" class="btn btn-ghost btn-sm" data-toggle-agent="${esc(ag.id)}">
-              ${ag.active ? '휴직 전환' : '다시 활성화'}
+              ${ag.active ? '비활성' : '활성화'}
             </button>
           </div>
         </article>
@@ -2182,6 +2145,74 @@ function bindEvents() {
       }
     });
   }
+
+  // Korean Voice Input (Web Speech API — free, works on Samsung Browser / Chrome / Safari)
+  setupVoiceInput('btn-voice-directive', 'input-directive');
+  setupVoiceInput('btn-voice-chat', 'lounge-chat-input');
+}
+
+function setupVoiceInput(btnId, targetInputId) {
+  const btn = document.getElementById(btnId);
+  const input = document.getElementById(targetInputId);
+  if (!btn || !input) return;
+
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let recognition = null;
+  let isListening = false;
+  let baseText = '';
+
+  btn.addEventListener('click', () => {
+    if (!SpeechRecognition) {
+      toast('이 브라우저에서는 음성 인식을 지원하지 않습니다. (크롬/삼성 브라우저 HTTPS에서 지원)', true);
+      return;
+    }
+
+    if (isListening && recognition) {
+      recognition.stop();
+      return;
+    }
+
+    recognition = new SpeechRecognition();
+    recognition.lang = 'ko-KR';
+    recognition.interimResults = true;
+    recognition.continuous = false;
+    baseText = input.value.trim();
+
+    recognition.onstart = () => {
+      isListening = true;
+      btn.classList.add('listening');
+      toast('듣고 있습니다… 말씀해 주세요');
+    };
+
+    recognition.onresult = (event) => {
+      let spoken = '';
+      for (let i = 0; i < event.results.length; i++) {
+        spoken += event.results[i][0].transcript;
+      }
+      input.value = baseText ? `${baseText} ${spoken.trim()}` : spoken.trim();
+    };
+
+    recognition.onerror = (event) => {
+      if (event.error === 'not-allowed') {
+        toast('마이크 권한을 허용해 주세요.', true);
+      } else if (event.error !== 'no-speech' && event.error !== 'aborted') {
+        toast(`음성 인식 오류: ${event.error}`, true);
+      }
+    };
+
+    recognition.onend = () => {
+      isListening = false;
+      btn.classList.remove('listening');
+      input.focus();
+    };
+
+    try {
+      recognition.start();
+    } catch {
+      isListening = false;
+      btn.classList.remove('listening');
+    }
+  });
 }
 
 async function handleRunTask(taskId, btn) {

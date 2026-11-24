@@ -9,7 +9,8 @@ let lastUpdateId = 0;
 let activeToken = '';
 
 async function tgCall(token, method, payload = {}) {
-  const url = `https://api.telegram.org/bot${encodeURIComponent(token)}/${method}`;
+  const cleanToken = String(token || '').trim().replace(/^bot/i, '');
+  const url = `https://api.telegram.org/bot${cleanToken}/${method}`;
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -17,7 +18,11 @@ async function tgCall(token, method, payload = {}) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || !data.ok) {
-    throw new Error(data.description || `Telegram API 오류 (${res.status})`);
+    const desc = data.description || `Telegram API 오류 (${res.status})`;
+    if (/chat not found|can't initiate/i.test(desc)) {
+      throw new Error(`${desc} — 텔레그램에서 내 봇 채팅방을 열어 [시작(/start)] 버튼을 먼저 1번 눌러주시고, Chat ID(숫자)를 확인해 주세요!`);
+    }
+    throw new Error(desc);
   }
   return data.result;
 }

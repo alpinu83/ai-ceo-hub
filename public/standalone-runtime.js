@@ -606,7 +606,8 @@ async function sendTelegramDirect(settings, approval, agentName) {
   if (!tg?.botToken || !tg?.chatId) return;
   const cost = (approval.estimatedCostKRW || 0) > 0 ? `${approval.estimatedCostKRW.toLocaleString('ko-KR')}원` : '비용 없음';
   const text = `[CEO 결재 요청] ${settings.companyName}\n안건: ${approval.title}\n상신: ${agentName}\n비용: ${cost}\n요약: ${approval.summary}`;
-  fetch(`https://api.telegram.org/bot${encodeURIComponent(tg.botToken)}/sendMessage`, {
+  const cleanToken = String(tg.botToken || '').trim().replace(/^bot/i, '');
+  fetch(`https://api.telegram.org/bot${cleanToken}/sendMessage`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ chat_id: tg.chatId, text })
@@ -1010,7 +1011,8 @@ export async function standaloneApi(path, options = {}) {
   if (method === 'POST' && path === '/api/telegram/test') {
     const tg = db.settings.telegram;
     if (!tg?.botToken || !tg?.chatId) throw new Error('Bot Token과 Chat ID를 먼저 저장해 주세요.');
-    const r = await fetch(`https://api.telegram.org/bot${encodeURIComponent(tg.botToken)}/sendMessage`, {
+    const cleanToken = String(tg.botToken || '').trim().replace(/^bot/i, '');
+    const r = await fetch(`https://api.telegram.org/bot${cleanToken}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ chat_id: tg.chatId, text: `[${db.settings.companyName}] GitHub Pages 웹앱에서 텔레그램 결재 알림 연결 테스트 성공!` })

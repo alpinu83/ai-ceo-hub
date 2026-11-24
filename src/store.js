@@ -588,10 +588,13 @@ export async function initCloudPersistence() {
         if (raw) {
           const parsed = JSON.parse(raw);
           if (parsed && parsed.settings && Array.isArray(parsed.agents)) {
-            // Preserve current environment API keys & permanent token if present
+            // Preserve current environment API keys, Telegram credentials & permanent token if present
             if (process.env.EXAONE_API_KEY) parsed.settings.providers.exaone.apiKey = process.env.EXAONE_API_KEY;
             if (process.env.GEMINI_API_KEY) parsed.settings.providers.gemini.apiKey = process.env.GEMINI_API_KEY;
             if (process.env.ANTHROPIC_API_KEY) parsed.settings.providers.claude.apiKey = process.env.ANTHROPIC_API_KEY;
+            if (process.env.TELEGRAM_BOT_TOKEN) parsed.settings.telegram.botToken = process.env.TELEGRAM_BOT_TOKEN;
+            if (process.env.TELEGRAM_CHAT_ID) parsed.settings.telegram.chatId = process.env.TELEGRAM_CHAT_ID;
+            if (process.env.TELEGRAM_POLLING === 'true') parsed.settings.telegram.pollingEnabled = true;
             if (process.env.MCP_TOKEN || process.env.RENDER_SERVICE_ID) {
               parsed.settings.mcpToken = resolveStableMcpToken();
             }
