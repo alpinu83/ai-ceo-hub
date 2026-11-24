@@ -799,6 +799,8 @@ textarea:focus {
   grid-template-columns: minmax(0, 1fr) 280px;
   gap: 16px;
   align-items: start;
+  width: 100%;
+  max-width: 100%;
 }
 
 .mission-toolbar {
@@ -808,20 +810,26 @@ textarea:focus {
   gap: 10px;
   margin-bottom: 14px;
   flex-wrap: wrap;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .mission-tabs-bar {
   display: flex;
   gap: 6px;
   overflow-x: auto;
-  flex: 1;
+  -webkit-overflow-scrolling: touch;
+  flex: 1 1 200px;
+  min-width: 0;
+  max-width: 100%;
   scrollbar-width: none;
 }
 
 .mission-tabs-bar::-webkit-scrollbar { display: none; }
 
 .mission-tab {
-  padding: 8px 13px;
+  padding: 8px 12px;
   border-radius: 10px;
   border: 1px solid transparent;
   background: var(--bg-surface);
@@ -833,6 +841,15 @@ textarea:focus {
   display: inline-flex;
   align-items: center;
   gap: 7px;
+  flex-shrink: 0;
+  max-width: 220px;
+}
+
+.mission-tab span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .mission-tab.active {
@@ -848,6 +865,7 @@ textarea:focus {
   border-radius: 10px;
   padding: 3px;
   gap: 2px;
+  flex-shrink: 0;
 }
 
 .seg-btn {
@@ -863,16 +881,19 @@ textarea:focus {
 
 .seg-btn.active { background: var(--bg-subtle); color: var(--ink-primary); }
 
+#active-mission-container { width: 100%; max-width: 100%; min-width: 0; }
 .mission-header-sheet { margin-bottom: 14px; }
 .mission-meta-row { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
-.mission-directive-quote { margin: 10px 0; padding: 10px 14px; background: var(--bg-subtle); border-radius: 10px; font-size: 13.5px; }
-.lead-plan-box { padding: 10px 14px; background: var(--accent-primary-soft); border-radius: 10px; font-size: 12.5px; color: var(--accent-primary); margin-bottom: 10px; }
+.mission-directive-quote { margin: 10px 0; padding: 10px 14px; background: var(--bg-subtle); border-radius: 10px; font-size: 13.5px; overflow-wrap: anywhere; word-break: break-word; }
+.lead-plan-box { padding: 10px 14px; background: var(--accent-primary-soft); border-radius: 10px; font-size: 12.5px; color: var(--accent-primary); margin-bottom: 10px; overflow-wrap: anywhere; word-break: break-word; }
 
 .kanban-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
   align-items: start;
+  width: 100%;
+  max-width: 100%;
 }
 
 .kanban-col {
@@ -880,6 +901,8 @@ textarea:focus {
   border-radius: var(--radius-md);
   padding: 12px;
   min-height: 180px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .kanban-col-head {
@@ -891,7 +914,7 @@ textarea:focus {
   margin-bottom: 10px;
 }
 
-.kanban-cards { display: flex; flex-direction: column; gap: 8px; }
+.kanban-cards { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 
 .kanban-card {
   background: var(--bg-surface);
@@ -901,22 +924,26 @@ textarea:focus {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-width: 0;
+  max-width: 100%;
 }
 
-.kanban-card-title { font-size: 13.5px; font-weight: 700; line-height: 1.38; }
-.kanban-card-agent { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--ink-secondary); }
+.kanban-card-title { font-size: 13.5px; font-weight: 700; line-height: 1.38; overflow-wrap: anywhere; word-break: break-word; }
+.kanban-card-agent { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--ink-secondary); min-width: 0; }
+.kanban-card-agent span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .kanban-card-actions { display: flex; gap: 6px; flex-wrap: wrap; padding-top: 6px; border-top: 1px solid var(--bg-subtle); }
 
-.task-stack { display: flex; flex-direction: column; gap: 10px; }
-.task-row-card { background: var(--bg-surface); border: 1px solid var(--border-hairline); border-radius: var(--radius-md); padding: 16px; }
-.task-top { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
-.task-title { margin: 0; font-size: 14.5px; font-weight: 700; }
-.task-desc { margin: 4px 0 10px; font-size: 13px; color: var(--ink-secondary); }
-.task-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; padding-top: 10px; border-top: 1px solid var(--bg-subtle); }
-.assignee-pill { display: inline-flex; align-items: center; gap: 8px; }
-.assignee-select { width: auto; padding: 5px 8px; font-size: 12.5px; border-radius: 8px; }
+.task-stack { display: flex; flex-direction: column; gap: 10px; width: 100%; max-width: 100%; min-width: 0; }
+.task-row-card { background: var(--bg-surface); border: 1px solid var(--border-hairline); border-radius: var(--radius-md); padding: 16px; min-width: 0; max-width: 100%; }
+.task-top { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 6px; flex-wrap: wrap; min-width: 0; }
+.task-top > div { min-width: 0; max-width: 100%; }
+.task-title { margin: 0; font-size: 14.5px; font-weight: 700; overflow-wrap: anywhere; word-break: break-word; }
+.task-desc { margin: 4px 0 10px; font-size: 13px; color: var(--ink-secondary); overflow-wrap: anywhere; word-break: break-word; }
+.task-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; padding-top: 10px; border-top: 1px solid var(--bg-subtle); min-width: 0; }
+.assignee-pill { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; max-width: 100%; }
+.assignee-select { width: auto; max-width: 100%; min-width: 0; padding: 5px 8px; font-size: 12.5px; border-radius: 8px; }
 .task-controls { display: flex; gap: 6px; flex-wrap: wrap; }
-.task-preview-box { margin: 8px 0; padding: 10px 12px; background: var(--bg-subtle); border-radius: 8px; font-size: 12.5px; max-height: 130px; overflow: auto; }
+.task-preview-box { margin: 8px 0; padding: 10px 12px; background: var(--bg-subtle); border-radius: 8px; font-size: 12.5px; max-height: 130px; overflow: auto; max-width: 100%; }
 
 .flow-graph-sheet { overflow-x: auto; }
 .flow-svg { width: 100%; min-width: 640px; height: auto; display: block; }
@@ -1467,7 +1494,17 @@ textarea:focus {
   .memo-decision-actions { flex-direction: column; }
   .memo-decision-actions .btn { width: 100%; padding: 11px; }
 
-  .mission-toolbar { flex-direction: column; align-items: stretch; }
+  .mission-layout { width: 100%; overflow-x: clip; }
+  .mission-toolbar { flex-direction: column; align-items: stretch; gap: 8px; }
+  .mission-tabs-bar { flex: none; width: 100%; max-width: 100%; }
+  .mission-tab { max-width: 72vw; }
+  .sheet-header.compact { flex-direction: column; align-items: stretch; gap: 10px; }
+  .sheet-header > div { min-width: 0; max-width: 100%; }
+  .sheet-title { overflow-wrap: anywhere; word-break: break-word; }
+  .kanban-col { min-height: auto; }
+  .task-top { flex-direction: column; align-items: flex-start; gap: 6px; }
+  .assignee-pill { width: 100%; }
+  .assignee-select { flex: 1; min-width: 0; max-width: 100%; }
   .segmented { width: 100%; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .seg-btn { text-align: center; }
 

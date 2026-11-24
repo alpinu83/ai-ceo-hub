@@ -594,12 +594,14 @@ async function sendTelegramDirect(settings, approval, agentName) {
   }).catch(() => {});
 }
 
-function selectLead(agents, costPolicy) {
+function selectLead(agents) {
   const active = agents.filter((a) => a.active);
-  if (costPolicy === 'free_first') {
-    return active.find((a) => a.id === 'agent_exaone') || active[0];
-  }
-  return active.find((a) => a.id === 'agent_gemini_neon') || active.find((a) => a.tier === 'lead') || active[0];
+  return (
+    active.find((a) => a.id === 'agent_gemini_neon') ||
+    active.find((a) => a.id === 'agent_claude') ||
+    active.find((a) => a.tier === 'lead') ||
+    active[0]
+  );
 }
 
 function heuristicPlan({ directive, domain, costPolicy, agents, leadAgent }) {

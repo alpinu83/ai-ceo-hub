@@ -226,24 +226,12 @@ export function buildDispatchPrompt(agent, task, mission) {
   }
 }
 
-function selectLeadAgent(agents, costPolicy) {
+function selectLeadAgent(agents) {
   const active = agents.filter((a) => a.active);
-  if (costPolicy === 'free_first') {
-    return (
-      active.find((a) => a.id === 'agent_exaone') ||
-      active.find((a) => a.costTier === 'free') ||
-      active[0]
-    );
-  }
-  if (costPolicy === 'max_quality') {
-    return (
-      active.find((a) => a.id === 'agent_gemini_neon') ||
-      active.find((a) => a.id === 'agent_claude') ||
-      active[0]
-    );
-  }
+  // Gemini 4 Neon (existing AI Pro subscription, 0 extra API cost) is ALWAYS the primary Team Lead
   return (
     active.find((a) => a.id === 'agent_gemini_neon') ||
+    active.find((a) => a.id === 'agent_claude') ||
     active.find((a) => a.tier === 'lead') ||
     active[0]
   );
@@ -449,7 +437,9 @@ export async function decomposeDirective({ directive, title, domain, costPolicy,
     const system = `당신은 AI 조직의 총괄 팀장(${leadAgent.name})입니다.
 CEO의 지시를 3~5개 구체적 실무 작업으로 분해하고, 아래 조직원 중 최적 담당자(assigneeId)를 배정하세요.
 비용 정책: ${costPolicy} (free_first=무료 모델/에이전트 최대한 우선, balanced=핵심 기획만 유료·실무는 무료, max_quality=최고 성능 우선).
-결제·예약 확정·외부 이메일/문자 발송·프로덕션 배포 등 되돌리기 어려운 행동은 반드시 requiresApproval=true로 지정하세요.
+결재 규칙:
+- 내부 초안 작성, SEO 콘텐츠/글 작성, 리서치, 분석, 요약, 기획안 작성(특히 agent_exaone 담당)은 반드시 requiresApproval=false로 지정하세요.
+- 오직 실제 외부 결제, 식당/병원 예약 확정, 외부 이메일 실제 발송, 프로덕션 실제 배포처럼 되돌리기 어려운 외부 실행만 requiresApproval=true로 지정하세요.
 
 [활성 AI 조직원]
 ${rosterText}`;
@@ -463,10 +453,17 @@ ${rosterText}`;
       });
 
       const validIds = new Set(activeAgents.map((a) => a.id));
-      const normalized = object.tasks.map((t) => ({
-        ...t,
-        assigneeId: validIds.has(t.assigneeId) ? t.assigneeId : activeAgents[0].id
-      }));
+      const normalized = object.tasks.map((t) => {
+        const safeAssignee = validIds.has(t.assigneeId) ? t.assigneeId : activeAgents[0].id;
+        // Internal drafts/content by EXAONE do not execute external payments/deploys — keep requiresApproval false
+        const needsApproval =
+          safeAssignee === 'agent_exaone' ? false : Boolean(t.requiresApproval);
+        return {
+          ...t,
+          assigneeId: safeAssignee,
+          requiresApproval: needsApproval
+        };
+      });
 
       return {
         leadAgentId: leadAgent.id,
@@ -610,11 +607,12 @@ ${rows}
 }
 
 export function createApprovalForTask(task, agent, mission, reason, proposedAction) {
+  const leadId = mission?.leadAgentId || 'agent_gemini_neon';
   return {
     id: uid('apr'),
     missionId: mission.id,
     taskId: task.id,
-    agentId: agent.id,
+    agentId: leadId,
     title: `${task.title} — CEO 실행 승인 요청`,
     category: task.estimatedCostKRW > 0 ? '예약 · 결제' : '대외 실행 · 최종 승인',
     riskLevel: task.estimatedCostKRW >= 100000 ? 'high' : task.estimatedCostKRW > 0 ? 'medium' : 'low',
@@ -622,7 +620,7 @@ export function createApprovalForTask(task, agent, mission, reason, proposedActi
     depositKRW: 0,
     summary:
       reason ||
-      `${agent.name}이(가) "${task.title}" 사전 준비를 마치고 실제 실행(예약/결제/발송/배포) 전 CEO 결재를 요청했습니다.`,
+      `[실무: ${agent.name} → 총괄 팀장 검토 후 상신] "${task.title}" 사전 준비를 마치고 실제 실행(예약/결제/발송/배포) 전 CEO 결재를 요청합니다.`,
     proposedAction:
       proposedAction || `승인 시 "${task.title}" 작업이 확정 상태로 전환되며, 팀장 최종 임원 보고서에 반영됩니다.`,
     status: 'pending',

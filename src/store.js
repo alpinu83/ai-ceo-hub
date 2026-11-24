@@ -495,6 +495,13 @@ export function loadDb() {
         if (t.assigneeId === 'agent_gemini_free') t.assigneeId = 'agent_exaone';
       });
     }
+    if (Array.isArray(parsed.missions)) {
+      parsed.missions.forEach((m) => {
+        if (!m.leadAgentId || m.leadAgentId === 'agent_exaone' || m.leadAgentId === 'agent_gemini_free') {
+          m.leadAgentId = 'agent_gemini_neon';
+        }
+      });
+    }
     if (!Array.isArray(parsed.messages)) {
       parsed.messages = def.messages;
     } else if (Array.isArray(parsed.missions)) {
