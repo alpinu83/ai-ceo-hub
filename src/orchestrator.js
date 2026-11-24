@@ -28,18 +28,17 @@ function resolveLanguageModel(agent, settings) {
     return { model: client(modelName), label: `litellm:${modelName}` };
   }
 
-  if (agent.connectionMode !== 'api') return null;
-
+  // Gemini Team Lead runs directly on real Google AI Studio API whenever a Gemini API key is configured
   if (agent.provider === 'gemini') {
     const cfg = providers.gemini;
     if (!cfg?.apiKey) return null;
     const google = createGoogleGenerativeAI({ apiKey: cfg.apiKey });
-    const modelName =
-      agent.costTier === 'free'
-        ? cfg.freeModel || 'gemini-2.5-flash'
-        : agent.modelId || cfg.paidModel || 'gemini-4-neon';
+    const rawModel = String(cfg.freeModel || 'gemini-2.5-flash').trim();
+    const modelName = rawModel && rawModel !== 'gemini-4-neon' ? rawModel : 'gemini-2.5-flash';
     return { model: google(modelName), label: `gemini:${modelName}` };
   }
+
+  if (agent.connectionMode !== 'api') return null;
 
   if (agent.provider === 'claude') {
     const cfg = providers.claude;
@@ -402,6 +401,13 @@ function heuristicDecompose({ directive, domain, costPolicy, agents, leadAgent }
 }
 
 function resolveLiveBackendModel(settings) {
+  const gem = settings?.providers?.gemini;
+  if (gem?.apiKey) {
+    const google = createGoogleGenerativeAI({ apiKey: gem.apiKey });
+    const rawModel = String(gem.freeModel || 'gemini-2.5-flash').trim();
+    const modelName = rawModel && rawModel !== 'gemini-4-neon' ? rawModel : 'gemini-2.5-flash';
+    return { model: google(modelName), label: `gemini:${modelName}` };
+  }
   const exa = settings?.providers?.exaone;
   if (exa?.apiKey) {
     const client = createOpenAI({

@@ -594,6 +594,10 @@ export async function initCloudPersistence() {
           const parsed = JSON.parse(raw);
           if (parsed && parsed.settings && Array.isArray(parsed.agents)) {
             // App settings saved in Gist take priority! Only fall back to Render env vars when Gist value is empty/invalid.
+            if (!parsed.settings.providers?.gemini?.apiKey && process.env.GEMINI_API_KEY) {
+              parsed.settings.providers.gemini = parsed.settings.providers.gemini || { freeModel: 'gemini-2.5-flash' };
+              parsed.settings.providers.gemini.apiKey = process.env.GEMINI_API_KEY;
+            }
             if (!parsed.settings.providers?.exaone?.apiKey && process.env.EXAONE_API_KEY) {
               parsed.settings.providers.exaone.apiKey = process.env.EXAONE_API_KEY;
             }

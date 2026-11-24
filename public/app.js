@@ -122,7 +122,8 @@ const RENDER_BACKEND_URL = 'https://ai-ceo-hub.onrender.com';
 
 let state = null;
 let currentView = 'command';
-let missionViewMode = 'board'; // 'board' | 'list' | 'graph'
+let missionViewMode = 'tasks'; // 'tasks' | 'report'
+let missionStatusFilter = 'all'; // 'all' | 'active' | 'external' | 'approval' | 'done'
 let selectedMissionId = null;
 let officeMissionFilter = 'all'; // 'all' | missionId
 let selectedApprovalId = null;
@@ -474,15 +475,14 @@ function renderActiveMission(mission) {
   const missionHeader = `
     <div class="sheet mission-header-sheet">
       <div class="sheet-header compact">
-        <div>
+        <div style="min-width:0;">
           <div class="mission-meta-row">
             <span class="badge badge-neutral">${esc(DOMAIN_LABELS[mission.domain] || mission.domain)}</span>
-            <span class="badge badge-blue">${esc(POLICY_LABELS[mission.costPolicy] || mission.costPolicy)}</span>
             <span class="badge badge-green">총괄 팀장: ${esc(lead?.name || '팀장')}</span>
           </div>
           <h2 class="sheet-title">${esc(mission.title)}</h2>
         </div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
           ${
             runnableCount > 0
               ? `<button type="button" class="btn btn-primary btn-sm" id="btn-run-all-mission" data-mission-id="${esc(mission.id)}">
@@ -493,11 +493,7 @@ function renderActiveMission(mission) {
           }
           <button type="button" class="btn btn-ghost btn-sm" id="btn-open-office-mission">
             <i data-lucide="messages-square" class="icon-xs"></i>
-            <span>직원 회의 보기</span>
-          </button>
-          <button type="button" class="btn btn-ghost btn-sm" id="btn-synthesize-report" data-mission-id="${esc(mission.id)}">
-            <i data-lucide="file-text" class="icon-xs"></i>
-            <span>팀장 최종 보고서</span>
+            <span>회의실</span>
           </button>
           <button type="button" class="btn btn-ghost btn-sm" id="btn-delete-mission" data-mission-id="${esc(mission.id)}">
             삭제
@@ -505,39 +501,21 @@ function renderActiveMission(mission) {
         </div>
       </div>
 
-      <div class="mission-directive-quote"><strong>CEO 지시:</strong> ${esc(mission.directive)}</div>
-      ${mission.leadPlanSummary ? `<div class="lead-plan-box"><strong>팀장 배분 전략:</strong> ${esc(mission.leadPlanSummary)}</div>` : ''}
+      <div class="mission-directive-quote"><strong>지시:</strong> ${esc(mission.directive)}</div>
 
       <div class="progress-row">
-        <span class="mono">미션 진척도 ${pct}% (${completed}/${tasks.length} 완료)</span>
+        <span class="mono">진척도 ${pct}% (${completed}/${tasks.length} 완료)</span>
         <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
       </div>
     </div>
   `;
 
-  let bodyHtml = '';
-  if (missionViewMode === 'board') {
-    bodyHtml = renderKanbanBoard(tasks);
-  } else if (missionViewMode === 'graph') {
-    bodyHtml = renderDelegationSvg(mission, lead, tasks);
-  } else {
-    bodyHtml = renderTaskList(tasks);
-  }
+  const bodyHtml =
+    missionViewMode === 'report'
+      ? renderMissionReportAndFlow(mission, lead, tasks)
+      : renderUnifiedTasksView(tasks);
 
-  const finalReportHtml = mission.finalReport
-    ? `<div class="sheet final-report-sheet">
-        <div class="sheet-header compact">
-          <h3 class="sheet-title">총괄 팀장 최종 임원 보고서</h3>
-          <div style="display:flex;gap:6px;">
-            <button type="button" class="btn btn-ghost btn-sm" id="btn-copy-final-report">복사</button>
-            <button type="button" class="btn btn-ghost btn-sm" id="btn-download-final-report">.md 다운로드</button>
-          </div>
-        </div>
-        <div class="markdown-body">${renderMarkdown(mission.finalReport)}</div>
-      </div>`
-    : '';
-
-  container.innerHTML = `${missionHeader}${bodyHtml}${finalReportHtml}`;
+  container.innerHTML = `${missionHeader}${bodyHtml}`;
 }
 
 function formatMentions(text = '') {
@@ -709,192 +687,167 @@ async function playLiveMessages(baseMessages, newTurns, finalState) {
   renderAll();
 }
 
-function renderKanbanBoard(tasks) {
-  const columns = [
-    { key: 'queued', title: '팀장 추진 중', filter: (t) => t.status === 'queued' || t.status === 'running' },
-    { key: 'bridge', title: '외부 봇 처리 중', filter: (t) => t.status === 'awaiting_bridge' },
-    { key: 'approval', title: 'CEO 최종 결재', filter: (t) => t.status === 'awaiting_approval' },
-    { key: 'done', title: '완료', filter: (t) => t.status === 'completed' || t.status === 'rejected' }
+function renderUnifiedTasksView(tasks) {
+  const filters = [
+    { key: 'all', label: '전체', match: () => true },
+    { key: 'active', label: '추진 중', match: (t) => t.status === 'queued' || t.status === 'running' },
+    { key: 'external', label: '외부 봇', match: (t) => t.status === 'awaiting_bridge' },
+    { key: 'approval', label: 'CEO 결재', match: (t) => t.status === 'awaiting_approval' },
+    { key: 'done', label: '완료', match: (t) => t.status === 'completed' || t.status === 'rejected' }
   ];
 
-  return `<div class="kanban-grid">
-    ${columns
-      .map((col) => {
-        const list = tasks.filter(col.filter);
-        return `<div class="kanban-col">
-          <div class="kanban-col-head">
-            <span>${col.title}</span>
-            <span class="mono">${list.length}</span>
-          </div>
-          <div class="kanban-cards">
-            ${
-              list.length === 0
-                ? '<div class="form-hint" style="padding:12px 4px;text-align:center;">항목 없음</div>'
-                : list
-                    .map((t) => {
-                      const ag = getAgent(t.assigneeId) || state.agents[0];
-                      const statusChip =
-                        t.status === 'running'
-                          ? '<span class="badge badge-blue">자동 작업 중</span>'
-                          : t.status === 'awaiting_bridge'
-                            ? '<span class="badge badge-neutral">봇 위임됨</span>'
-                            : t.status === 'completed'
-                              ? '<span class="badge badge-green">완료</span>'
-                              : '';
-                      return `<article class="kanban-card">
-                        <div style="display:flex;gap:5px;flex-wrap:wrap;">
-                          <span class="badge badge-neutral">${esc(MODE_LABELS[ag.connectionMode])}</span>
-                          ${statusChip}
-                          ${t.requiresApproval ? '<span class="badge badge-amber">CEO 결재</span>' : ''}
-                        </div>
-                        <div class="kanban-card-title">${esc(t.title)}</div>
-                        <div class="kanban-card-agent">
-                          <span class="agent-avatar sm" style="background:${esc(ag.accent)}">${esc(ag.shortCode)}</span>
-                          <span>${esc(ag.name)}</span>
-                        </div>
-                        <div class="kanban-card-actions">
-                          <button type="button" class="btn btn-ghost btn-sm" data-open-drawer="${esc(t.id)}">상세 · 결과</button>
-                          ${
-                            t.status === 'awaiting_approval'
-                              ? `<button type="button" class="btn btn-amber btn-sm" data-jump-approval="${esc(t.id)}">결재하기</button>`
-                              : ''
-                          }
-                        </div>
-                      </article>`;
-                    })
-                    .join('')
-            }
-          </div>
-        </div>`;
+  const activeFilterObj = filters.find((f) => f.key === missionStatusFilter) || filters[0];
+  const filtered = tasks.filter(activeFilterObj.match);
+
+  const filterBar = `<div class="task-filter-bar" role="tablist" aria-label="업무 상태 필터">
+    ${filters
+      .map((f) => {
+        const count = tasks.filter(f.match).length;
+        if (f.key !== 'all' && count === 0 && missionStatusFilter !== f.key) return '';
+        return `<button type="button" class="filter-chip ${missionStatusFilter === f.key ? 'active' : ''}" data-task-filter="${f.key}">
+          <span>${f.label}</span>
+          <span class="mono">${count}</span>
+        </button>`;
       })
       .join('')}
   </div>`;
-}
 
-function renderTaskList(tasks) {
   const agentOptions = state.agents
     .filter((a) => a.active)
-    .map((a) => ({ id: a.id, label: `${a.name} (${MODE_LABELS[a.connectionMode]})` }));
+    .map((a) => ({ id: a.id, label: a.name }));
 
-  return `<div class="task-stack">
-    ${tasks
-      .map((t) => {
-        const ag = getAgent(t.assigneeId) || state.agents[0];
-        const st = STATUS_META[t.status] || { label: t.status, cls: 'badge-neutral' };
-        const selectOpts = agentOptions
-          .map(
-            (opt) =>
-              `<option value="${esc(opt.id)}" ${opt.id === t.assigneeId ? 'selected' : ''}>${esc(opt.label)}</option>`
-          )
-          .join('');
+  if (filtered.length === 0) {
+    return `${filterBar}<div class="empty-state">해당 상태의 업무가 없습니다.</div>`;
+  }
 
-        return `<article class="task-row-card">
-          <div class="task-top">
-            <div>
-              <h3 class="task-title">${esc(t.title)}</h3>
-              <p class="task-desc">${esc(t.description)}</p>
-            </div>
-            <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
-              ${t.requiresApproval ? '<span class="badge badge-amber">CEO 결재</span>' : ''}
-              <span class="badge ${st.cls}">${esc(st.label)}</span>
-            </div>
-          </div>
-
-          ${t.output ? `<div class="task-preview-box markdown-body">${renderMarkdown(t.output)}</div>` : ''}
-
-          <div class="task-footer">
-            <div class="assignee-pill">
-              <span class="agent-avatar" style="background:${esc(ag.accent)}">${esc(ag.shortCode)}</span>
-              <select class="assignee-select" data-reassign-task="${esc(t.id)}" aria-label="담당 AI 변경">${selectOpts}</select>
-            </div>
-
-            <div class="task-controls">
-              <button type="button" class="btn btn-ghost btn-sm" data-open-drawer="${esc(t.id)}">상세 · 결과</button>
-              ${
-                t.status === 'awaiting_approval'
-                  ? `<button type="button" class="btn btn-amber btn-sm" data-jump-approval="${esc(t.id)}">결재함 이동</button>`
-                  : ''
-              }
-            </div>
-          </div>
-        </article>`;
-      })
-      .join('')}
-  </div>`;
-}
-
-function renderDelegationSvg(mission, lead, tasks) {
-  const rowH = 74;
-  const h = Math.max(260, tasks.length * rowH + 56);
-  const w = 880;
-  const cy = h / 2;
-
-  const statusColor = (st) => {
-    if (st === 'completed') return '#0e6245';
-    if (st === 'awaiting_approval') return '#9e5606';
-    if (st === 'rejected') return '#b42318';
-    return '#1c5685';
-  };
-
-  const taskNodes = tasks
-    .map((t, i) => {
+  const cards = filtered
+    .map((t) => {
       const ag = getAgent(t.assigneeId) || state.agents[0];
-      const ty = 42 + i * rowH;
-      const color = statusColor(t.status);
-      const stLabel = (STATUS_META[t.status] || { label: t.status }).label;
+      const st = STATUS_META[t.status] || { label: t.status, cls: 'badge-neutral' };
+      const selectOpts = agentOptions
+        .map(
+          (opt) =>
+            `<option value="${esc(opt.id)}" ${opt.id === t.assigneeId ? 'selected' : ''}>${esc(opt.label)}</option>`
+        )
+        .join('');
 
-      const edgeLeadToTask = `<path d="M 335 ${cy} C 385 ${cy}, 395 ${ty + 24}, 445 ${ty + 24}" fill="none" stroke="${color}" stroke-width="1.8" stroke-dasharray="${t.status === 'completed' ? '' : '4 4'}" opacity="0.7" />`;
-      const edgeTaskToGate = t.requiresApproval
-        ? `<path d="M 695 ${ty + 24} C 725 ${ty + 24}, 725 ${cy}, 755 ${cy}" fill="none" stroke="#9e5606" stroke-width="1.8" opacity="0.85" />`
-        : '';
+      return `<article class="task-row-card">
+        <div class="task-top">
+          <div style="flex:1;min-width:0;">
+            <h3 class="task-title">${esc(t.title)}</h3>
+            <p class="task-desc">${esc(t.description)}</p>
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;align-items:flex-start;">
+            ${t.requiresApproval && t.status !== 'awaiting_approval' ? '<span class="badge badge-amber">CEO 결재</span>' : ''}
+            <span class="badge ${st.cls}">${esc(st.label)}</span>
+          </div>
+        </div>
 
-      return `
-        ${edgeLeadToTask}
-        ${edgeTaskToGate}
-        <g class="flow-node" data-svg-task="${esc(t.id)}">
-          <rect x="445" y="${ty}" width="250" height="50" rx="8" fill="var(--bg-surface)" stroke="${color}" stroke-width="1.4" />
-          <rect x="454" y="${ty + 11}" width="28" height="28" rx="6" fill="${esc(ag.accent)}" />
-          <text x="468" y="${ty + 29}" text-anchor="middle" fill="#ffffff" font-size="11" font-family="IBM Plex Mono" font-weight="600">${esc(ag.shortCode)}</text>
-          <text x="492" y="${ty + 21}" fill="var(--ink-primary)" font-size="12" font-weight="700">${esc(ag.name)} · ${esc(stLabel)}</text>
-          <text x="492" y="${ty + 38}" fill="var(--ink-secondary)" font-size="11">${esc(t.title.slice(0, 20))}${t.title.length > 20 ? '…' : ''}</text>
-        </g>
-      `;
+        <div class="task-footer">
+          <div class="assignee-pill">
+            <span class="agent-avatar sm" style="background:${esc(ag.accent)}">${esc(ag.shortCode)}</span>
+            <select class="assignee-select" data-reassign-task="${esc(t.id)}" aria-label="담당 AI 변경">${selectOpts}</select>
+          </div>
+
+          <div class="task-controls">
+            <button type="button" class="btn btn-ghost btn-sm" data-open-drawer="${esc(t.id)}">${t.output ? '결과 보기' : '상세'}</button>
+            ${
+              t.status === 'awaiting_approval'
+                ? `<button type="button" class="btn btn-amber btn-sm" data-jump-approval="${esc(t.id)}">결재하기</button>`
+                : ''
+            }
+          </div>
+        </div>
+      </article>`;
     })
     .join('');
 
-  return `<div class="sheet flow-graph-sheet">
-    <div class="sheet-header compact">
-      <div>
-        <h3 class="sheet-title">실시간 지시 · 위임 토폴로지</h3>
-        <p class="sheet-desc">팀원 노드를 클릭하면 맞춤 지시서와 실행 결과 드로어가 열립니다.</p>
+  return `${filterBar}<div class="task-stack">${cards}</div>`;
+}
+
+function renderMissionReportAndFlow(mission, lead, tasks) {
+  const approvalTasks = tasks.filter((t) => t.requiresApproval || t.status === 'awaiting_approval');
+  const pendingApprovalCount = approvalTasks.filter((t) => t.status === 'awaiting_approval').length;
+
+  const pillHtml = tasks
+    .map((t) => {
+      const ag = getAgent(t.assigneeId) || state.agents[0];
+      const st = STATUS_META[t.status] || { label: t.status };
+      return `<button type="button" class="flow-pill" data-open-drawer="${esc(t.id)}">
+        <span class="agent-avatar sm" style="background:${esc(ag.accent)}">${esc(ag.shortCode)}</span>
+        <span class="flow-pill-body">
+          <span class="flow-pill-agent">
+            <span class="flow-dot ${esc(t.status)}"></span>
+            <span>${esc(ag.name)}</span>
+            <span style="font-weight:500;color:var(--ink-muted);">· ${esc(st.label)}</span>
+          </span>
+          <span class="flow-pill-task">${esc(t.title)}</span>
+        </span>
+      </button>`;
+    })
+    .join('');
+
+  const flowHtml = `<div class="flow-pipeline">
+    <div class="flow-step">
+      <div class="flow-step-head">
+        <span class="flow-step-kicker">STEP 1 · 지시 &amp; 총괄</span>
+        <span class="badge badge-green">팀장 전결 자동 추진</span>
+      </div>
+      <div class="flow-step-title">${esc(state.settings.ceoName || '대표님')} (CEO) → ${esc(lead?.name || 'Gemini 4 Neon')} (총괄 팀장)</div>
+    </div>
+
+    <div class="flow-arrow">↓</div>
+
+    <div class="flow-step">
+      <div class="flow-step-head">
+        <span class="flow-step-kicker">STEP 2 · 팀장 분배 &amp; 실무 (${tasks.length}건)</span>
+        <span class="form-hint" style="margin:0;">항목 클릭 시 결과 확인</span>
+      </div>
+      <div class="flow-pill-grid">${pillHtml}</div>
+    </div>
+
+    <div class="flow-arrow">↓</div>
+
+    <div class="flow-step">
+      <div class="flow-step-head">
+        <span class="flow-step-kicker">STEP 3 · CEO 최종 결재 게이트</span>
+        ${
+          pendingApprovalCount > 0
+            ? `<button type="button" class="btn btn-amber btn-sm" data-jump-view="approvals">결재함 이동 (${pendingApprovalCount})</button>`
+            : '<span class="badge badge-neutral">결재 대기 없음</span>'
+        }
+      </div>
+      <div class="flow-step-title">
+        ${
+          approvalTasks.length > 0
+            ? `중대 의사결정 ${approvalTasks.length}건만 총괄 팀장 검토 후 CEO 결재함 상신`
+            : '전 항목 일반 실무 — 총괄 팀장 전결 자동 처리'
+        }
       </div>
     </div>
-    <svg class="flow-svg" viewBox="0 0 ${w} ${h}" role="img" aria-label="AI 조직 위임 흐름도">
-      <!-- CEO Node -->
-      <path d="M 140 ${cy} L 185 ${cy}" stroke="var(--border-strong)" stroke-width="2" />
-      <g>
-        <rect x="16" y="${cy - 28}" width="124" height="56" rx="10" fill="var(--ink-primary)" />
-        <text x="78" y="${cy - 4}" text-anchor="middle" fill="var(--bg-canvas)" font-size="12" font-weight="700">${esc(state.settings.ceoName || 'CEO')}</text>
-        <text x="78" y="${cy + 14}" text-anchor="middle" fill="var(--bg-canvas)" font-size="10.5" opacity="0.78">최종 지시권자</text>
-      </g>
-
-      <!-- Lead Node -->
-      <g>
-        <rect x="185" y="${cy - 30}" width="150" height="60" rx="10" fill="var(--accent-primary-soft)" stroke="var(--accent-primary)" stroke-width="1.6" />
-        <text x="260" y="${cy - 5}" text-anchor="middle" fill="var(--accent-primary)" font-size="12.5" font-weight="700">${esc(lead?.name || '총괄 팀장')}</text>
-        <text x="260" y="${cy + 13}" text-anchor="middle" fill="var(--ink-secondary)" font-size="10.5">업무 분배 · 종합 보고</text>
-      </g>
-
-      ${taskNodes}
-
-      <!-- CEO Approval Gate Node -->
-      <g>
-        <rect x="755" y="${cy - 30}" width="112" height="60" rx="10" fill="var(--accent-amber-soft)" stroke="var(--accent-amber)" stroke-width="1.6" />
-        <text x="811" y="${cy - 5}" text-anchor="middle" fill="var(--accent-amber)" font-size="12" font-weight="700">CEO 결재함</text>
-        <text x="811" y="${cy + 13}" text-anchor="middle" fill="var(--ink-secondary)" font-size="10.5">결제·예약 승인</text>
-      </g>
-    </svg>
   </div>`;
+
+  const reportHtml = mission.finalReport
+    ? `<div class="sheet final-report-sheet">
+        <div class="sheet-header compact">
+          <h3 class="sheet-title">총괄 팀장 최종 임원 보고서</h3>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <button type="button" class="btn btn-ghost btn-sm" id="btn-synthesize-report" data-mission-id="${esc(mission.id)}">갱신</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="btn-copy-final-report">복사</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="btn-download-final-report">.md</button>
+          </div>
+        </div>
+        <div class="markdown-body">${renderMarkdown(mission.finalReport)}</div>
+      </div>`
+    : `<div class="sheet final-report-sheet">
+        <div class="sheet-header compact">
+          <h3 class="sheet-title">총괄 팀장 최종 임원 보고서</h3>
+          <button type="button" class="btn btn-primary btn-sm" id="btn-synthesize-report" data-mission-id="${esc(mission.id)}">보고서 생성</button>
+        </div>
+        <p class="form-hint" style="margin:0;">내부 업무가 끝나면 자동 생성되며, 위 버튼으로 지금 바로 취합할 수도 있습니다.</p>
+      </div>`;
+
+  return `${flowHtml}${reportHtml}`;
 }
 
 function renderApprovalsView() {
@@ -1121,8 +1074,12 @@ function renderIntegrationsView() {
   document.getElementById('set-ceo-name').value = s.ceoName || '';
 
   const p = s.providers || {};
+  const modelGeminiEl = document.getElementById('model-gemini');
+  if (modelGeminiEl) modelGeminiEl.value = p.gemini?.freeModel || 'gemini-2.5-flash';
   document.getElementById('model-exaone').value = p.exaone?.model || 'k-exaone_v2.5';
 
+  setKeyStatus('status-gemini', p.gemini);
+  setKeyStatus('status-gemini-quick', p.gemini);
   setKeyStatus('status-exaone', p.exaone);
   setKeyStatus('status-exaone-quick', p.exaone);
 
@@ -1179,7 +1136,7 @@ function renderIntegrationsView() {
   refreshPushUi().catch(() => {});
 }
 
-let currentConfigAgent = 'exaone';
+let currentConfigAgent = 'gemini';
 
 const BRIDGE_AGENT_META = {
   pickle: { title: '피클 (알렉스) 연결 설정', inboxKey: 'pickle' },
@@ -1187,17 +1144,16 @@ const BRIDGE_AGENT_META = {
   instinct: { title: '인스팅스 (Instinct) 연결 설정', inboxKey: 'instinct' },
   muse: { title: 'Meta Muse 연결 설정', inboxKey: 'muse' },
   cue: { title: 'Manus Cue 연결 설정', inboxKey: 'cue' },
-  claude: { title: 'Claude 연결 설정', inboxKey: 'claude' },
-  gemini: { title: 'Gemini 4 Neon 연결 설정', inboxKey: 'gemini' }
+  claude: { title: 'Claude 연결 설정', inboxKey: 'claude' }
 };
 
-function selectConfigAgent(agentKey = 'exaone') {
+function selectConfigAgent(agentKey = 'gemini') {
   currentConfigAgent = agentKey;
   document.querySelectorAll('[data-config-agent]').forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.configAgent === agentKey);
   });
 
-  const formPanels = ['exaone', 'telegram', 'general'];
+  const formPanels = ['gemini', 'exaone', 'telegram', 'general'];
   const isFormPanel = formPanels.includes(agentKey);
   formPanels.forEach((key) => {
     document.getElementById(`agent-panel-${key}`)?.classList.toggle('active', agentKey === key);
@@ -1681,6 +1637,13 @@ function bindEvents() {
       return;
     }
 
+    if (target.dataset.taskFilter) {
+      missionStatusFilter = target.dataset.taskFilter;
+      renderMissionsView();
+      refreshIcons();
+      return;
+    }
+
     if (target.dataset.openDrawer) {
       openDrawer(target.dataset.openDrawer);
       return;
@@ -2065,7 +2028,7 @@ function bindEvents() {
     }
   });
 
-  // Save Settings (Clean active stack: EXAONE + Telegram + Basic Info)
+  // Save Settings (Clean active stack: Gemini + EXAONE + Telegram + Basic Info)
   document.getElementById('settings-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const payload = {
@@ -2077,6 +2040,10 @@ function bindEvents() {
         pollingEnabled: document.getElementById('tg-polling-enabled').checked
       },
       providers: {
+        gemini: {
+          apiKey: document.getElementById('key-gemini')?.value.trim() || '',
+          freeModel: document.getElementById('model-gemini')?.value.trim() || 'gemini-2.5-flash'
+        },
         exaone: {
           apiKey: document.getElementById('key-exaone').value.trim(),
           model: document.getElementById('model-exaone').value.trim()
@@ -2086,7 +2053,7 @@ function bindEvents() {
     try {
       const res = await api('/api/settings', { method: 'PUT', body: JSON.stringify(payload) });
       state = res.state;
-      ['key-exaone', 'tg-bot-token'].forEach((id) => {
+      ['key-gemini', 'key-exaone', 'tg-bot-token'].forEach((id) => {
         const el = document.getElementById(id);
         if (el) el.value = '';
       });

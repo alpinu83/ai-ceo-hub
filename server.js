@@ -184,7 +184,9 @@ async function autoStartLiveMissionTasks(missionId) {
   if (!mission) return;
 
   const hasLiveEngine = Boolean(
-    db.settings?.providers?.exaone?.apiKey || db.settings?.providers?.claude?.apiKey
+    db.settings?.providers?.gemini?.apiKey ||
+      db.settings?.providers?.exaone?.apiKey ||
+      db.settings?.providers?.claude?.apiKey
   );
   if (!hasLiveEngine) return;
 
