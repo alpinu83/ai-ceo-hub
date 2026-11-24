@@ -47,7 +47,7 @@ export function createDefaultState() {
       providers: {
         gemini: {
           apiKey: process.env.GEMINI_API_KEY || '',
-          freeModel: 'gemini-2.5-flash',
+          freeModel: 'gemini-4-hydrogen',
           paidModel: 'gemini-4-neon',
           enabled: Boolean(process.env.GEMINI_API_KEY)
         },

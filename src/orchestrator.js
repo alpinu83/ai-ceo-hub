@@ -33,8 +33,8 @@ function resolveLanguageModel(agent, settings) {
     const cfg = providers.gemini;
     if (!cfg?.apiKey) return null;
     const google = createGoogleGenerativeAI({ apiKey: cfg.apiKey });
-    const rawModel = String(cfg.freeModel || 'gemini-2.5-flash').trim();
-    const modelName = rawModel && rawModel !== 'gemini-4-neon' ? rawModel : 'gemini-2.5-flash';
+    const rawModel = String(cfg.freeModel || '').trim();
+    const modelName = rawModel && rawModel !== 'gemini-2.5-flash' ? rawModel : 'gemini-4-hydrogen';
     return { model: google(modelName), label: `gemini:${modelName}` };
   }
 
@@ -113,7 +113,8 @@ export async function testProviderConnection(providerKey, settings) {
   if (providerKey === 'gemini') {
     if (!p.apiKey) throw new Error('Gemini API 키가 설정되지 않았습니다.');
     const google = createGoogleGenerativeAI({ apiKey: p.apiKey });
-    const modelName = p.freeModel || 'gemini-2.5-flash';
+    const rawModel = String(p.freeModel || '').trim();
+    const modelName = rawModel && rawModel !== 'gemini-2.5-flash' ? rawModel : 'gemini-4-hydrogen';
     const { text } = await generateText({
       model: google(modelName),
       prompt: 'Respond with exactly: OK'
@@ -404,8 +405,8 @@ function resolveLiveBackendModel(settings) {
   const gem = settings?.providers?.gemini;
   if (gem?.apiKey) {
     const google = createGoogleGenerativeAI({ apiKey: gem.apiKey });
-    const rawModel = String(gem.freeModel || 'gemini-2.5-flash').trim();
-    const modelName = rawModel && rawModel !== 'gemini-4-neon' ? rawModel : 'gemini-2.5-flash';
+    const rawModel = String(gem.freeModel || '').trim();
+    const modelName = rawModel && rawModel !== 'gemini-2.5-flash' ? rawModel : 'gemini-4-hydrogen';
     return { model: google(modelName), label: `gemini:${modelName}` };
   }
   const exa = settings?.providers?.exaone;

@@ -1075,7 +1075,12 @@ function renderIntegrationsView() {
 
   const p = s.providers || {};
   const modelGeminiEl = document.getElementById('model-gemini');
-  if (modelGeminiEl) modelGeminiEl.value = p.gemini?.freeModel || 'gemini-2.5-flash';
+  if (modelGeminiEl) {
+    const saved = p.gemini?.freeModel || 'gemini-4-hydrogen';
+    const targetVal = saved === 'gemini-2.5-flash' ? 'gemini-4-hydrogen' : saved;
+    const hasOpt = Array.from(modelGeminiEl.options).some((o) => o.value === targetVal);
+    modelGeminiEl.value = hasOpt ? targetVal : 'gemini-4-hydrogen';
+  }
   document.getElementById('model-exaone').value = p.exaone?.model || 'k-exaone_v2.5';
 
   setKeyStatus('status-gemini', p.gemini);
@@ -1180,9 +1185,14 @@ function selectConfigAgent(agentKey = 'gemini') {
 
     const inboxBtn = document.getElementById('btn-test-pickle-inbox');
     if (inboxBtn) {
-      inboxBtn.textContent = `${agentKey === 'pickle' ? '피클' : agentKey === 'vooy' ? '부이' : agentKey === 'instinct' ? '인스팅스' : agentKey} 수신함 테스트`;
+      const label = agentKey === 'pickle' ? '피클' : agentKey === 'vooy' ? '부이' : agentKey === 'instinct' ? '인스팅스' : agentKey;
+      inboxBtn.textContent = `${label} 수신함 테스트`;
       inboxBtn.dataset.testInboxKey = meta.inboxKey;
+      inboxBtn.style.display = isInboxPrimary || agentKey === 'cue' ? '' : 'none';
     }
+    document.querySelectorAll('[data-mcp-test]').forEach((btn) => {
+      btn.style.display = isInboxPrimary ? 'none' : '';
+    });
   }
 }
 
@@ -2042,7 +2052,7 @@ function bindEvents() {
       providers: {
         gemini: {
           apiKey: document.getElementById('key-gemini')?.value.trim() || '',
-          freeModel: document.getElementById('model-gemini')?.value.trim() || 'gemini-2.5-flash'
+          freeModel: document.getElementById('model-gemini')?.value.trim() || 'gemini-4-hydrogen'
         },
         exaone: {
           apiKey: document.getElementById('key-exaone').value.trim(),
