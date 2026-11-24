@@ -29,6 +29,10 @@
           <span class="nav-left"><i data-lucide="compass" class="icon-sm"></i><span>지휘실</span></span>
           <span class="nav-meta" id="nav-mission-count">1</span>
         </button>
+        <button class="nav-item" data-view="office" id="nav-office">
+          <span class="nav-left"><i data-lucide="messages-square" class="icon-sm"></i><span>라이브 오피스 · 대화</span></span>
+          <span class="nav-meta" id="nav-chat-count">6</span>
+        </button>
         <button class="nav-item" data-view="approvals" id="nav-approvals">
           <span class="nav-left"><i data-lucide="stamp" class="icon-sm"></i><span>CEO 결재함</span></span>
           <span class="nav-badge" id="nav-approval-badge">0</span>
@@ -222,6 +226,84 @@
                 <ol class="activity-list" id="activity-list"></ol>
               </div>
             </aside>
+          </div>
+        </section>
+
+        <!-- VIEW 1.5: LIVE AI OFFICE FLOOR & TEAM LOUNGE -->
+        <section class="view" id="view-office" aria-label="라이브 오피스 및 사내 회의실">
+          <div class="office-layout">
+            <!-- Left: Live Office Floor -->
+            <div class="sheet office-floor-sheet">
+              <div class="sheet-header compact">
+                <div>
+                  <h2 class="sheet-title">실시간 AI 오피스 플로어</h2>
+                  <p class="sheet-desc">직원 책상을 클릭하면 회의실에서 바로 @멘션해 지시하거나 대화할 수 있습니다.</p>
+                </div>
+                <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                  <button type="button" class="btn btn-primary btn-sm" id="btn-start-standup">
+                    <i data-lucide="play" class="icon-xs"></i>
+                    <span>팀 스탠드업 · 실시간 협업 보기</span>
+                  </button>
+                </div>
+              </div>
+
+              <div class="office-handoff-bar" id="office-handoff-bar">
+                <div class="office-handoff-flow" id="office-handoff-text">
+                  <i data-lucide="radio" class="icon-xs"></i>
+                  <span>전 직원이 업무 대기 및 협업 채널에 접속해 있습니다.</span>
+                </div>
+                <span class="mono muted-tag" id="office-mission-badge">미션 연동 중</span>
+              </div>
+
+              <div>
+                <div class="office-zone-label">
+                  <span>EXECUTIVE LEAD SUITE · 총괄 · 수석 팀장석</span>
+                  <span>클릭해서 @호출</span>
+                </div>
+                <div class="desk-grid" id="office-lead-desks"></div>
+              </div>
+
+              <div>
+                <div class="office-zone-label">
+                  <span>SPECIALIST & FIELD STUDIO · 실무 · 실행 팀원석</span>
+                  <span>실시간 상태 · 말풍선</span>
+                </div>
+                <div class="desk-grid workers" id="office-worker-desks"></div>
+              </div>
+            </div>
+
+            <!-- Right: Real-time #전사-회의실 Team Lounge -->
+            <div class="sheet lounge-sheet">
+              <div class="lounge-header">
+                <div>
+                  <div class="lounge-channel">
+                    <i data-lucide="hash" class="icon-sm"></i>
+                    <span>전사-회의실</span>
+                  </div>
+                  <div class="form-hint">팀장과 팀원들이 업무를 주고받으며 대화합니다. CEO도 직접 끼어들어 지시할 수 있습니다.</div>
+                </div>
+              </div>
+
+              <div class="lounge-feed" id="lounge-feed"></div>
+
+              <div class="typing-banner" id="lounge-typing-banner">
+                <i data-lucide="loader" class="icon-xs"></i>
+                <span id="lounge-typing-text">팀원이 답변을 정리하고 있습니다…</span>
+              </div>
+
+              <form class="lounge-composer" id="lounge-chat-form">
+                <div class="quick-mention-row" aria-label="빠른 CEO 발언">
+                  <button type="button" class="chip-btn" data-quick-chat="@전체 지금 각자 진행 상황 한 줄씩 보고해줘">@전체 현황 보고</button>
+                  <button type="button" class="chip-btn" data-quick-chat="@피클 예약금 5만원 이하 조건으로 다시 확인해줘">@피클 조건 조정</button>
+                  <button type="button" class="chip-btn" data-quick-chat="@Claude 제안서 톤을 임원 보고용으로 더 간결하게 다듬어줘">@Claude 톤 수정</button>
+                  <button type="button" class="chip-btn" data-quick-chat="@부이 매일 아침 브리핑에 경쟁사 신기능 소식도 추가해줘">@부이 브리핑 추가</button>
+                </div>
+                <div class="chat-input-row">
+                  <textarea id="lounge-chat-input" rows="2" placeholder="CEO로서 직원들에게 말을 걸어보세요 (예: @피클 @Claude 이 부분 같이 조율해봐)"></textarea>
+                  <button type="submit" class="btn btn-primary" id="btn-send-chat">전송</button>
+                </div>
+              </form>
+            </div>
           </div>
         </section>
 

@@ -9,6 +9,7 @@ import {
   loadDb,
   saveDb,
   appendLog,
+  appendMessage,
   sanitizeStateForClient,
   createDefaultState,
   uid
@@ -20,7 +21,9 @@ import {
   synthesizeMissionReport,
   createApprovalForTask,
   testProviderConnection,
-  notifyWebhook
+  notifyWebhook,
+  generateTeamChatReplies,
+  generateStandupSession
 } from './src/orchestrator.js';
 import { handleOfficialMcpHttp, MCP_TOOL_CATALOG } from './src/mcp.js';
 import {
@@ -128,6 +131,35 @@ async function createMissionInDb({ title = '', directive, domain = 'business', c
     `새 CEO 지시 "${mission.title}"을(를) ${createdTasks.length}개 실무 작업으로 분해·배정했습니다.${plan.usedLiveApi ? ' (Vercel AI SDK)' : ''}`,
     'info'
   );
+
+  appendMessage(db, {
+    missionId: mission.id,
+    senderId: 'ceo',
+    senderName: `${db.settings.ceoName || '대표님'} (CEO)`,
+    senderRole: '최종 지시 · 결재권자',
+    senderShortCode: 'CEO',
+    senderAccent: '#171614',
+    targetAgentId: lead?.id || null,
+    statusText: '새 지시 하달',
+    type: 'directive',
+    text: directive
+  });
+
+  const assignSummary = createdTasks
+    .map((t) => `@${agentMap[t.assigneeId]?.name || '팀원'} → "${t.title}"`)
+    .join(' / ');
+  appendMessage(db, {
+    missionId: mission.id,
+    senderId: lead?.id || 'agent_gemini_neon',
+    senderName: lead?.name || '총괄 팀장',
+    senderRole: lead?.roleTitle || '총괄 팀장',
+    senderShortCode: lead?.shortCode || 'GN',
+    senderAccent: lead?.accent || '#0E6245',
+    targetAgentId: createdTasks[0]?.assigneeId || null,
+    statusText: '업무 분배 완료',
+    type: 'plan',
+    text: `${plan.planSummary}\n배정 내역: ${assignSummary}`
+  });
 
   saveDb(db);
   return { mission, tasks: createdTasks, db };
@@ -362,6 +394,80 @@ app.post('/api/telegram/webhook', async (c) => {
   const update = await c.req.json().catch(() => ({}));
   const res = await handleTelegramUpdate(update, getTelegramCallbacks());
   return c.json({ ok: true, ...res });
+});
+
+// Live Team Lounge Chat — CEO talks to AI employees & watches them collaborate
+app.post('/api/chat/send', async (c) => {
+  const body = await c.req.json();
+  const text = String(body.text || '').trim();
+  if (!text) return c.json({ error: '메시지를 입력해 주세요.' }, 400);
+
+  const db = loadDb();
+  const mission =
+    db.missions.find((m) => m.id === body.missionId) || db.missions[0] || null;
+  const missionTasks = mission ? db.tasks.filter((t) => t.missionId === mission.id) : [];
+
+  const ceoMsg = appendMessage(db, {
+    missionId: mission?.id || '',
+    senderId: 'ceo',
+    senderName: `${db.settings.ceoName || '대표님'} (CEO)`,
+    senderRole: '최종 지시 · 결재권자',
+    senderShortCode: 'CEO',
+    senderAccent: '#171614',
+    targetAgentId: null,
+    statusText: '회의실 발언',
+    type: 'ceo_chat',
+    text
+  });
+
+  const replies = await generateTeamChatReplies({
+    userMessage: text,
+    mission,
+    tasks: missionTasks,
+    agents: db.agents,
+    recentMessages: db.messages || [],
+    settings: db.settings
+  });
+
+  const savedReplies = replies.map((r) => appendMessage(db, r));
+  appendLog(
+    db,
+    '사내 회의실',
+    `CEO 메시지에 ${savedReplies.map((r) => r.senderName).join(', ')} 직원이 응답했습니다.`,
+    'info'
+  );
+  saveDb(db);
+
+  return c.json({
+    ceoMessage: ceoMsg,
+    replies: savedReplies,
+    state: sanitizeStateForClient(db)
+  });
+});
+
+// Live Team Standup — watch Lead & team members report, hand off, and request CEO approval
+app.post('/api/missions/:id/standup', async (c) => {
+  const missionId = c.req.param('id');
+  const db = loadDb();
+  const mission = db.missions.find((m) => m.id === missionId);
+  if (!mission) return c.json({ error: '미션을 찾을 수 없습니다.' }, 404);
+
+  const missionTasks = db.tasks.filter((t) => t.missionId === missionId);
+  const turns = await generateStandupSession({
+    mission,
+    tasks: missionTasks,
+    agents: db.agents,
+    settings: db.settings
+  });
+
+  const savedTurns = turns.map((t) => appendMessage(db, t));
+  appendLog(db, '사내 회의실', `"${mission.title}" 실시간 팀 스탠드업(${savedTurns.length}턴)을 진행했습니다.`, 'info');
+  saveDb(db);
+
+  return c.json({
+    turns: savedTurns,
+    state: sanitizeStateForClient(db)
+  });
 });
 
 // Create Mission & Decompose via Team Lead

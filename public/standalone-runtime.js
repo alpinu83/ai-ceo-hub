@@ -317,6 +317,92 @@ function createDefaultDb() {
         level: 'approval',
         message: '성수역 식당 전화 확인 완료 — 예약금 40,000원 결제 전 CEO 결재함에 상신했습니다.'
       }
+    ],
+    messages: [
+      {
+        id: 'msg_init_1',
+        missionId: sampleMissionId,
+        senderId: 'ceo',
+        senderName: '대표님 (CEO)',
+        senderRole: '최종 지시 · 결재권자',
+        senderShortCode: 'CEO',
+        senderAccent: '#171614',
+        targetAgentId: 'agent_gemini_neon',
+        statusText: '지시 하달',
+        type: 'directive',
+        text: '이번 주 신규 클라이언트 제안서 초안 준비하고, 목요일 저녁 성수역 근처 4인 비즈니스 미팅 식당을 조사해 예약까지 진행해줘. 매일 아침 경쟁사 소식 브리핑도 세팅해줘.',
+        timestamp: now
+      },
+      {
+        id: 'msg_init_2',
+        missionId: sampleMissionId,
+        senderId: 'agent_gemini_neon',
+        senderName: 'Gemini 4 Neon',
+        senderRole: '전략·총괄 팀장',
+        senderShortCode: 'GN',
+        senderAccent: '#0E6245',
+        targetAgentId: 'agent_gemini_free',
+        statusText: '업무 분배 중',
+        type: 'plan',
+        text: '대표님 지시 확인했습니다! 비용 균형 정책으로 바로 분배하겠습니다. @Gemini(무료) 님은 경쟁사 3곳 가격·기능 리서치 먼저 부탁드리고, @Claude 수석님은 리서치 받아서 제안서 5페이지 본문 잡아주세요. @피클 님은 성수역 4인 룸 식당 전화 확인, @부이 님은 매일 오전 8시 경쟁사 브리핑 루틴 세팅 부탁드립니다!',
+        timestamp: now
+      },
+      {
+        id: 'msg_init_3',
+        missionId: sampleMissionId,
+        senderId: 'agent_gemini_free',
+        senderName: 'Gemini (무료 티어)',
+        senderRole: '리서치·초안 팀원',
+        senderShortCode: 'GM',
+        senderAccent: '#1D5B8C',
+        targetAgentId: 'agent_claude',
+        statusText: '리서치 완료 · 핸드오프',
+        type: 'handoff',
+        text: '네 팀장님! 무료 티어로 국내 경쟁사 3곳 요금제·차별점 비교 표 정리 마쳤습니다. A사는 국내 전화 예약이 없고 B사는 결재 UI가 복잡하네요. @Claude 수석님, 제안서 핵심 소구점 바로 쓰실 수 있게 표 넘겨드렸습니다!',
+        timestamp: now
+      },
+      {
+        id: 'msg_init_4',
+        missionId: sampleMissionId,
+        senderId: 'agent_claude',
+        senderName: 'Claude',
+        senderRole: '개발·기획 수석 팀장',
+        senderShortCode: 'CL',
+        senderAccent: '#9A4A2E',
+        targetAgentId: 'agent_gemini_free',
+        statusText: '제안서 초안 구성 중',
+        type: 'work',
+        text: '@Gemini(무료) 님 자료 잘 받았습니다. 비교 표가 깔끔하네요. 이걸 기반으로 ROI 섹션과 2주 파일럿 일정까지 넣어서 5페이지 제안서 초안 마무리하겠습니다. 실행 버튼 눌러주시면 바로 완성본 올리겠습니다.',
+        timestamp: now
+      },
+      {
+        id: 'msg_init_5',
+        missionId: sampleMissionId,
+        senderId: 'agent_pickle',
+        senderName: '피클 (Pickle)',
+        senderRole: '전화 예약·생활 실행',
+        senderShortCode: 'PK',
+        senderAccent: '#2F7D32',
+        targetAgentId: 'ceo',
+        statusText: 'CEO 결재 대기',
+        type: 'approval',
+        text: '@대표님 성수역 3번 출구 도보 6분 프라이빗 룸 한식 다이닝에 직접 전화해 목요일 19시 4인 빈자리 확인했습니다! 1인 6만원(예약금 4만원, 전일 18시까지 무료 취소)입니다. 결제 전이라 멈춰두고 CEO 결재함에 상신했어요 — 승인해 주시면 바로 확정하겠습니다!',
+        timestamp: now
+      },
+      {
+        id: 'msg_init_6',
+        missionId: sampleMissionId,
+        senderId: 'agent_vooy',
+        senderName: '부이 (vooy)',
+        senderRole: '정기 브리핑·모니터링',
+        senderShortCode: 'VY',
+        senderAccent: '#A15C07',
+        targetAgentId: 'agent_gemini_neon',
+        statusText: '브리핑 루틴 준비',
+        type: 'work',
+        text: '@Gemini 4 Neon 팀장님, 매일 오전 8시 경쟁사·AI 에이전트 핵심 소식 5건 자동 수집 조건 만들어 두었습니다. 기본 무료 모델만 쓰도록 세팅했고 지시서 복사해서 부이 앱에 등록하시면 내일 아침부터 브리핑이 옵니다!',
+        timestamp: now
+      }
     ]
   };
 }
@@ -329,7 +415,11 @@ function loadLocalDb() {
       saveLocalDb(init);
       return init;
     }
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed.messages)) {
+      parsed.messages = createDefaultDb().messages;
+    }
+    return parsed;
   } catch {
     return createDefaultDb();
   }
@@ -364,6 +454,14 @@ function sanitize(db) {
 function addLog(db, actor, message, level = 'info') {
   db.logs.unshift({ id: uid('log'), timestamp: new Date().toISOString(), actor, level, message });
   if (db.logs.length > 80) db.logs = db.logs.slice(0, 80);
+}
+
+function addMessage(db, msg) {
+  if (!Array.isArray(db.messages)) db.messages = [];
+  const entry = { id: uid('msg'), timestamp: new Date().toISOString(), targetAgentId: null, statusText: '대화 중', type: 'reply', ...msg };
+  db.messages.push(entry);
+  if (db.messages.length > 160) db.messages = db.messages.slice(-160);
+  return entry;
 }
 
 function buildDispatchPrompt(agent, task, mission) {
@@ -911,6 +1009,205 @@ export async function standaloneApi(path, options = {}) {
       id: body.id || 2,
       result: { count: db.tasks.length, tasks: db.tasks.map((t) => ({ id: t.id, title: t.title, assigneeId: t.assigneeId, status: t.status })) }
     };
+  }
+
+  if (method === 'POST' && path === '/api/chat/send') {
+    const text = String(body.text || '').trim();
+    if (!text) throw new Error('메시지를 입력해 주세요.');
+    const mission = db.missions.find((m) => m.id === body.missionId) || db.missions[0] || null;
+    const missionTasks = mission ? db.tasks.filter((t) => t.missionId === mission.id) : [];
+    const ceoName = db.settings.ceoName || '대표님';
+
+    const ceoMsg = addMessage(db, {
+      missionId: mission?.id || '',
+      senderId: 'ceo',
+      senderName: `${ceoName} (CEO)`,
+      senderRole: '최종 지시 · 결재권자',
+      senderShortCode: 'CEO',
+      senderAccent: '#171614',
+      targetAgentId: null,
+      statusText: '회의실 발언',
+      type: 'ceo_chat',
+      text
+    });
+
+    const active = db.agents.filter((a) => a.active);
+    const lower = text.toLowerCase();
+    const aliasMap = [
+      { id: 'agent_gemini_neon', re: /네온|neon|총괄|팀장/ },
+      { id: 'agent_claude', re: /클로드|claude|수석|개발|코드|제안서/ },
+      { id: 'agent_gemini_free', re: /제미나이|gemini|무료|리서치|조사/ },
+      { id: 'agent_muse', re: /뮤즈|muse|취향|일정|spaces/ },
+      { id: 'agent_cue', re: /큐|cue|마누스|manus|이메일|메일/ },
+      { id: 'agent_pickle', re: /피클|pickle|식당|예약|전화|병원|ktx/ },
+      { id: 'agent_vooy', re: /부이|vooy|브리핑|뉴스|매일|모니터링|가격/ },
+      { id: 'agent_instinct', re: /인스팅스|인스팅트|instinct|문자|심부름/ }
+    ];
+    let responders = [];
+    if (/@전체|모두|전원|다들|보고해/.test(lower)) {
+      const lead = active.find((a) => a.id === mission?.leadAgentId) || active[0];
+      const assigned = [...new Set(missionTasks.map((t) => t.assigneeId))].filter((id) => id !== lead.id);
+      responders = [lead, ...assigned.map((id) => active.find((a) => a.id === id)).filter(Boolean).slice(0, 3)];
+    } else {
+      for (const item of aliasMap) {
+        if (item.re.test(lower)) {
+          const ag = active.find((a) => a.id === item.id);
+          if (ag && !responders.some((r) => r.id === ag.id)) responders.push(ag);
+        }
+      }
+      if (responders.length === 0) {
+        const lead = active.find((a) => a.id === mission?.leadAgentId) || active[0];
+        const worker = active.find((a) => missionTasks.some((t) => t.assigneeId === a.id && a.id !== lead.id));
+        if (lead) responders.push(lead);
+        if (worker) responders.push(worker);
+      }
+    }
+
+    const savedReplies = [];
+    for (const ag of responders.slice(0, 3)) {
+      const agTasks = missionTasks.filter((t) => t.assigneeId === ag.id);
+      let replyText = '';
+      let live = false;
+      try {
+        const ctx = [...(db.messages || []).slice(-5), ...savedReplies].map((m) => `${m.senderName}: ${m.text}`).join('\n');
+        const res = await callDirectAgent(
+          ag,
+          db.settings,
+          `당신은 AI 회사 "${db.settings.companyName}"의 직원 "${ag.name}"(${ag.roleTitle})입니다. 사내 회의실에서 동료들과 자연스럽게 2~3문장으로 한국어 협업 대화를 하세요.`,
+          `미션: ${mission?.title || '전사 운영'}\n최근 대화:\n${ctx}\n${ceoName}: ${text}\n당신의 응답:`
+        );
+        if (res) {
+          replyText = res.text;
+          live = true;
+        }
+      } catch {
+        // fallback below
+      }
+      if (!replyText) {
+        const prev = savedReplies[savedReplies.length - 1];
+        const prevRef = prev ? `@${prev.senderName} 님 말씀 이어서, ` : '';
+        if (ag.tier === 'lead') {
+          replyText = `${ceoName} 확인했습니다! "${text.slice(0, 48)}${text.length > 48 ? '…' : ''}" 기준으로 팀원 우선순위를 조율하겠습니다. 결제나 외부 실행은 반드시 결재함으로 올리겠습니다.`;
+        } else if (ag.provider === 'pickle') {
+          replyText = `${prevRef}피클입니다! 전화 문의·국내 예약 조건을 즉시 반영하겠습니다. 실제 확정·결제 직전에 꼭 멈추고 결재 올릴게요!`;
+        } else if (ag.provider === 'vooy') {
+          replyText = `${prevRef}부이(vooy)입니다! 무료 기본 모델로 매일 반복 브리핑·가격 모니터링 조건을 반영해 두겠습니다.`;
+        } else if (ag.provider === 'muse') {
+          replyText = `${prevRef}Meta Muse입니다. 대표님 취향과 일정 충돌 여부를 대조해 Spaces 보드로 깔끔히 정리하겠습니다.`;
+        } else if (ag.provider === 'manus') {
+          replyText = `${prevRef}Manus Cue입니다. 전용 에이전트 이메일·가상 컴퓨터 환경에서 리서치 초안을 준비하고 발송 전 결재 올리겠습니다.`;
+        } else if (ag.provider === 'instinct') {
+          replyText = `${prevRef}인스팅스입니다! 문자 한 통으로 빠르게 확인해서 핵심만 바로 회신드리겠습니다.`;
+        } else {
+          replyText = `${prevRef}${ag.name}입니다. "${text.slice(0, 38)}${text.length > 38 ? '…' : ''}" 요청을 반영해 ${agTasks[0] ? `"${agTasks[0].title}"` : '담당 산출물'}을 바로 업데이트하겠습니다.`;
+        }
+      }
+      const prev = savedReplies[savedReplies.length - 1];
+      savedReplies.push(
+        addMessage(db, {
+          missionId: mission?.id || '',
+          senderId: ag.id,
+          senderName: ag.name,
+          senderRole: ag.roleTitle,
+          senderShortCode: ag.shortCode,
+          senderAccent: ag.accent,
+          targetAgentId: prev ? prev.senderId : 'ceo',
+          statusText: live ? '실시간 AI 응답' : ag.tier === 'lead' ? '팀 조율 중' : '업무 협업 중',
+          type: prev ? 'handoff' : 'reply',
+          text: replyText
+        })
+      );
+    }
+    addLog(db, '사내 회의실', `CEO 메시지에 ${savedReplies.map((r) => r.senderName).join(', ')} 직원이 응답했습니다.`);
+    saveLocalDb(db);
+    return { ceoMessage: ceoMsg, replies: savedReplies, state: sanitize(db) };
+  }
+
+  const standupMatch = path.match(/^\/api\/missions\/([^/]+)\/standup$/);
+  if (method === 'POST' && standupMatch) {
+    const mission = db.missions.find((m) => m.id === standupMatch[1]);
+    if (!mission) throw new Error('미션을 찾을 수 없습니다.');
+    const missionTasks = db.tasks.filter((t) => t.missionId === mission.id);
+    const lead = db.agents.find((a) => a.id === mission.leadAgentId) || db.agents[0];
+    const map = Object.fromEntries(db.agents.map((a) => [a.id, a]));
+    const ceoName = db.settings.ceoName || '대표님';
+    const savedTurns = [];
+
+    const names = [...new Set(missionTasks.map((t) => map[t.assigneeId]?.name).filter(Boolean))];
+    savedTurns.push(
+      addMessage(db, {
+        missionId: mission.id,
+        senderId: lead.id,
+        senderName: lead.name,
+        senderRole: lead.roleTitle,
+        senderShortCode: lead.shortCode,
+        senderAccent: lead.accent,
+        targetAgentId: missionTasks[0]?.assigneeId || null,
+        statusText: '스탠드업 주재 중',
+        type: 'plan',
+        text: `팀 스탠드업 시작하겠습니다! 미션 "${mission.title}" 점검합니다. 참여 팀원(${names.join(', ')}) 분들, 진행 현황과 핸드오프 사항 공유해 주세요.`
+      })
+    );
+
+    for (let i = 0; i < missionTasks.length; i++) {
+      const t = missionTasks[i];
+      const ag = map[t.assigneeId] || db.agents[0];
+      const nextAg = missionTasks[i + 1] ? map[missionTasks[i + 1].assigneeId] : null;
+      let text = '';
+      try {
+        const res = await callDirectAgent(
+          ag,
+          db.settings,
+          `당신은 "${ag.name}"(${ag.roleTitle})입니다. 팀 스탠드업에서 내 담당 업무 현황을 2문장으로 보고하세요.`,
+          `미션: ${mission.title}\n업무: ${t.title} (상태:${t.status})\n요약: ${(t.output || t.description).slice(0, 200)}`
+        );
+        if (res) text = res.text;
+      } catch {
+        // fallback
+      }
+      if (!text) {
+        const nextStr = nextAg && nextAg.id !== ag.id ? ` 다음 순서인 @${nextAg.name} 님께 바통 넘겨드립니다!` : '';
+        if (t.status === 'completed') text = `"${t.title}" 완료했습니다! 핵심 산출물을 공유함에 올려두었습니다.${nextStr}`;
+        else if (t.status === 'awaiting_approval') text = `"${t.title}" 사전 준비 마쳤고 실행 직전이라 멈춰두었습니다. @${ceoName} 결재 승인 부탁드립니다!`;
+        else if (t.status === 'awaiting_bridge') text = `"${t.title}" 지시서 준비 완료! 제 앱(${ag.name})에 복사해 주시면 바로 실행하고 보고하겠습니다.${nextStr}`;
+        else text = `"${t.title}" 바로 착수할 준비가 끝났습니다. 선행 맥락 반영해서 초안 올리겠습니다.${nextStr}`;
+      }
+      savedTurns.push(
+        addMessage(db, {
+          missionId: mission.id,
+          senderId: ag.id,
+          senderName: ag.name,
+          senderRole: ag.roleTitle,
+          senderShortCode: ag.shortCode,
+          senderAccent: ag.accent,
+          targetAgentId: t.status === 'awaiting_approval' ? 'ceo' : nextAg?.id || lead.id,
+          statusText: t.status === 'completed' ? '완료 보고 중' : t.status === 'awaiting_approval' ? 'CEO 결재 요청 중' : '실무 협업 중',
+          type: t.status === 'awaiting_approval' ? 'approval' : nextAg ? 'handoff' : 'work',
+          text
+        })
+      );
+    }
+
+    const done = missionTasks.filter((t) => t.status === 'completed').length;
+    const wait = missionTasks.filter((t) => t.status === 'awaiting_approval').length;
+    savedTurns.push(
+      addMessage(db, {
+        missionId: mission.id,
+        senderId: lead.id,
+        senderName: lead.name,
+        senderRole: lead.roleTitle,
+        senderShortCode: lead.shortCode,
+        senderAccent: lead.accent,
+        targetAgentId: 'ceo',
+        statusText: 'CEO 보고 완료',
+        type: 'plan',
+        text: `@${ceoName} 스탠드업 정리 보고드립니다. 전체 ${missionTasks.length}건 중 ${done}건 완료${wait > 0 ? `, 결재 대기 ${wait}건` : ''}입니다. 궁금한 점은 팀원을 @멘션해 바로 물어보세요!`
+      })
+    );
+
+    addLog(db, '사내 회의실', `"${mission.title}" 실시간 팀 스탠드업을 진행했습니다.`);
+    saveLocalDb(db);
+    return { turns: savedTurns, state: sanitize(db) };
   }
 
   if (method === 'POST' && path === '/api/reset') {

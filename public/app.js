@@ -79,6 +79,10 @@ const VIEW_META = {
     title: '지휘실',
     subtitle: 'CEO가 목표를 지시하면 팀장이 무료·유료·앱 에이전트에게 업무를 분배합니다.'
   },
+  office: {
+    title: '라이브 오피스 · 사내 회의실',
+    subtitle: 'AI 팀장과 팀원들이 각자 자리에서 일하고 서로 대화·협업하는 모습을 실시간으로 보고 직접 지시합니다.'
+  },
   approvals: {
     title: 'CEO 결재함',
     subtitle: '결제, 예약 확정, 외부 발송 등 되돌리기 어려운 실행은 반드시 CEO 승인 후 진행됩니다.'
@@ -247,6 +251,10 @@ function downloadFile(filename, content) {
 
 /* ==================== RENDERING ==================== */
 
+let activeSpeakerId = null;
+let liveHandoffLabel = '';
+let isPlayingLiveSession = false;
+
 function renderAll() {
   if (!state) return;
   if (!selectedMissionId || !state.missions.some((m) => m.id === selectedMissionId)) {
@@ -259,6 +267,7 @@ function renderAll() {
 
   renderChrome();
   renderCommandView();
+  renderOfficeView();
   renderApprovalsView();
   renderRosterView();
   renderIntegrationsView();
@@ -287,6 +296,8 @@ function renderChrome() {
   document.getElementById('sidebar-company-name').textContent = s.companyName || 'CEO Office';
   document.getElementById('sidebar-ceo-name').textContent = s.ceoName || '대표님';
   document.getElementById('nav-mission-count').textContent = String(state.missions.length);
+  const chatCountEl = document.getElementById('nav-chat-count');
+  if (chatCountEl) chatCountEl.textContent = String((state.messages || []).length);
   document.getElementById('nav-agent-count').textContent = String(activeAgents.length);
 
   const badge = document.getElementById('nav-approval-badge');
@@ -384,6 +395,10 @@ function renderActiveMission(mission) {
                 </button>`
               : ''
           }
+          <button type="button" class="btn btn-ghost btn-sm" id="btn-open-office-mission">
+            <i data-lucide="messages-square" class="icon-xs"></i>
+            <span>직원 회의 보기</span>
+          </button>
           <button type="button" class="btn btn-ghost btn-sm" id="btn-synthesize-report" data-mission-id="${esc(mission.id)}">
             <i data-lucide="file-text" class="icon-xs"></i>
             <span>팀장 최종 보고서</span>
@@ -427,6 +442,166 @@ function renderActiveMission(mission) {
     : '';
 
   container.innerHTML = `${missionHeader}${bodyHtml}${finalReportHtml}`;
+}
+
+function formatMentions(text = '') {
+  return esc(text).replace(/(@[^\s,!?]+)/g, '<span class="mention-tag">$1</span>');
+}
+
+function renderOfficeView() {
+  const leadWrap = document.getElementById('office-lead-desks');
+  const workerWrap = document.getElementById('office-worker-desks');
+  const feedEl = document.getElementById('lounge-feed');
+  if (!leadWrap || !workerWrap || !feedEl) return;
+
+  const activeMission = state.missions.find((m) => m.id === selectedMissionId) || state.missions[0] || null;
+  const missionTasks = activeMission ? state.tasks.filter((t) => t.missionId === activeMission.id) : [];
+  const messages = state.messages || [];
+
+  const badgeEl = document.getElementById('office-mission-badge');
+  if (badgeEl) {
+    badgeEl.textContent = activeMission ? `미션: ${activeMission.title.slice(0, 22)}` : '전사 대기';
+  }
+
+  // Handoff status bar
+  const handoffEl = document.getElementById('office-handoff-text');
+  if (handoffEl) {
+    const latest = messages[messages.length - 1];
+    let text = liveHandoffLabel;
+    if (!text && latest) {
+      const targetAg = latest.targetAgentId === 'ceo' ? { name: `${state.settings.ceoName || '대표님'} (CEO)` } : getAgent(latest.targetAgentId);
+      text = targetAg
+        ? `${latest.senderName}  ── ${latest.statusText || '협업'} ──▶  ${targetAg.name}`
+        : `${latest.senderName}: ${latest.statusText || '회의실 발언 중'}`;
+    }
+    handoffEl.innerHTML = `<i data-lucide="radio" class="icon-xs"></i><span>${esc(text || '전 직원이 업무 채널에 접속해 있습니다.')}</span>`;
+  }
+
+  // Map latest speech per agent
+  const latestByAgent = {};
+  for (const m of messages) {
+    if (m.senderId && m.senderId !== 'ceo') {
+      latestByAgent[m.senderId] = m;
+    }
+  }
+
+  const renderDesk = (ag) => {
+    const myTasks = missionTasks.filter((t) => t.assigneeId === ag.id);
+    const hasApproval = myTasks.some((t) => t.status === 'awaiting_approval');
+    const isSpeaking = activeSpeakerId === ag.id;
+    const latestMsg = latestByAgent[ag.id];
+
+    let statusLabel = '업무 대기';
+    if (!ag.active) statusLabel = '휴직';
+    else if (isSpeaking) statusLabel = latestMsg?.statusText || '발언 · 협업 중';
+    else if (hasApproval) statusLabel = 'CEO 결재 대기';
+    else if (myTasks.some((t) => t.status === 'completed')) statusLabel = '작업 완료';
+    else if (myTasks.length > 0) statusLabel = '업무 배정됨';
+
+    const bubbleText = latestMsg
+      ? latestMsg.text
+      : myTasks[0]
+        ? `배정 업무: "${myTasks[0].title}" 준비 중입니다.`
+        : `${ag.strengths.slice(0, 52)}…`;
+
+    const cls = `desk-card${isSpeaking ? ' speaking' : ''}${hasApproval && !isSpeaking ? ' waiting-approval' : ''}`;
+    return `<button type="button" class="${cls}" data-mention-desk="${esc(ag.name)}">
+      <div class="desk-head">
+        <div class="desk-person">
+          <span class="agent-avatar sm" style="background:${esc(ag.accent)}">${esc(ag.shortCode)}</span>
+          <div style="min-width:0;">
+            <div class="desk-name">${esc(ag.name)}</div>
+            <div class="desk-role">${esc(ag.roleTitle)}</div>
+          </div>
+        </div>
+        <span class="desk-status">${esc(statusLabel)}</span>
+      </div>
+      <div class="desk-bubble">${esc(bubbleText)}</div>
+      <div class="desk-work-bar"><div class="desk-work-bar-fill"></div></div>
+    </button>`;
+  };
+
+  const leads = state.agents.filter((a) => a.tier === 'lead');
+  const workers = state.agents.filter((a) => a.tier !== 'lead');
+  leadWrap.innerHTML = leads.map(renderDesk).join('');
+  workerWrap.innerHTML = workers.map(renderDesk).join('');
+
+  // Render #전사-회의실 feed
+  const typeBadges = {
+    directive: { label: 'CEO 지시', cls: 'badge-neutral' },
+    plan: { label: '팀장 분배', cls: 'badge-green' },
+    handoff: { label: '팀원 핸드오프', cls: 'badge-blue' },
+    approval: { label: '결재 상신', cls: 'badge-amber' },
+    work: { label: '실무 보고', cls: 'badge-neutral' },
+    ceo_chat: { label: 'CEO 발언', cls: 'badge-neutral' },
+    reply: { label: '응답', cls: 'badge-green' }
+  };
+
+  feedEl.innerHTML =
+    messages.length === 0
+      ? '<div class="empty-state">아직 회의실 대화가 없습니다. 팀 스탠드업을 시작하거나 직원에게 말을 걸어보세요!</div>'
+      : messages
+          .map((m) => {
+            const isCeo = m.senderId === 'ceo';
+            const tb = typeBadges[m.type] || { label: '대화', cls: 'badge-neutral' };
+            return `<div class="chat-msg ${isCeo ? 'from-ceo' : ''} ${m.type === 'approval' ? 'msg-approval' : ''}">
+              <span class="agent-avatar" style="background:${esc(m.senderAccent || '#0E6245')}">${esc(m.senderShortCode || 'AI')}</span>
+              <div class="chat-body">
+                <div class="chat-meta">
+                  <span class="chat-sender">${esc(m.senderName)}</span>
+                  <span>${esc(m.senderRole || '')}</span>
+                  <span class="badge ${tb.cls}">${esc(tb.label)}</span>
+                  <span class="mono">${esc(formatTime(m.timestamp))}</span>
+                </div>
+                <div class="chat-bubble">${formatMentions(m.text)}</div>
+              </div>
+            </div>`;
+          })
+          .join('');
+
+  feedEl.scrollTop = feedEl.scrollHeight;
+}
+
+async function playLiveMessages(baseMessages, newTurns, finalState) {
+  isPlayingLiveSession = true;
+  const typingBanner = document.getElementById('lounge-typing-banner');
+  const typingText = document.getElementById('lounge-typing-text');
+
+  // Show messages progressively one by one so CEO watches each employee speak & hand off live
+  state.messages = [...baseMessages];
+  renderOfficeView();
+  refreshIcons();
+
+  for (const turn of newTurns) {
+    activeSpeakerId = turn.senderId;
+    const targetAg =
+      turn.targetAgentId === 'ceo'
+        ? { name: `${state.settings.ceoName || '대표님'} (CEO)` }
+        : getAgent(turn.targetAgentId);
+    liveHandoffLabel = targetAg
+      ? `${turn.senderName}  ── ${turn.statusText || '협업 중'} ──▶  ${targetAg.name}`
+      : `${turn.senderName} 님이 발언을 준비하고 있습니다…`;
+
+    if (typingBanner && typingText) {
+      typingBanner.classList.add('active');
+      typingText.textContent = `${turn.senderName} (${turn.senderRole || 'AI 직원'}) 님이 입력 중…`;
+    }
+    renderOfficeView();
+    refreshIcons();
+
+    await new Promise((r) => setTimeout(r, 850));
+
+    state.messages.push(turn);
+    renderOfficeView();
+    refreshIcons();
+  }
+
+  if (typingBanner) typingBanner.classList.remove('active');
+  activeSpeakerId = null;
+  liveHandoffLabel = '';
+  isPlayingLiveSession = false;
+  state = finalState;
+  renderAll();
 }
 
 function renderKanbanBoard(tasks) {
@@ -1255,6 +1430,57 @@ function bindEvents() {
       return;
     }
 
+    if (target.id === 'btn-open-office-mission') {
+      switchView('office');
+      renderOfficeView();
+      refreshIcons();
+      return;
+    }
+
+    if (target.dataset.mentionDesk) {
+      const name = target.dataset.mentionDesk.split(' ')[0];
+      const input = document.getElementById('lounge-chat-input');
+      if (input) {
+        input.value = `${input.value ? input.value + ' ' : ''}@${name} `;
+        input.focus();
+      }
+      return;
+    }
+
+    if (target.dataset.quickChat) {
+      const input = document.getElementById('lounge-chat-input');
+      if (input) {
+        input.value = target.dataset.quickChat;
+        document.getElementById('lounge-chat-form')?.requestSubmit();
+      }
+      return;
+    }
+
+    if (target.id === 'btn-start-standup') {
+      if (isPlayingLiveSession) return;
+      const missionId = selectedMissionId || state.missions[0]?.id;
+      if (!missionId) {
+        toast('먼저 지휘실에서 미션을 생성해 주세요.', true);
+        return;
+      }
+      const prevHtml = target.innerHTML;
+      target.disabled = true;
+      target.textContent = '팀 회의 소집 중…';
+      try {
+        const baseMsgs = [...(state.messages || [])];
+        const res = await api(`/api/missions/${missionId}/standup`, { method: 'POST' });
+        await playLiveMessages(baseMsgs, res.turns || [], res.state);
+        toast('팀 스탠드업 및 협업 보고가 완료되었습니다.');
+      } catch (err) {
+        toast(err.message, true);
+      } finally {
+        target.disabled = false;
+        target.innerHTML = prevHtml;
+        refreshIcons();
+      }
+      return;
+    }
+
     if (target.id === 'btn-synthesize-report') {
       const missionId = target.dataset.missionId;
       target.disabled = true;
@@ -1603,6 +1829,44 @@ function bindEvents() {
       toast(err.message, true);
     }
   });
+
+  // Live Team Lounge CEO Chat Form
+  const loungeForm = document.getElementById('lounge-chat-form');
+  const loungeInput = document.getElementById('lounge-chat-input');
+  if (loungeInput) {
+    loungeInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        loungeForm?.requestSubmit();
+      }
+    });
+  }
+  if (loungeForm) {
+    loungeForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (isPlayingLiveSession) return;
+      const text = loungeInput.value.trim();
+      if (!text) return;
+
+      const sendBtn = document.getElementById('btn-send-chat');
+      sendBtn.disabled = true;
+      loungeInput.value = '';
+      try {
+        const baseMsgs = [...(state.messages || [])];
+        const res = await api('/api/chat/send', {
+          method: 'POST',
+          body: JSON.stringify({ text, missionId: selectedMissionId })
+        });
+        const withCeo = res.ceoMessage ? [...baseMsgs, res.ceoMessage] : baseMsgs;
+        await playLiveMessages(withCeo, res.replies || [], res.state);
+      } catch (err) {
+        toast(err.message, true);
+      } finally {
+        sendBtn.disabled = false;
+        loungeInput.focus();
+      }
+    });
+  }
 }
 
 async function handleRunTask(taskId, btn) {

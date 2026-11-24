@@ -123,7 +123,22 @@ async function runTests() {
     ).json();
     assert.ok(synthRes.report.length > 50, 'synthesized executive report should be non-empty');
 
-    // 8. Telegram webhook endpoint responds gracefully
+    // 8. Live Office Chat & Team Standup tests
+    const chatRes = await (
+      await fetch(`${BASE}/api/chat/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: '@피클 @Claude 진행 상황 공유해줘', missionId: created.mission.id })
+      })
+    ).json();
+    assert.ok(chatRes.replies.length >= 2, 'chat should produce multi-agent replies');
+
+    const standupRes = await (
+      await fetch(`${BASE}/api/missions/${created.mission.id}/standup`, { method: 'POST' })
+    ).json();
+    assert.ok(standupRes.turns.length >= 4, 'standup should generate multi-turn team conversation');
+
+    // 9. Telegram webhook endpoint responds gracefully
     const tgRes = await fetch(`${BASE}/api/telegram/webhook`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -133,7 +148,7 @@ async function runTests() {
 
     // Clean reset after tests
     await fetch(`${BASE}/api/reset`, { method: 'POST' });
-    console.log('✅ All AI CEO Hub E2E tests (REST + Parallel + Official MCP SDK + Governance + Telegram) passed!');
+    console.log('✅ All AI CEO Hub E2E tests (REST + Parallel + Official MCP SDK + Live Office Chat + Standup + Telegram) passed!');
   } finally {
     child.kill('SIGTERM');
   }

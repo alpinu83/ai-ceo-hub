@@ -340,6 +340,92 @@ export function createDefaultState() {
         level: 'approval',
         message: '성수역 식당 전화 확인 완료 — 예약금 40,000원 결제 전 CEO 결재함에 상신했습니다.'
       }
+    ],
+    messages: [
+      {
+        id: 'msg_init_1',
+        missionId: sampleMissionId,
+        senderId: 'ceo',
+        senderName: '대표님 (CEO)',
+        senderRole: '최종 지시 · 결재권자',
+        senderShortCode: 'CEO',
+        senderAccent: '#171614',
+        targetAgentId: 'agent_gemini_neon',
+        statusText: '지시 하달',
+        type: 'directive',
+        text: '이번 주 신규 클라이언트 제안서 초안 준비하고, 목요일 저녁 성수역 근처 4인 비즈니스 미팅 식당을 조사해 예약까지 진행해줘. 매일 아침 경쟁사 소식 브리핑도 세팅해줘.',
+        timestamp: now
+      },
+      {
+        id: 'msg_init_2',
+        missionId: sampleMissionId,
+        senderId: 'agent_gemini_neon',
+        senderName: 'Gemini 4 Neon',
+        senderRole: '전략·총괄 팀장',
+        senderShortCode: 'GN',
+        senderAccent: '#0E6245',
+        targetAgentId: 'agent_gemini_free',
+        statusText: '업무 분배 중',
+        type: 'plan',
+        text: '대표님 지시 확인했습니다! 비용 균형 정책으로 바로 분배하겠습니다. @Gemini(무료) 님은 경쟁사 3곳 가격·기능 리서치 먼저 부탁드리고, @Claude 수석님은 리서치 받아서 제안서 5페이지 본문 잡아주세요. @피클 님은 성수역 4인 룸 식당 전화 확인, @부이 님은 매일 오전 8시 경쟁사 브리핑 루틴 세팅 부탁드립니다!',
+        timestamp: now
+      },
+      {
+        id: 'msg_init_3',
+        missionId: sampleMissionId,
+        senderId: 'agent_gemini_free',
+        senderName: 'Gemini (무료 티어)',
+        senderRole: '리서치·초안 팀원',
+        senderShortCode: 'GM',
+        senderAccent: '#1D5B8C',
+        targetAgentId: 'agent_claude',
+        statusText: '리서치 완료 · 핸드오프',
+        type: 'handoff',
+        text: '네 팀장님! 무료 티어로 국내 경쟁사 3곳 요금제·차별점 비교 표 정리 마쳤습니다. A사는 국내 전화 예약이 없고 B사는 결재 UI가 복잡하네요. @Claude 수석님, 제안서 핵심 소구점 바로 쓰실 수 있게 표 넘겨드렸습니다!',
+        timestamp: now
+      },
+      {
+        id: 'msg_init_4',
+        missionId: sampleMissionId,
+        senderId: 'agent_claude',
+        senderName: 'Claude',
+        senderRole: '개발·기획 수석 팀장',
+        senderShortCode: 'CL',
+        senderAccent: '#9A4A2E',
+        targetAgentId: 'agent_gemini_free',
+        statusText: '제안서 초안 구성 중',
+        type: 'work',
+        text: '@Gemini(무료) 님 자료 잘 받았습니다. 비교 표가 깔끔하네요. 이걸 기반으로 ROI 섹션과 2주 파일럿 일정까지 넣어서 5페이지 제안서 초안 마무리하겠습니다. 실행 버튼 눌러주시면 바로 완성본 올리겠습니다.',
+        timestamp: now
+      },
+      {
+        id: 'msg_init_5',
+        missionId: sampleMissionId,
+        senderId: 'agent_pickle',
+        senderName: '피클 (Pickle)',
+        senderRole: '전화 예약·생활 실행',
+        senderShortCode: 'PK',
+        senderAccent: '#2F7D32',
+        targetAgentId: 'ceo',
+        statusText: 'CEO 결재 대기',
+        type: 'approval',
+        text: '@대표님 성수역 3번 출구 도보 6분 프라이빗 룸 한식 다이닝에 직접 전화해 목요일 19시 4인 빈자리 확인했습니다! 1인 6만원(예약금 4만원, 전일 18시까지 무료 취소)입니다. 결제 전이라 멈춰두고 CEO 결재함에 상신했어요 — 승인해 주시면 바로 확정하겠습니다!',
+        timestamp: now
+      },
+      {
+        id: 'msg_init_6',
+        missionId: sampleMissionId,
+        senderId: 'agent_vooy',
+        senderName: '부이 (vooy)',
+        senderRole: '정기 브리핑·모니터링',
+        senderShortCode: 'VY',
+        senderAccent: '#A15C07',
+        targetAgentId: 'agent_gemini_neon',
+        statusText: '브리핑 루틴 준비',
+        type: 'work',
+        text: '@Gemini 4 Neon 팀장님, 매일 오전 8시 경쟁사·AI 에이전트 핵심 소식 5건 자동 수집 조건 만들어 두었습니다. 기본 무료 모델만 쓰도록 세팅했고 지시서 복사해서 부이 앱에 등록하시면 내일 아침부터 브리핑이 옵니다!',
+        timestamp: now
+      }
     ]
   };
 }
@@ -376,6 +462,9 @@ export function loadDb() {
       spentKRW: 0,
       ...a
     }));
+    if (!Array.isArray(parsed.messages)) {
+      parsed.messages = def.messages;
+    }
     return parsed;
   } catch {
     const initial = createDefaultState();
@@ -402,6 +491,23 @@ export function appendLog(db, actor, message, level = 'info') {
   if (db.logs.length > 100) {
     db.logs = db.logs.slice(0, 100);
   }
+}
+
+export function appendMessage(db, msg) {
+  if (!Array.isArray(db.messages)) db.messages = [];
+  const entry = {
+    id: uid('msg'),
+    timestamp: new Date().toISOString(),
+    targetAgentId: null,
+    statusText: '대화 중',
+    type: 'reply',
+    ...msg
+  };
+  db.messages.push(entry);
+  if (db.messages.length > 160) {
+    db.messages = db.messages.slice(-160);
+  }
+  return entry;
 }
 
 export function sanitizeStateForClient(db) {

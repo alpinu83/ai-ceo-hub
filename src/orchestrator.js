@@ -576,3 +576,238 @@ export function createApprovalForTask(task, agent, mission, reason, proposedActi
     decidedAt: null
   };
 }
+
+/**
+ * Resolve which AI team members should speak in response to a CEO chat message
+ */
+function pickResponders(text, agents, mission, tasks) {
+  const active = agents.filter((a) => a.active);
+  const lower = text.toLowerCase();
+  const matched = [];
+
+  const aliasMap = [
+    { id: 'agent_gemini_neon', re: /네온|neon|총괄|팀장/ },
+    { id: 'agent_claude', re: /클로드|claude|수석|개발|코드|제안서/ },
+    { id: 'agent_gemini_free', re: /제미나이|gemini|무료|리서치|조사/ },
+    { id: 'agent_muse', re: /뮤즈|muse|취향|일정|spaces/ },
+    { id: 'agent_cue', re: /큐|cue|마누스|manus|이메일|메일/ },
+    { id: 'agent_pickle', re: /피클|pickle|식당|예약|전화|병원|ktx/ },
+    { id: 'agent_vooy', re: /부이|vooy|브리핑|뉴스|매일|모니터링|가격/ },
+    { id: 'agent_instinct', re: /인스팅스|인스팅트|instinct|문자|심부름/ }
+  ];
+
+  if (/@전체|모두|전원|다들|보고해/.test(lower)) {
+    const lead = active.find((a) => a.id === mission?.leadAgentId) || active[0];
+    const assignedIds = [...new Set(tasks.map((t) => t.assigneeId))].filter((id) => id !== lead.id);
+    const workers = assignedIds
+      .map((id) => active.find((a) => a.id === id))
+      .filter(Boolean)
+      .slice(0, 3);
+    return [lead, ...workers];
+  }
+
+  for (const item of aliasMap) {
+    if (item.re.test(lower)) {
+      const ag = active.find((a) => a.id === item.id);
+      if (ag && !matched.some((m) => m.id === ag.id)) matched.push(ag);
+    }
+  }
+
+  if (matched.length === 0) {
+    const lead = active.find((a) => a.id === mission?.leadAgentId) || active[0];
+    const firstWorker = active.find((a) => tasks.some((t) => t.assigneeId === a.id && a.id !== lead.id));
+    if (lead) matched.push(lead);
+    if (firstWorker) matched.push(firstWorker);
+  }
+
+  return matched.slice(0, 3);
+}
+
+function buildPersonaFallbackReply(agent, userMessage, mission, agentTasks, priorInTurn, ceoName) {
+  const myTask = agentTasks[0];
+  const prevSpeaker = priorInTurn[priorInTurn.length - 1];
+  const prevRef = prevSpeaker ? `@${prevSpeaker.senderName} 님 의견 이어서 말씀드리면, ` : '';
+
+  if (agent.tier === 'lead') {
+    const taskList = agentTasks.length
+      ? `현재 담당 중인 "${myTask.title}" 포함 전체 진척을 체크했습니다.`
+      : `현재 미션("${mission?.title || '전사 운영'}") 기준으로 팀원들에게 우선순위를 재조정하겠습니다.`;
+    return `${ceoName} 확인했습니다! "${userMessage.slice(0, 48)}${userMessage.length > 48 ? '…' : ''}" 요청을 반영해 ${taskList} 추가 비용이 발생하거나 외부 실행이 필요한 단계는 반드시 결재함으로 올리겠습니다.`;
+  }
+
+  switch (agent.provider) {
+    case 'pickle':
+      return `${prevRef}${ceoName}, 피클입니다! 전화 문의·국내 예약 조건을 바로 반영하겠습니다. ${myTask ? `("${myTask.title}" 기준)` : ''} 실제 예약 확정이나 예약금 결제 전에는 절대 먼저 결제하지 않고 후보와 금액을 정리해서 결재 올리겠습니다!`;
+    case 'vooy':
+      return `${prevRef}부이(vooy)입니다! 무료 기본 모델 기준으로 반복 수집·가격 비교 조건을 업데이트해 두겠습니다. ${myTask ? `("${myTask.title}" 루틴 반영)` : ''} 매일 아침 핵심 5줄 브리핑으로 바로 받아보실 수 있게 정리할게요.`;
+    case 'muse':
+      return `${prevRef}Meta Muse입니다. 대표님 평소 취향과 일정 제약을 대조해 보니 충돌 없이 배치 가능합니다. Spaces 보드 형식으로 정리해 두고, MCP 커넥터로 결과를 동기화하겠습니다.`;
+    case 'manus':
+      return `${prevRef}Manus Cue입니다. 전용 에이전트 이메일과 가상 컴퓨터 환경에서 심층 자료를 정리하고 초안을 준비하겠습니다. 외부 수신자에게 실제 메일을 보내기 전에 꼭 CEO 승인을 요청드리겠습니다.`;
+    case 'instinct':
+      return `${prevRef}인스팅스입니다! 복잡한 절차 없이 문자 한 통으로 바로 확인해 회신드리겠습니다. 확정이나 결제가 필요하면 즉시 멈추고 여쭤볼게요.`;
+    default:
+      return `${prevRef}${agent.name}입니다. "${userMessage.slice(0, 40)}${userMessage.length > 40 ? '…' : ''}" 내용을 반영해 ${myTask ? `"${myTask.title}" 작업의 산출물` : '담당 초안과 체크리스트'}을 즉시 업데이트하고 팀장님께 보고하겠습니다.`;
+  }
+}
+
+/**
+ * Multi-agent live conversation in #전사-회의실 when CEO speaks
+ */
+export async function generateTeamChatReplies({ userMessage, mission, tasks, agents, recentMessages, settings }) {
+  const responders = pickResponders(userMessage, agents, mission, tasks);
+  const ceoName = settings?.ceoName || '대표님';
+  const replies = [];
+
+  for (const ag of responders) {
+    const agTasks = tasks.filter((t) => t.assigneeId === ag.id);
+    const resolved = resolveLanguageModel(ag, settings);
+    let replyText = '';
+    let live = false;
+
+    if (resolved) {
+      const threadContext = [...recentMessages.slice(-6), ...replies]
+        .map((m) => `${m.senderName}: ${m.text}`)
+        .join('\n');
+      const taskContext = agTasks.length
+        ? agTasks.map((t) => `- ${t.title} (상태: ${t.status})`).join('\n')
+        : '현재 배정된 세부 업무 없음 (협업 지원)';
+      const system = `당신은 AI 회사 "${settings?.companyName || 'CEO Office'}"의 직원 "${ag.name}" (${ag.roleTitle})입니다.
+강점: ${ag.strengths}
+동료 AI들과 사내 회의실(#전사-회의실)에서 대화하고 있습니다.
+자연스럽고 간결한 한국어 사내 메신저 말투(2~3문장)로 대답하세요. 필요하면 앞선 동료(@이름)나 ${ceoName}을 멘션하며 협업·핸드오프·리스크 점검을 말하세요.`;
+
+      try {
+        const { text } = await generateText({
+          model: resolved.model,
+          system,
+          prompt: `현재 미션: ${mission?.title || '전사 운영'}\n내 담당 업무:\n${taskContext}\n\n[최근 회의실 대화]\n${threadContext}\n\n${ceoName}: ${userMessage}\n\n당신(${ag.name})의 응답:`
+        });
+        replyText = text.trim();
+        live = true;
+      } catch {
+        replyText = '';
+      }
+    }
+
+    if (!replyText) {
+      replyText = buildPersonaFallbackReply(ag, userMessage, mission, agTasks, replies, ceoName);
+    }
+
+    const prevMsg = replies[replies.length - 1];
+    replies.push({
+      missionId: mission?.id || '',
+      senderId: ag.id,
+      senderName: ag.name,
+      senderRole: ag.roleTitle,
+      senderShortCode: ag.shortCode,
+      senderAccent: ag.accent,
+      targetAgentId: prevMsg ? prevMsg.senderId : 'ceo',
+      statusText: live ? '실시간 AI 응답' : ag.tier === 'lead' ? '팀 조율 중' : '업무 협업 중',
+      type: prevMsg ? 'handoff' : 'reply',
+      text: replyText
+    });
+  }
+
+  return replies;
+}
+
+/**
+ * Live Team Standup & Collaborative Working Session for an active mission
+ */
+export async function generateStandupSession({ mission, tasks, agents, settings }) {
+  const lead = agents.find((a) => a.id === mission.leadAgentId) || agents[0];
+  const agentMap = Object.fromEntries(agents.map((a) => [a.id, a]));
+  const ceoName = settings?.ceoName || '대표님';
+  const turns = [];
+
+  // 1. Team Lead opens standup
+  const participantNames = [...new Set(tasks.map((t) => agentMap[t.assigneeId]?.name).filter(Boolean))];
+  turns.push({
+    missionId: mission.id,
+    senderId: lead.id,
+    senderName: lead.name,
+    senderRole: lead.roleTitle,
+    senderShortCode: lead.shortCode,
+    senderAccent: lead.accent,
+    targetAgentId: tasks[0]?.assigneeId || null,
+    statusText: '스탠드업 주재 중',
+    type: 'plan',
+    text: `팀 스탠드업 시작하겠습니다! 미션 "${mission.title}" 점검합니다. 참여 팀원(${participantNames.join(', ')}) 분들, 현재 진행 현황과 다음 담당자에게 넘길 내용 공유해 주세요.`
+  });
+
+  // 2. Each task assignee speaks & hands off to the next teammate
+  for (let i = 0; i < tasks.length; i++) {
+    const t = tasks[i];
+    const ag = agentMap[t.assigneeId] || agents[0];
+    const nextTask = tasks[i + 1];
+    const nextAg = nextTask ? agentMap[nextTask.assigneeId] : null;
+    const resolved = resolveLanguageModel(ag, settings);
+
+    let text = '';
+    if (resolved) {
+      try {
+        const prevTurn = turns[turns.length - 1];
+        const { text: liveText } = await generateText({
+          model: resolved.model,
+          system: `당신은 "${ag.name}" (${ag.roleTitle})입니다. 팀 스탠드업에서 자기 업무의 진행 상황을 2문장으로 생생하게 보고하세요.${nextAg && nextAg.id !== ag.id ? ` 다음 순서인 @${nextAg.name} 님에게 자연스럽게 바통을 넘겨주세요.` : ''}`,
+          prompt: `미션: ${mission.title}\n내 업무: ${t.title} (상태: ${t.status}, 승인필요: ${t.requiresApproval})\n기존 산출물 요약: ${(t.output || t.description).slice(0, 260)}\n직전 발언(${prevTurn.senderName}): ${prevTurn.text}`
+        });
+        text = liveText.trim();
+      } catch {
+        text = '';
+      }
+    }
+
+    if (!text) {
+      const nextCallout =
+        nextAg && nextAg.id !== ag.id ? ` 다음 단계인 @${nextAg.name} 님께 맥락 넘겨드리겠습니다!` : '';
+      if (t.status === 'completed') {
+        text = `"${t.title}" 작업 완료했습니다! 핵심 산출물과 근거 표를 공유함에 올려두었습니다.${nextCallout}`;
+      } else if (t.status === 'awaiting_approval') {
+        text = `"${t.title}" 사전 확인을 마쳤고, 실제 실행/결제 직전이라 멈춰두었습니다. @${ceoName} 결재함에서 승인해 주시면 바로 확정 처리하겠습니다!`;
+      } else if (t.status === 'awaiting_bridge') {
+        text = `"${t.title}" 실행 지시서 준비 끝났습니다! 지시서 복사 버튼으로 제 앱(${ag.name})에 전달해 주시면 바로 처리해서 결과 보고 올리겠습니다.${nextCallout}`;
+      } else {
+        text = `"${t.title}" 바로 착수할 준비가 되어 있습니다. 선행 자료 반영해서 초안 빠르게 뽑아 올리겠습니다.${nextCallout}`;
+      }
+    }
+
+    turns.push({
+      missionId: mission.id,
+      senderId: ag.id,
+      senderName: ag.name,
+      senderRole: ag.roleTitle,
+      senderShortCode: ag.shortCode,
+      senderAccent: ag.accent,
+      targetAgentId: t.status === 'awaiting_approval' ? 'ceo' : nextAg?.id || lead.id,
+      statusText:
+        t.status === 'completed'
+          ? '완료 보고 중'
+          : t.status === 'awaiting_approval'
+            ? 'CEO 결재 요청 중'
+            : '실무 협업 중',
+      type: t.status === 'awaiting_approval' ? 'approval' : nextAg ? 'handoff' : 'work',
+      text
+    });
+  }
+
+  // 3. Team Lead wraps up to CEO
+  const pendingApprovals = tasks.filter((t) => t.status === 'awaiting_approval').length;
+  const doneCount = tasks.filter((t) => t.status === 'completed').length;
+  turns.push({
+    missionId: mission.id,
+    senderId: lead.id,
+    senderName: lead.name,
+    senderRole: lead.roleTitle,
+    senderShortCode: lead.shortCode,
+    senderAccent: lead.accent,
+    targetAgentId: 'ceo',
+    statusText: 'CEO 보고 완료',
+    type: 'plan',
+    text: `@${ceoName} 스탠드업 요약 보고드립니다. 전체 ${tasks.length}건 중 ${doneCount}건 완료${pendingApprovals > 0 ? `, CEO 결재 대기 ${pendingApprovals}건` : ''}입니다. 회의실에서 특정 팀원을 @멘션해 바로 수정 지시를 내리실 수 있습니다!`
+  });
+
+  return turns;
+}
+
