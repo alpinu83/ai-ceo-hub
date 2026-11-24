@@ -110,10 +110,10 @@ const COST_LABELS = {
 };
 
 const STATUS_META = {
-  queued: { label: '대기', cls: 'badge-neutral' },
-  running: { label: '진행 중', cls: 'badge-blue' },
-  awaiting_bridge: { label: '전달 대기', cls: 'badge-blue' },
-  awaiting_approval: { label: '결재 대기', cls: 'badge-amber' },
+  queued: { label: '팀장 추진 중', cls: 'badge-neutral' },
+  running: { label: '자동 작업 중', cls: 'badge-blue' },
+  awaiting_bridge: { label: '외부 봇 위임됨', cls: 'badge-blue' },
+  awaiting_approval: { label: 'CEO 결재 대기', cls: 'badge-amber' },
   completed: { label: '완료', cls: 'badge-green' },
   rejected: { label: '반려', cls: 'badge-red' }
 };
@@ -487,7 +487,7 @@ function renderActiveMission(mission) {
             runnableCount > 0
               ? `<button type="button" class="btn btn-primary btn-sm" id="btn-run-all-mission" data-mission-id="${esc(mission.id)}">
                   <i data-lucide="play" class="icon-xs"></i>
-                  <span>대기 AI 전원 투입 (${runnableCount})</span>
+                  <span>팀장 일괄 추진 (${runnableCount})</span>
                 </button>`
               : ''
           }
@@ -711,10 +711,10 @@ async function playLiveMessages(baseMessages, newTurns, finalState) {
 
 function renderKanbanBoard(tasks) {
   const columns = [
-    { key: 'queued', title: '배정 · 실행 대기', filter: (t) => t.status === 'queued' || t.status === 'running' },
-    { key: 'bridge', title: '앱 · MCP 전달 중', filter: (t) => t.status === 'awaiting_bridge' },
-    { key: 'approval', title: 'CEO 결재 대기', filter: (t) => t.status === 'awaiting_approval' },
-    { key: 'done', title: '완료 · 처리됨', filter: (t) => t.status === 'completed' || t.status === 'rejected' }
+    { key: 'queued', title: '팀장 추진 중', filter: (t) => t.status === 'queued' || t.status === 'running' },
+    { key: 'bridge', title: '외부 봇 처리 중', filter: (t) => t.status === 'awaiting_bridge' },
+    { key: 'approval', title: 'CEO 최종 결재', filter: (t) => t.status === 'awaiting_approval' },
+    { key: 'done', title: '완료', filter: (t) => t.status === 'completed' || t.status === 'rejected' }
   ];
 
   return `<div class="kanban-grid">
@@ -733,11 +733,19 @@ function renderKanbanBoard(tasks) {
                 : list
                     .map((t) => {
                       const ag = getAgent(t.assigneeId) || state.agents[0];
+                      const statusChip =
+                        t.status === 'running'
+                          ? '<span class="badge badge-blue">자동 작업 중</span>'
+                          : t.status === 'awaiting_bridge'
+                            ? '<span class="badge badge-neutral">봇 위임됨</span>'
+                            : t.status === 'completed'
+                              ? '<span class="badge badge-green">완료</span>'
+                              : '';
                       return `<article class="kanban-card">
                         <div style="display:flex;gap:5px;flex-wrap:wrap;">
                           <span class="badge badge-neutral">${esc(MODE_LABELS[ag.connectionMode])}</span>
-                          ${t.requiresApproval ? '<span class="badge badge-amber">결재 게이트</span>' : ''}
-                          ${t.estimatedCostKRW > 0 ? `<span class="badge badge-neutral mono">${formatKRW(t.estimatedCostKRW)}</span>` : ''}
+                          ${statusChip}
+                          ${t.requiresApproval ? '<span class="badge badge-amber">CEO 결재</span>' : ''}
                         </div>
                         <div class="kanban-card-title">${esc(t.title)}</div>
                         <div class="kanban-card-agent">
@@ -745,13 +753,11 @@ function renderKanbanBoard(tasks) {
                           <span>${esc(ag.name)}</span>
                         </div>
                         <div class="kanban-card-actions">
-                          <button type="button" class="btn btn-ghost btn-sm" data-open-drawer="${esc(t.id)}">지시서 · 보고</button>
+                          <button type="button" class="btn btn-ghost btn-sm" data-open-drawer="${esc(t.id)}">상세 · 결과</button>
                           ${
                             t.status === 'awaiting_approval'
                               ? `<button type="button" class="btn btn-amber btn-sm" data-jump-approval="${esc(t.id)}">결재하기</button>`
-                              : t.status !== 'completed'
-                                ? `<button type="button" class="btn btn-primary btn-sm" data-run-task="${esc(t.id)}">실행</button>`
-                                : ''
+                              : ''
                           }
                         </div>
                       </article>`;
@@ -789,8 +795,7 @@ function renderTaskList(tasks) {
               <p class="task-desc">${esc(t.description)}</p>
             </div>
             <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
-              ${t.requiresApproval ? '<span class="badge badge-amber">CEO 승인 필요</span>' : ''}
-              ${t.estimatedCostKRW > 0 ? `<span class="badge badge-neutral mono">${formatKRW(t.estimatedCostKRW)}</span>` : ''}
+              ${t.requiresApproval ? '<span class="badge badge-amber">CEO 결재</span>' : ''}
               <span class="badge ${st.cls}">${esc(st.label)}</span>
             </div>
           </div>
@@ -801,17 +806,14 @@ function renderTaskList(tasks) {
             <div class="assignee-pill">
               <span class="agent-avatar" style="background:${esc(ag.accent)}">${esc(ag.shortCode)}</span>
               <select class="assignee-select" data-reassign-task="${esc(t.id)}" aria-label="담당 AI 변경">${selectOpts}</select>
-              <span class="badge badge-neutral">${esc(COST_LABELS[ag.costTier])}</span>
             </div>
 
             <div class="task-controls">
-              <button type="button" class="btn btn-ghost btn-sm" data-open-drawer="${esc(t.id)}">지시서 복사 · 결과 보고</button>
+              <button type="button" class="btn btn-ghost btn-sm" data-open-drawer="${esc(t.id)}">상세 · 결과</button>
               ${
                 t.status === 'awaiting_approval'
                   ? `<button type="button" class="btn btn-amber btn-sm" data-jump-approval="${esc(t.id)}">결재함 이동</button>`
-                  : t.status !== 'completed'
-                    ? `<button type="button" class="btn btn-primary btn-sm" data-run-task="${esc(t.id)}">실행</button>`
-                    : ''
+                  : ''
               }
             </div>
           </div>
@@ -1701,12 +1703,12 @@ function bindEvents() {
     if (target.id === 'btn-run-all-mission') {
       const missionId = target.dataset.missionId;
       target.disabled = true;
-      target.textContent = '병렬 실행 중…';
+      target.textContent = '팀장 일괄 추진 중…';
       try {
         const res = await api(`/api/missions/${missionId}/run-all`, { method: 'POST' });
         state = res.state;
         renderAll();
-        toast(`${res.ranCount}개 업무를 처리했습니다.`);
+        toast(`총괄 팀장이 ${res.ranCount}개 업무를 일괄 추진했습니다.`);
       } catch (err) {
         toast(err.message, true);
       }
@@ -2258,8 +2260,8 @@ async function init() {
         if (activeTag === 'INPUT' || activeTag === 'TEXTAREA' || activeTag === 'SELECT') return;
         try {
           const fresh = await api('/api/state');
-          const prevSig = `${(state?.messages || []).length}|${(state?.tasks || []).map((t) => t.status).join(',')}|${(state?.approvals || []).filter((a) => a.status === 'pending').length}|${(state?.logs || []).length}`;
-          const newSig = `${(fresh?.messages || []).length}|${(fresh?.tasks || []).map((t) => t.status).join(',')}|${(fresh?.approvals || []).filter((a) => a.status === 'pending').length}|${(fresh?.logs || []).length}`;
+          const prevSig = `${(state?.messages || []).length}|${(state?.tasks || []).map((t) => t.status).join(',')}|${(state?.approvals || []).filter((a) => a.status === 'pending').length}|${(state?.logs || []).length}|${(state?.missions || []).map((m) => (m.finalReport || '').length).join(',')}`;
+          const newSig = `${(fresh?.messages || []).length}|${(fresh?.tasks || []).map((t) => t.status).join(',')}|${(fresh?.approvals || []).filter((a) => a.status === 'pending').length}|${(fresh?.logs || []).length}|${(fresh?.missions || []).map((m) => (m.finalReport || '').length).join(',')}`;
           if (newSig !== prevSig) {
             const prevMsgLen = (state?.messages || []).length;
             const newMsgLen = (fresh?.messages || []).length;

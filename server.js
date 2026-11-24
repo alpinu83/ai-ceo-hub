@@ -183,27 +183,47 @@ async function autoStartLiveMissionTasks(missionId) {
   const mission = db.missions.find((m) => m.id === missionId);
   if (!mission) return;
 
+  const hasLiveEngine = Boolean(
+    db.settings?.providers?.exaone?.apiKey || db.settings?.providers?.claude?.apiKey
+  );
+  if (!hasLiveEngine) return;
+
   const agentMap = Object.fromEntries(db.agents.map((a) => [a.id, a]));
-  const liveTargets = db.tasks.filter((t) => {
-    if (t.missionId !== missionId || t.status !== 'queued') return false;
+  // Under Team Lead authority: auto-run ALL internal AI tasks (EXAONE, Gemini 4 Neon, Claude) without waiting for CEO clicks!
+  // External action bots (Pickle, Cue, Muse, Vooy, Instinct) automatically wait in their live HTTPS/MCP queues.
+  const internalProviders = new Set(['exaone', 'gemini', 'claude']);
+  const autoTargets = db.tasks.filter((t) => {
+    if (t.missionId !== missionId) return false;
+    if (t.status !== 'queued' && t.status !== 'awaiting_bridge') return false;
     const ag = agentMap[t.assigneeId];
-    if (!ag || ag.connectionMode !== 'api') return false;
-    const pCfg = db.settings?.providers?.[ag.provider];
-    return Boolean(pCfg?.apiKey);
+    return Boolean(ag && internalProviders.has(ag.provider));
   });
 
-  if (liveTargets.length === 0) return;
+  // Ensure external bot tasks are cleanly marked as awaiting external inbox/MCP (never sitting in "실행 대기")
+  const externalProviders = new Set(['pickle', 'manus', 'muse', 'vooy', 'instinct']);
+  for (const t of db.tasks) {
+    if (t.missionId === missionId && t.status === 'queued') {
+      const ag = agentMap[t.assigneeId];
+      if (ag && externalProviders.has(ag.provider)) {
+        t.status = 'awaiting_bridge';
+      }
+    }
+  }
 
-  // Mark as running immediately so UI shows employees actively working
+  if (autoTargets.length === 0) {
+    saveDb(db);
+    return;
+  }
+
   const startIso = new Date().toISOString();
-  for (const t of liveTargets) {
+  for (const t of autoTargets) {
     t.status = 'running';
     t.updatedAt = startIso;
   }
   saveDb(db);
 
   await Promise.all(
-    liveTargets.map(async (target) => {
+    autoTargets.map(async (target) => {
       const ag = agentMap[target.assigneeId];
       try {
         const res = await executeAgentTask({ task: target, mission, agent: ag, settings: db.settings });
@@ -221,12 +241,13 @@ async function autoStartLiveMissionTasks(missionId) {
           if (!existing) {
             const apr = createApprovalForTask(taskRow, ag, mission);
             fresh.approvals.unshift(apr);
-            notifyAllApprovalChannels(fresh.settings, apr, ag.name);
+            const leadAg = fresh.agents.find((a) => a.id === (mission.leadAgentId || 'agent_gemini_neon'));
+            notifyAllApprovalChannels(fresh.settings, apr, leadAg?.name || 'Gemini 4 Neon');
           }
-          appendLog(fresh, ag.name, `"${taskRow.title}" 자동 처리 완료 → CEO 결재함 상신.`, 'approval');
+          appendLog(fresh, 'Gemini 4 Neon (총괄 팀장)', `"${taskRow.title}" 검토 완료 → 중요 의사결정으로 CEO 결재 상신.`, 'approval');
         } else {
           taskRow.status = 'completed';
-          appendLog(fresh, ag.name, `"${taskRow.title}" 자동 처리 완료.`, 'success');
+          appendLog(fresh, ag.name, `"${taskRow.title}" 팀장 전결 자동 완료.`, 'success');
           notifyTaskCompleted(fresh.settings, taskRow, ag.name);
         }
 
@@ -242,10 +263,10 @@ async function autoStartLiveMissionTasks(missionId) {
           senderRole: ag.roleTitle,
           senderShortCode: ag.shortCode,
           senderAccent: ag.accent,
-          targetAgentId: 'ceo',
+          targetAgentId: taskRow.requiresApproval ? 'ceo' : (mission.leadAgentId || 'agent_gemini_neon'),
           statusText: taskRow.requiresApproval ? '결재 상신' : '자동 완료',
           type: taskRow.requiresApproval ? 'approval' : 'work',
-          text: `[자동 보고] "${taskRow.title}" ${taskRow.requiresApproval ? '사전 준비를 마치고 결재함에 올렸습니다.' : '완료했습니다.'}${firstLine ? ` — ${firstLine}` : ''}`
+          text: `[팀장 위임 완료] "${taskRow.title}" ${taskRow.requiresApproval ? '검토를 마쳐 CEO 결재함에 올렸습니다.' : '완료했습니다.'}${firstLine ? ` — ${firstLine}` : ''}`
         });
 
         updateMissionStatus(fresh, mission.id);
@@ -263,6 +284,25 @@ async function autoStartLiveMissionTasks(missionId) {
       }
     })
   );
+
+  // Team Lead automatically compiles executive summary once internal tasks finish
+  try {
+    const finalDb = loadDb();
+    const freshMission = finalDb.missions.find((m) => m.id === missionId);
+    if (freshMission) {
+      const mTasks = finalDb.tasks.filter((t) => t.missionId === missionId);
+      freshMission.finalReport = await synthesizeMissionReport({
+        mission: freshMission,
+        tasks: mTasks,
+        agents: finalDb.agents,
+        settings: finalDb.settings
+      });
+      saveDb(finalDb);
+      await flushCloudBackup(finalDb);
+    }
+  } catch {
+    // non-fatal
+  }
 }
 
 function applyApprovalDecisionInDb(aprId, decision, ceoNote = '') {
@@ -1013,22 +1053,35 @@ app.post('/api/missions/:id/run-all', async (c) => {
       if (!existing) {
         const apr = createApprovalForTask(item.task, item.agent, mission);
         db.approvals.unshift(apr);
-        notifyAllApprovalChannels(db.settings, apr, item.agent.name);
+        const leadAg = db.agents.find((a) => a.id === (mission.leadAgentId || 'agent_gemini_neon'));
+        notifyAllApprovalChannels(db.settings, apr, leadAg?.name || 'Gemini 4 Neon');
       }
-      appendLog(db, item.agent.name, `"${item.task.title}" 준비 완료 → CEO 결재함에 상신했습니다.`, 'approval');
+      appendLog(db, 'Gemini 4 Neon (총괄 팀장)', `"${item.task.title}" 검토 완료 → 중요 의사결정으로 CEO 결재 상신.`, 'approval');
     } else {
       item.task.status = 'completed';
       appendLog(
         db,
         item.agent.name,
-        `"${item.task.title}" 완료 (${item.res.live ? 'Live SDK' : '시뮬레이션'}).`,
+        `"${item.task.title}" 팀장 전결 완료 (${item.res.live ? 'Live SDK' : '자동 처리'}).`,
         'success'
       );
     }
   }
 
   updateMissionStatus(db, missionId);
+  try {
+    const missionTasks = db.tasks.filter((t) => t.missionId === missionId);
+    mission.finalReport = await synthesizeMissionReport({
+      mission,
+      tasks: missionTasks,
+      agents: db.agents,
+      settings: db.settings
+    });
+  } catch {
+    // non-fatal
+  }
   saveDb(db);
+  await flushCloudBackup(db);
   return c.json({ ranCount: targets.length, state: sanitizeStateForClient(db) });
 });
 
