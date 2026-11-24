@@ -979,11 +979,22 @@ textarea:focus {
 .activity-msg { font-size: 12.5px; color: var(--ink-secondary); }
 
 /* ==================== MEETING ROOM (OFFICE) ==================== */
-.office-mobile-tabs { display: none; }
+.participants-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.36);
+  backdrop-filter: blur(2px);
+  z-index: 48;
+}
+.participants-backdrop.open { display: block; }
+
+.mobile-participants-btn,
+.mobile-participants-close { display: none; }
 
 .office-layout {
   display: grid;
-  grid-template-columns: 330px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) 244px;
   gap: 16px;
   align-items: start;
 }
@@ -991,86 +1002,83 @@ textarea:focus {
 .office-floor-sheet {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  max-height: 740px;
+  gap: 6px;
+  padding: 16px 14px;
+  max-height: calc(100vh - 110px);
   overflow-y: auto;
 }
 
-.office-handoff-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 9px 12px;
-  background: var(--bg-subtle);
-  border-radius: 10px;
-  font-size: 12px;
-}
+.compact-head { margin-bottom: 6px; }
 
-.office-handoff-flow { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; min-width: 0; }
-.office-zone-label { font-size: 11px; font-weight: 700; color: var(--ink-muted); margin-top: 4px; }
+.office-zone-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ink-muted);
+  margin: 8px 4px 2px;
+}
 
 .desk-grid,
 .desk-grid.workers {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 2px;
 }
 
 .desk-card {
   width: 100%;
-  background: var(--bg-subtle);
-  border: 1px solid transparent;
-  border-radius: 11px;
-  padding: 10px 12px;
+  background: transparent;
+  border: none;
+  border-radius: 9px;
+  padding: 7px 8px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
   cursor: pointer;
   text-align: left;
-  transition: background 0.14s ease, border-color 0.14s ease;
+  transition: background 0.14s ease;
 }
 
-.desk-card:hover { background: var(--bg-hover); }
-.desk-card.speaking { background: var(--accent-primary-soft); border-color: var(--accent-primary); }
-.desk-card.waiting-approval { border-color: var(--accent-amber); }
+.desk-card:hover { background: var(--bg-subtle); }
+.desk-card.speaking { background: var(--accent-primary-soft); }
+.desk-card.waiting-approval { background: var(--accent-amber-soft); }
 
-.desk-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.desk-person { display: flex; align-items: center; gap: 9px; min-width: 0; }
-.desk-name { font-weight: 700; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.desk-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.desk-person { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.desk-name { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .desk-role { display: none; }
-.desk-status { font-size: 11px; font-weight: 600; color: var(--ink-muted); white-space: nowrap; }
+.desk-status { font-size: 11px; font-weight: 600; color: var(--ink-muted); white-space: nowrap; flex-shrink: 0; }
 .desk-card.speaking .desk-status { color: var(--accent-primary); }
 .desk-card.waiting-approval .desk-status { color: var(--accent-amber); }
 
-.desk-bubble {
-  font-size: 12px;
-  color: var(--ink-secondary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
+/* Hide duplicated speech bubbles — participant rail is summary-only */
+.desk-bubble,
 .desk-work-bar { display: none; }
 
-/* Clean Messenger Feed */
+/* Clean Messenger Feed (Center Hero) */
 .lounge-sheet {
   display: flex;
   flex-direction: column;
-  height: 740px;
+  height: calc(100vh - 110px);
+  min-height: 540px;
   padding: 0;
   overflow: hidden;
 }
 
 .lounge-header {
-  padding: 14px 18px;
+  padding: 12px 18px;
   border-bottom: 1px solid var(--border-hairline);
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 10px;
 }
 
-.lounge-channel { font-weight: 700; font-size: 15px; display: inline-flex; align-items: center; gap: 6px; }
+.lounge-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lounge-channel { font-weight: 700; font-size: 15px; display: inline-flex; align-items: center; gap: 7px; }
 
 .lounge-feed {
   flex: 1;
@@ -1317,29 +1325,28 @@ textarea:focus {
 @media (max-width: 960px) {
   .home-grid { grid-template-columns: 1fr; }
   .office-layout { grid-template-columns: 1fr; }
-  .office-mobile-tabs {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    margin-bottom: 10px;
-    background: var(--bg-surface);
-    border: 1px solid var(--border-hairline);
-    border-radius: 12px;
-    padding: 4px;
+
+  .mobile-participants-btn { display: inline-flex; }
+  .mobile-participants-close { display: grid; }
+
+  .office-floor-sheet {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(280px, 84vw);
+    max-height: none;
+    border-radius: 0;
+    border-left: 1px solid var(--border-hairline);
+    z-index: 52;
+    transform: translateX(100%);
+    transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+    box-shadow: var(--shadow-float);
   }
-  .office-mob-tab {
-    padding: 7px 14px;
-    border: none;
-    border-radius: 8px;
-    background: transparent;
-    color: var(--ink-secondary);
-    font-size: 13px;
-    font-weight: 600;
-    cursor: pointer;
+
+  .office-floor-sheet.open {
+    transform: translateX(0);
   }
-  .office-mob-tab.active { background: var(--ink-primary); color: var(--bg-surface); }
-  .office-layout[data-mobile-panel="chat"] .office-floor-sheet { display: none; }
-  .office-layout[data-mobile-panel="desks"] .lounge-sheet { display: none; }
 }
 
 @media (max-width: 820px) {
@@ -1382,7 +1389,7 @@ textarea:focus {
   }
 
   .lounge-sheet {
-    height: calc(100dvh - 190px);
+    height: calc(100dvh - 142px);
     min-height: 440px;
   }
   .lounge-feed { padding: 12px; }

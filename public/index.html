@@ -6,7 +6,7 @@
   <title>CEO Office</title>
   <meta name="description" content="멀티 AI 팀 지휘본부" />
   <link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" />
-  <link rel="stylesheet" href="./styles.css?v=20261124c" />
+  <link rel="stylesheet" href="./styles.css?v=20261124d" />
   <script src="./vendor/marked.umd.js" defer></script>
   <script src="./vendor/lucide.min.js" defer></script>
 </head>
@@ -211,49 +211,26 @@
 
         <!-- 3. LIVE OFFICE / MEETING ROOM -->
         <section class="view" id="view-office" aria-label="회의실">
-          <div class="office-mobile-tabs" role="tablist">
-            <button type="button" class="office-mob-tab active" data-office-tab="chat">대화</button>
-            <button type="button" class="office-mob-tab" data-office-tab="desks">팀원</button>
-            <button type="button" class="btn btn-primary btn-sm" id="btn-start-standup-mobile" style="margin-left:auto;">
-              <i data-lucide="play" class="icon-xs"></i>
-              <span>회의</span>
-            </button>
-          </div>
-
-          <div class="office-layout" id="office-layout" data-mobile-panel="chat">
-            <!-- Left: Compact Team Roster Status -->
-            <div class="card office-floor-sheet">
-              <div class="card-head">
-                <h2 class="card-title">AI 팀원</h2>
-                <button type="button" class="btn btn-primary btn-sm" id="btn-start-standup">
-                  <i data-lucide="play" class="icon-xs"></i>
-                  <span>회의 시작</span>
-                </button>
-              </div>
-
-              <div class="office-handoff-bar" id="office-handoff-bar">
-                <div class="office-handoff-flow" id="office-handoff-text">
-                  <i data-lucide="radio" class="icon-xs"></i>
-                  <span>대기 중</span>
-                </div>
-                <span class="mono muted-tag" id="office-mission-badge"></span>
-              </div>
-
-              <div class="office-zone-label"><span>팀장</span></div>
-              <div class="desk-grid" id="office-lead-desks"></div>
-
-              <div class="office-zone-label"><span>팀원</span></div>
-              <div class="desk-grid workers" id="office-worker-desks"></div>
-            </div>
-
-            <!-- Right: Clean Messaging Feed -->
+          <div class="participants-backdrop" id="participants-backdrop" aria-hidden="true"></div>
+          <div class="office-layout" id="office-layout">
+            <!-- Center: Clean Messaging Feed -->
             <div class="card lounge-sheet">
               <div class="lounge-header">
                 <div class="lounge-channel">
                   <i data-lucide="hash" class="icon-sm"></i>
                   <span>전사-회의실</span>
+                  <span class="live-pill">LIVE</span>
                 </div>
-                <span class="live-pill">LIVE</span>
+                <div class="lounge-header-actions">
+                  <button type="button" class="btn btn-primary btn-sm" id="btn-start-standup">
+                    <i data-lucide="play" class="icon-xs"></i>
+                    <span>회의 시작</span>
+                  </button>
+                  <button type="button" class="btn btn-ghost btn-sm mobile-participants-btn" id="btn-toggle-participants" aria-label="참석자 보기">
+                    <i data-lucide="users" class="icon-xs"></i>
+                    <span id="office-participant-count">9</span>
+                  </button>
+                </div>
               </div>
 
               <div class="lounge-feed" id="lounge-feed"></div>
@@ -282,6 +259,22 @@
                 </div>
               </form>
             </div>
+
+            <!-- Right Rail (PC) / Slide-Over Drawer (Mobile): Compact Participant List -->
+            <aside class="card office-floor-sheet" id="office-participants-panel" aria-label="참석자">
+              <div class="card-head compact-head">
+                <h2 class="card-title">참석자</h2>
+                <button type="button" class="icon-btn mobile-participants-close" id="btn-close-participants" aria-label="닫기">
+                  <i data-lucide="x" class="icon-xs"></i>
+                </button>
+              </div>
+
+              <div class="office-zone-label"><span>팀장</span></div>
+              <div class="desk-grid" id="office-lead-desks"></div>
+
+              <div class="office-zone-label"><span>팀원</span></div>
+              <div class="desk-grid workers" id="office-worker-desks"></div>
+            </aside>
           </div>
         </section>
 
@@ -727,6 +720,6 @@
   </nav>
 
   <div class="toast-region" id="toast-region" aria-live="polite"></div>
-  <script type="module" src="./app.js?v=20261124c"></script>
+  <script type="module" src="./app.js?v=20261124d"></script>
 </body>
 </html>

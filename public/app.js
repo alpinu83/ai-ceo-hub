@@ -510,51 +510,22 @@ function renderOfficeView() {
   const missionTasks = activeMission ? state.tasks.filter((t) => t.missionId === activeMission.id) : [];
   const messages = state.messages || [];
 
-  const badgeEl = document.getElementById('office-mission-badge');
-  if (badgeEl) {
-    badgeEl.textContent = activeMission ? `미션: ${activeMission.title.slice(0, 22)}` : '전사 대기';
-  }
-
-  // Handoff status bar
-  const handoffEl = document.getElementById('office-handoff-text');
-  if (handoffEl) {
-    const latest = messages[messages.length - 1];
-    let text = liveHandoffLabel;
-    if (!text && latest) {
-      const targetAg = latest.targetAgentId === 'ceo' ? { name: `${state.settings.ceoName || '대표님'} (CEO)` } : getAgent(latest.targetAgentId);
-      text = targetAg
-        ? `${latest.senderName}  ── ${latest.statusText || '협업'} ──▶  ${targetAg.name}`
-        : `${latest.senderName}: ${latest.statusText || '회의실 발언 중'}`;
-    }
-    handoffEl.innerHTML = `<i data-lucide="radio" class="icon-xs"></i><span>${esc(text || '전 직원이 업무 채널에 접속해 있습니다.')}</span>`;
-  }
-
-  // Map latest speech per agent
-  const latestByAgent = {};
-  for (const m of messages) {
-    if (m.senderId && m.senderId !== 'ceo') {
-      latestByAgent[m.senderId] = m;
-    }
+  const partCount = document.getElementById('office-participant-count');
+  if (partCount) {
+    partCount.textContent = String(state.agents.filter((a) => a.active).length);
   }
 
   const renderDesk = (ag) => {
     const myTasks = missionTasks.filter((t) => t.assigneeId === ag.id);
     const hasApproval = myTasks.some((t) => t.status === 'awaiting_approval');
     const isSpeaking = activeSpeakerId === ag.id;
-    const latestMsg = latestByAgent[ag.id];
 
-    let statusLabel = '업무 대기';
+    let statusLabel = '대기';
     if (!ag.active) statusLabel = '휴직';
-    else if (isSpeaking) statusLabel = latestMsg?.statusText || '발언 · 협업 중';
-    else if (hasApproval) statusLabel = 'CEO 결재 대기';
-    else if (myTasks.some((t) => t.status === 'completed')) statusLabel = '작업 완료';
-    else if (myTasks.length > 0) statusLabel = '업무 배정됨';
-
-    const bubbleText = latestMsg
-      ? latestMsg.text
-      : myTasks[0]
-        ? `배정 업무: "${myTasks[0].title}" 준비 중입니다.`
-        : `${ag.strengths.slice(0, 52)}…`;
+    else if (isSpeaking) statusLabel = '발언 중';
+    else if (hasApproval) statusLabel = '결재';
+    else if (myTasks.some((t) => t.status === 'completed')) statusLabel = '완료';
+    else if (myTasks.length > 0) statusLabel = '배정';
 
     const cls = `desk-card${isSpeaking ? ' speaking' : ''}${hasApproval && !isSpeaking ? ' waiting-approval' : ''}`;
     return `<button type="button" class="${cls}" data-mention-desk="${esc(ag.name)}">
@@ -563,13 +534,10 @@ function renderOfficeView() {
           <span class="agent-avatar sm" style="background:${esc(ag.accent)}">${esc(ag.shortCode)}</span>
           <div style="min-width:0;">
             <div class="desk-name">${esc(ag.name)}</div>
-            <div class="desk-role">${esc(ag.roleTitle)}</div>
           </div>
         </div>
         <span class="desk-status">${esc(statusLabel)}</span>
       </div>
-      <div class="desk-bubble">${esc(bubbleText)}</div>
-      <div class="desk-work-bar"><div class="desk-work-bar-fill"></div></div>
     </button>`;
   };
 
@@ -1371,12 +1339,13 @@ function closeMobileSidebar() {
   document.getElementById('sidebar-backdrop')?.classList.remove('open');
 }
 
-function setOfficeMobileTab(panel) {
-  const layout = document.getElementById('office-layout');
-  if (layout) layout.dataset.mobilePanel = panel;
-  document.querySelectorAll('[data-office-tab]').forEach((b) => {
-    b.classList.toggle('active', b.dataset.officeTab === panel);
-  });
+function closeParticipantsDrawer() {
+  document.getElementById('office-participants-panel')?.classList.remove('open');
+  document.getElementById('participants-backdrop')?.classList.remove('open');
+}
+
+function setOfficeMobileTab() {
+  closeParticipantsDrawer();
 }
 
 function switchView(viewName) {
@@ -1388,6 +1357,7 @@ function switchView(viewName) {
     sec.classList.toggle('active', sec.id === `view-${viewName}`);
   });
   closeMobileSidebar();
+  closeParticipantsDrawer();
   renderChrome();
   window.scrollTo({ top: 0, behavior: 'instant' });
 }
@@ -1412,7 +1382,7 @@ function bindEvents() {
     const next = document.documentElement.getAttribute('data-theme') === 'studio' ? 'paper' : 'studio';
     document.documentElement.setAttribute('data-theme', next);
     localStorage.setItem('ceo_office_theme', next);
-    toast(next === 'studio' ? '웜 스튜디오 다크 테마로 전환했습니다.' : '에디토리얼 페이퍼 테마로 전환했습니다.');
+    toast(next === 'studio' ? '다크 테마로 전환했습니다.' : '라이트 테마로 전환했습니다.');
   });
 
   // Navigation (Desktop Sidebar + Mobile Bottom Bar)
@@ -1426,6 +1396,15 @@ function bindEvents() {
   });
   document.getElementById('sidebar-backdrop')?.addEventListener('click', closeMobileSidebar);
 
+  // Mobile Participants Slide-Over Drawer
+  document.getElementById('btn-toggle-participants')?.addEventListener('click', () => {
+    const panel = document.getElementById('office-participants-panel');
+    const isOpen = panel?.classList.toggle('open');
+    document.getElementById('participants-backdrop')?.classList.toggle('open', Boolean(isOpen));
+  });
+  document.getElementById('btn-close-participants')?.addEventListener('click', closeParticipantsDrawer);
+  document.getElementById('participants-backdrop')?.addEventListener('click', closeParticipantsDrawer);
+
   document.getElementById('btn-open-approvals-quick')?.addEventListener('click', () => switchView('approvals'));
   document.getElementById('kpi-approvals-cell')?.addEventListener('click', () => switchView('approvals'));
   document.getElementById('kpi-missions-cell')?.addEventListener('click', () => switchView('missions'));
@@ -1435,11 +1414,6 @@ function bindEvents() {
     switchView('command');
     document.getElementById('input-directive').focus();
     document.getElementById('directive-sheet').scrollIntoView({ behavior: 'smooth', block: 'start' });
-  });
-
-  // Office mobile sub-tabs (Chat / Desks)
-  document.querySelectorAll('[data-office-tab]').forEach((btn) => {
-    btn.addEventListener('click', () => setOfficeMobileTab(btn.dataset.officeTab));
   });
 
   // Mission view mode (Kanban / List / SVG Flow)
