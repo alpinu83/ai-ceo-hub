@@ -9,6 +9,8 @@ services:
         value: 3456
       - key: NODE_ENV
         value: production
+      - key: EXAONE_API_KEY
+        sync: false
       - key: GEMINI_API_KEY
         sync: false
       - key: ANTHROPIC_API_KEY
@@ -19,3 +21,7 @@ services:
         sync: false
       - key: TELEGRAM_POLLING
         value: "true"
+      - key: GITHUB_GIST_TOKEN
+        sync: false
+      - key: GIST_BACKUP_ID
+        sync: false

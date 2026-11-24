@@ -76,24 +76,28 @@ const HIRE_PRESETS = {
 
 const VIEW_META = {
   command: {
-    title: '지휘실',
-    subtitle: 'CEO가 목표를 지시하면 팀장이 무료·유료·앱 에이전트에게 업무를 분배합니다.'
+    title: 'CEO 홈',
+    subtitle: '대표님이 지금 결정할 결재와 핵심 지시, 진행 미션만 깔끔하게 모아 보여드립니다.'
+  },
+  missions: {
+    title: '업무 보드',
+    subtitle: '미션별 칸반 보드 · 리스트 · 조직 흐름도와 실시간 조직 보고 로그를 관리합니다.'
   },
   office: {
-    title: '라이브 오피스 · 사내 회의실',
-    subtitle: 'AI 팀장과 팀원들이 각자 자리에서 일하고 서로 대화·협업하는 모습을 실시간으로 보고 직접 지시합니다.'
+    title: '라이브 회의실',
+    subtitle: 'AI 팀장과 팀원들이 각자 자리에서 일하고 서로 대화·협업하는 모습을 실시간으로 보고 지시합니다.'
   },
   approvals: {
     title: 'CEO 결재함',
     subtitle: '결제, 예약 확정, 외부 발송 등 되돌리기 어려운 실행은 반드시 CEO 승인 후 진행됩니다.'
   },
   roster: {
-    title: 'AI 조직도 · 예산',
-    subtitle: 'Paperclip 패턴의 조직 계층과 팀원별 월 예산 한도·연동 방식을 한곳에서 관리합니다.'
+    title: 'AI 조직 · 예산',
+    subtitle: '조직 계층과 팀원별 월 예산 한도·연동 방식을 한곳에서 관리합니다.'
   },
   integrations: {
     title: '연결 · 설정',
-    subtitle: '무료·구독 최적 조합이 미리 설정되어 있습니다. 필요할 때만 Gemini 무료 키나 고급 옵션을 추가하세요.'
+    subtitle: '무료·구독 최적 조합이 미리 설정되어 있습니다. 보유 키나 무료 MCP 서버를 간편하게 연결하세요.'
   }
 };
 
@@ -138,7 +142,7 @@ let currentView = 'command';
 let missionViewMode = 'board'; // 'board' | 'list' | 'graph'
 let selectedMissionId = null;
 let selectedApprovalId = null;
-let currentHubTab = 'providers';
+let currentHubTab = 'quickstart';
 let currentMcpTab = 'muse';
 let openDrawerTaskId = null;
 let highlightedAgentId = null;
@@ -266,6 +270,7 @@ function renderAll() {
   }
 
   renderChrome();
+  renderHomeView();
   renderCommandView();
   renderOfficeView();
   renderApprovalsView();
@@ -284,10 +289,11 @@ function renderAll() {
 function renderChrome() {
   const s = state.settings;
   const activeAgents = state.agents.filter((a) => a.active);
-  const freeActive = activeAgents.filter((a) => a.costTier === 'free' || a.costTier === 'freemium').length;
-  const paidActive = activeAgents.length - freeActive;
   const pendingCount = state.approvals.filter((a) => a.status === 'pending').length;
   const liveProviderCount = Object.values(s.providers || {}).filter((p) => p.hasApiKey).length;
+  const totalTasks = state.tasks.length;
+  const doneTasks = state.tasks.filter((t) => t.status === 'completed').length;
+  const taskPct = totalTasks ? Math.round((doneTasks / totalTasks) * 100) : 0;
 
   const budget = Number(s.monthlyBudgetKRW) || 150000;
   const spent = Number(s.spentThisMonthKRW) || 0;
@@ -303,7 +309,13 @@ function renderChrome() {
   const badge = document.getElementById('nav-approval-badge');
   badge.textContent = String(pendingCount);
   badge.classList.toggle('has-pending', pendingCount > 0);
-  document.getElementById('topbar-pending-count').textContent = String(pendingCount);
+  const mobBadge = document.getElementById('mobile-approval-badge');
+  if (mobBadge) {
+    mobBadge.textContent = String(pendingCount);
+    mobBadge.classList.toggle('show', pendingCount > 0);
+  }
+  const topPending = document.getElementById('topbar-pending-count');
+  if (topPending) topPending.textContent = String(pendingCount);
 
   document.getElementById('sidebar-budget-text').textContent = `${formatKRW(spent)} / ${formatKRW(budget)}`;
   const bar = document.getElementById('sidebar-budget-bar');
@@ -311,21 +323,92 @@ function renderChrome() {
   bar.className = `progress-fill${pct >= 90 ? ' danger' : pct >= 70 ? ' warn' : ''}`;
 
   document.getElementById('stat-active-agents').textContent = `${activeAgents.length} / ${state.agents.length}명`;
-  document.getElementById('stat-live-apis').textContent = liveProviderCount > 0 ? `${liveProviderCount}개 연결됨` : '시뮬레이션 · 브릿지';
+  document.getElementById('stat-live-apis').textContent = liveProviderCount > 0 ? `${liveProviderCount}개 연결됨` : '무료 · 브릿지';
   document.getElementById('stat-cost-policy').textContent = POLICY_LABELS[s.defaultCostPolicy] || s.defaultCostPolicy;
 
   document.getElementById('nav-api-dot').classList.toggle('connected', liveProviderCount > 0);
 
-  // KPI Ledger
-  document.getElementById('kpi-agents-val').textContent = `${activeAgents.length}명 가동 중`;
-  document.getElementById('kpi-agents-sub').textContent = `무료·프리미엄 ${freeActive}명 · 유료·구독 ${paidActive}명`;
+  // Executive 3-Cell KPI Strip
+  document.getElementById('kpi-approvals-val').textContent = pendingCount > 0 ? `${pendingCount}건 대기` : '0건';
+  document.getElementById('kpi-agents-val').textContent = `${state.missions.length}개 (${taskPct}%)`;
+  document.getElementById('kpi-agents-sub').textContent = `AI ${activeAgents.length}명 · ${doneTasks}/${totalTasks} 완료`;
   document.getElementById('kpi-budget-val').textContent = `${formatKRW(spent)}`;
-  document.getElementById('kpi-budget-sub').textContent = `월 한도 ${formatKRW(budget)} 중 ${pct}% 사용`;
-  document.getElementById('kpi-approvals-val').textContent = pendingCount > 0 ? `${pendingCount}건 대기` : '대기 없음';
+  document.getElementById('kpi-budget-sub').textContent = `한도 ${formatKRW(budget)} (${pct}%)`;
 
-  const meta = VIEW_META[currentView];
+  const meta = VIEW_META[currentView] || VIEW_META.command;
   document.getElementById('page-title').textContent = meta.title;
   document.getElementById('page-subtitle').textContent = meta.subtitle;
+}
+
+function renderHomeView() {
+  const aprWrap = document.getElementById('home-approvals-list');
+  const msnWrap = document.getElementById('home-missions-list');
+  const chatTeaser = document.getElementById('home-chat-teaser');
+  if (!aprWrap || !msnWrap) return;
+
+  const pending = state.approvals.filter((a) => a.status === 'pending');
+  if (pending.length === 0) {
+    aprWrap.innerHTML = '<div class="empty-state" style="padding:22px 14px;">현재 대기 중인 CEO 결재가 없습니다. 모든 안건이 깔끔히 정리되었습니다.</div>';
+  } else {
+    aprWrap.innerHTML = pending
+      .slice(0, 3)
+      .map((apr) => {
+        const ag = getAgent(apr.agentId);
+        const costTxt = apr.estimatedCostKRW > 0 ? formatKRW(apr.estimatedCostKRW) : '비용 없음';
+        return `<div class="home-item pending-accent">
+          <div class="home-item-top">
+            <span class="badge badge-amber">${esc(apr.category)}</span>
+            <span class="mono" style="font-size:12px;font-weight:600;">${esc(costTxt)}</span>
+          </div>
+          <div class="home-item-title">${esc(apr.title)}</div>
+          <div class="home-item-sub">${esc(ag?.name || 'AI 팀원')} 상신 · ${esc((apr.summary || '').slice(0, 88))}${(apr.summary || '').length > 88 ? '…' : ''}</div>
+          <div class="home-item-actions">
+            <button type="button" class="btn btn-primary btn-sm" data-quick-approve="${esc(apr.id)}">원터치 승인</button>
+            <button type="button" class="btn btn-ghost btn-sm" data-open-approval="${esc(apr.id)}">결재서 상세 보기</button>
+          </div>
+        </div>`;
+      })
+      .join('');
+  }
+
+  if (state.missions.length === 0) {
+    msnWrap.innerHTML = '<div class="empty-state" style="padding:22px 14px;">진행 중인 미션이 없습니다. 위에서 첫 CEO 지시를 내려보세요.</div>';
+  } else {
+    msnWrap.innerHTML = state.missions
+      .slice(0, 3)
+      .map((m) => {
+        const tasks = state.tasks.filter((t) => t.missionId === m.id);
+        const done = tasks.filter((t) => t.status === 'completed').length;
+        const pct = tasks.length ? Math.round((done / tasks.length) * 100) : 0;
+        const lead = getAgent(m.leadAgentId);
+        return `<div class="home-item">
+          <div class="home-item-top">
+            <span class="badge badge-green">팀장: ${esc(lead?.name || '팀장')}</span>
+            <span class="mono" style="font-size:12px;">${done}/${tasks.length} (${pct}%)</span>
+          </div>
+          <div class="home-item-title">${esc(m.title)}</div>
+          <div class="progress-track thin"><div class="progress-fill" style="width:${pct}%"></div></div>
+          <div class="home-item-actions">
+            <button type="button" class="btn btn-ghost btn-sm" data-open-mission-board="${esc(m.id)}">업무 보드 열기 →</button>
+            <button type="button" class="btn btn-ghost btn-sm" data-jump-view="office">회의실 보기</button>
+          </div>
+        </div>`;
+      })
+      .join('');
+  }
+
+  if (chatTeaser) {
+    const lastMsg = (state.messages || [])[state.messages.length - 1];
+    chatTeaser.innerHTML = lastMsg
+      ? `<button type="button" class="home-chat-card" data-jump-view="office">
+          <div style="min-width:0;">
+            <div style="font-size:11.5px;color:var(--ink-muted);margin-bottom:2px;">최근 사내 회의실 · <strong>${esc(lastMsg.senderName)}</strong></div>
+            <div style="font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(lastMsg.text)}</div>
+          </div>
+          <span class="badge badge-blue">대화 참여 →</span>
+        </button>`
+      : '';
+  }
 }
 
 function renderCommandView() {
@@ -333,7 +416,7 @@ function renderCommandView() {
   if (state.missions.length === 0) {
     tabsBar.innerHTML = '';
     document.getElementById('active-mission-container').innerHTML =
-      '<div class="empty-state">진행 중인 미션이 없습니다. 위에서 CEO 지시서를 작성해 팀장에게 하달해 보세요.</div>';
+      '<div class="empty-state">진행 중인 미션이 없습니다. CEO 홈에서 새 지시서를 하달해 보세요.</div>';
   } else {
     tabsBar.innerHTML = state.missions
       .map((m) => {
@@ -1025,6 +1108,8 @@ function renderIntegrationsView() {
   document.getElementById('set-webhook-url').value = s.webhookUrl || '';
 
   const p = s.providers || {};
+  document.getElementById('url-exaone').value = p.exaone?.baseUrl || 'https://api.exaone.ai/v1';
+  document.getElementById('model-exaone').value = p.exaone?.model || 'k-exaone_v2.5';
   document.getElementById('model-gemini-free').value = p.gemini?.freeModel || 'gemini-2.5-flash';
   document.getElementById('model-gemini-paid').value = p.gemini?.paidModel || 'gemini-4-neon';
   document.getElementById('model-claude').value = p.claude?.model || 'claude-sonnet-4-5';
@@ -1034,6 +1119,8 @@ function renderIntegrationsView() {
   document.getElementById('url-ollama').value = p.ollama?.baseUrl || 'http://localhost:11434/v1';
   document.getElementById('model-ollama').value = p.ollama?.model || 'qwen2.5:14b';
 
+  setKeyStatus('status-exaone', p.exaone);
+  setKeyStatus('status-exaone-quick', p.exaone);
   setKeyStatus('status-gemini', p.gemini);
   setKeyStatus('status-gemini-quick', p.gemini);
   setKeyStatus('status-claude', p.claude);
@@ -1250,16 +1337,30 @@ function closeDrawer() {
   backdrop.setAttribute('aria-hidden', 'true');
 }
 
+function closeMobileSidebar() {
+  document.querySelector('.sidebar')?.classList.remove('mobile-open');
+  document.getElementById('sidebar-backdrop')?.classList.remove('open');
+}
+
+function setOfficeMobileTab(panel) {
+  const layout = document.getElementById('office-layout');
+  if (layout) layout.dataset.mobilePanel = panel;
+  document.querySelectorAll('[data-office-tab]').forEach((b) => {
+    b.classList.toggle('active', b.dataset.officeTab === panel);
+  });
+}
+
 function switchView(viewName) {
   currentView = viewName;
-  document.querySelectorAll('.nav-item').forEach((btn) => {
+  document.querySelectorAll('.nav-item, .mobile-nav-item').forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.view === viewName);
   });
   document.querySelectorAll('.view').forEach((sec) => {
     sec.classList.toggle('active', sec.id === `view-${viewName}`);
   });
-  document.querySelector('.sidebar').classList.remove('mobile-open');
+  closeMobileSidebar();
   renderChrome();
+  window.scrollTo({ top: 0, behavior: 'instant' });
 }
 
 function switchHubTab(tabName) {
@@ -1285,23 +1386,31 @@ function bindEvents() {
     toast(next === 'studio' ? '웜 스튜디오 다크 테마로 전환했습니다.' : '에디토리얼 페이퍼 테마로 전환했습니다.');
   });
 
-  // Navigation
-  document.querySelectorAll('.nav-item').forEach((btn) => {
+  // Navigation (Desktop Sidebar + Mobile Bottom Bar)
+  document.querySelectorAll('.nav-item, .mobile-nav-item').forEach((btn) => {
     btn.addEventListener('click', () => switchView(btn.dataset.view));
   });
   document.getElementById('mobile-menu-btn').addEventListener('click', () => {
-    document.querySelector('.sidebar').classList.toggle('mobile-open');
+    const sidebar = document.querySelector('.sidebar');
+    const isOpen = sidebar.classList.toggle('mobile-open');
+    document.getElementById('sidebar-backdrop')?.classList.toggle('open', isOpen);
   });
-  document.getElementById('btn-open-approvals-quick').addEventListener('click', () => switchView('approvals'));
-  document.getElementById('kpi-approvals-cell').addEventListener('click', () => switchView('approvals'));
-  document.getElementById('kpi-oss-cell').addEventListener('click', () => {
-    switchView('integrations');
-    switchHubTab('oss');
-  });
+  document.getElementById('sidebar-backdrop')?.addEventListener('click', closeMobileSidebar);
+
+  document.getElementById('btn-open-approvals-quick')?.addEventListener('click', () => switchView('approvals'));
+  document.getElementById('kpi-approvals-cell')?.addEventListener('click', () => switchView('approvals'));
+  document.getElementById('kpi-missions-cell')?.addEventListener('click', () => switchView('missions'));
+  document.getElementById('kpi-budget-cell')?.addEventListener('click', () => switchView('roster'));
+
   document.getElementById('btn-focus-directive').addEventListener('click', () => {
     switchView('command');
     document.getElementById('input-directive').focus();
     document.getElementById('directive-sheet').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+
+  // Office mobile sub-tabs (Chat / Desks)
+  document.querySelectorAll('[data-office-tab]').forEach((btn) => {
+    btn.addEventListener('click', () => setOfficeMobileTab(btn.dataset.officeTab));
   });
 
   // Mission view mode (Kanban / List / SVG Flow)
@@ -1369,6 +1478,7 @@ function bindEvents() {
       document.getElementById('input-mission-title').value = '';
       document.getElementById('input-directive').value = '';
       renderAll();
+      switchView('missions');
       toast(`총괄 팀장이 ${res.tasks.length}개 실무 작업으로 분배했습니다.`);
     } catch (err) {
       toast(err.message, true);
@@ -1390,6 +1500,47 @@ function bindEvents() {
 
     const target = e.target.closest('button');
     if (!target) return;
+
+    if (target.dataset.jumpView) {
+      switchView(target.dataset.jumpView);
+      return;
+    }
+
+    if (target.dataset.openMissionBoard) {
+      selectedMissionId = target.dataset.openMissionBoard;
+      renderCommandView();
+      switchView('missions');
+      refreshIcons();
+      return;
+    }
+
+    if (target.dataset.openApproval) {
+      selectedApprovalId = target.dataset.openApproval;
+      renderApprovalsView();
+      switchView('approvals');
+      refreshIcons();
+      return;
+    }
+
+    if (target.dataset.quickApprove) {
+      const aprId = target.dataset.quickApprove;
+      target.disabled = true;
+      target.textContent = '승인 중…';
+      try {
+        const res = await api(`/api/approvals/${aprId}/decide`, {
+          method: 'POST',
+          body: JSON.stringify({ decision: 'approved', ceoNote: 'CEO 홈 원터치 승인' })
+        });
+        state = res.state;
+        renderAll();
+        toast('CEO 승인이 즉시 확정되었습니다.');
+      } catch (err) {
+        toast(err.message, true);
+        target.disabled = false;
+        target.textContent = '원터치 승인';
+      }
+      return;
+    }
 
     if (target.dataset.selectMission) {
       selectedMissionId = target.dataset.selectMission;
@@ -1441,6 +1592,7 @@ function bindEvents() {
 
     if (target.dataset.mentionDesk) {
       const name = target.dataset.mentionDesk.split(' ')[0];
+      setOfficeMobileTab('chat');
       const input = document.getElementById('lounge-chat-input');
       if (input) {
         input.value = `${input.value ? input.value + ' ' : ''}@${name} `;
@@ -1458,16 +1610,17 @@ function bindEvents() {
       return;
     }
 
-    if (target.id === 'btn-start-standup') {
+    if (target.id === 'btn-start-standup' || target.id === 'btn-start-standup-mobile') {
       if (isPlayingLiveSession) return;
       const missionId = selectedMissionId || state.missions[0]?.id;
       if (!missionId) {
-        toast('먼저 지휘실에서 미션을 생성해 주세요.', true);
+        toast('먼저 CEO 홈에서 미션을 생성해 주세요.', true);
         return;
       }
+      setOfficeMobileTab('chat');
       const prevHtml = target.innerHTML;
       target.disabled = true;
-      target.textContent = '팀 회의 소집 중…';
+      target.textContent = '회의 소집 중…';
       try {
         const baseMsgs = [...(state.messages || [])];
         const res = await api(`/api/missions/${missionId}/standup`, { method: 'POST' });
@@ -1529,6 +1682,9 @@ function bindEvents() {
       selectedApprovalId = target.dataset.selectApproval;
       renderApprovalsView();
       refreshIcons();
+      if (window.innerWidth <= 980) {
+        document.getElementById('approval-detail-pane')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
       return;
     }
 
@@ -1781,6 +1937,11 @@ function bindEvents() {
         pollingEnabled: document.getElementById('tg-polling-enabled').checked
       },
       providers: {
+        exaone: {
+          apiKey: document.getElementById('key-exaone').value.trim(),
+          baseUrl: document.getElementById('url-exaone').value.trim(),
+          model: document.getElementById('model-exaone').value.trim()
+        },
         gemini: {
           apiKey: document.getElementById('key-gemini').value.trim(),
           freeModel: document.getElementById('model-gemini-free').value.trim(),
@@ -1808,8 +1969,9 @@ function bindEvents() {
     try {
       const res = await api('/api/settings', { method: 'PUT', body: JSON.stringify(payload) });
       state = res.state;
-      ['key-gemini', 'key-claude', 'key-manus', 'key-litellm', 'tg-bot-token'].forEach((id) => {
-        document.getElementById(id).value = '';
+      ['key-exaone', 'key-gemini', 'key-claude', 'key-manus', 'key-litellm', 'tg-bot-token'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.value = '';
       });
       renderAll();
       toast('연동 설정 · 텔레그램 봇 · 예산 정책을 저장했습니다.');
@@ -1870,6 +2032,46 @@ function bindEvents() {
     });
   }
 
+  // Quick 1-step LG K-EXAONE 2.5 Free Key save & live test
+  const quickExaoneForm = document.getElementById('quick-exaone-form');
+  if (quickExaoneForm) {
+    quickExaoneForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const keyInput = document.getElementById('quick-key-exaone');
+      const btn = document.getElementById('btn-save-quick-exaone');
+      const apiKey = keyInput.value.trim();
+      if (!apiKey) {
+        toast('보유하신 LG EXAONE API 키를 입력해 주세요.', true);
+        return;
+      }
+      const prev = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = '저장 · 확인 중…';
+      try {
+        const saved = await api('/api/settings', {
+          method: 'PUT',
+          body: JSON.stringify({
+            defaultCostPolicy: 'free_first',
+            providers: { exaone: { apiKey } }
+          })
+        });
+        state = saved.state;
+        keyInput.value = '';
+        renderAll();
+        const ping = await api('/api/providers/test', {
+          method: 'POST',
+          body: JSON.stringify({ provider: 'exaone' })
+        });
+        toast(`LG K-EXAONE 2.5 연결 완료! (${ping.model}) 이제 단순·한국어 업무와 회의실이 무료 자동 실행됩니다.`);
+      } catch (err) {
+        toast(`키는 저장되었으나 연결 테스트 오류: ${err.message} (브라우저 CORS 제한 시 Render 무료 서버로 배포하면 해결됩니다)`, true);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = prev;
+      }
+    });
+  }
+
   // Quick 1-step Gemini Free Key save & live test
   const quickGeminiForm = document.getElementById('quick-gemini-form');
   if (quickGeminiForm) {
@@ -1884,7 +2086,7 @@ function bindEvents() {
       }
       const prev = btn.textContent;
       btn.disabled = true;
-      btn.textContent = '저장 및 연결 확인 중…';
+      btn.textContent = '저장 · 확인 중…';
       try {
         const saved = await api('/api/settings', {
           method: 'PUT',

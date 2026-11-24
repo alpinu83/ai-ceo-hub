@@ -6,7 +6,7 @@
  * - Smart Korean Team Lead decomposition, parallel execution, custom dispatch prompts, and MCP preview
  */
 
-const STORAGE_KEY = 'ceo_office_standalone_v3';
+const STORAGE_KEY = 'ceo_office_standalone_v4';
 
 function uid(prefix = 'id') {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
@@ -36,6 +36,7 @@ function createDefaultDb() {
       providers: {
         gemini: { apiKey: '', freeModel: 'gemini-2.5-flash', paidModel: 'gemini-4-neon', enabled: false },
         claude: { apiKey: '', model: 'claude-sonnet-4-5', enabled: false },
+        exaone: { apiKey: '', baseUrl: 'https://api.exaone.ai/v1', model: 'k-exaone_v2.5', enabled: false },
         manus: { apiKey: '', baseUrl: 'https://api.manus.ai/v1', cueEmail: '', enabled: false },
         litellm: { apiKey: '', baseUrl: 'http://localhost:4000/v1', model: 'gemini-free', enabled: false },
         ollama: { apiKey: '', baseUrl: 'http://localhost:11434/v1', model: 'qwen2.5:14b', enabled: false }
@@ -83,6 +84,26 @@ function createDefaultDb() {
         accent: '#9A4A2E'
       },
       {
+        id: 'agent_exaone',
+        name: 'LG K-EXAONE 2.5',
+        shortCode: 'EX',
+        roleTitle: '한국어 실무·요약·단순업무 에이스 (무료 자동)',
+        tier: 'specialist',
+        reportsTo: 'agent_gemini_neon',
+        provider: 'exaone',
+        modelId: 'k-exaone_v2.5',
+        connectionMode: 'api',
+        costTier: 'free',
+        appUrl: 'https://docs.exaone.ai',
+        monthlyCapKRW: 0,
+        spentKRW: 0,
+        domains: ['business', 'content', 'dev', 'life'],
+        strengths: 'LG AI연구원 무료 K-EXAONE 2.5 API(512K 컨텍스트). 한국어 문서 요약, 이메일 초안, 단순 반복 정리, 코딩 보조를 비용 0원 자동 실행',
+        bridgeGuide: '보유하신 LG EXAONE API 키를 빠른 시작 화면에 넣으면 https://api.exaone.ai/v1 로 즉시 무료 자동 가동됩니다.',
+        active: true,
+        accent: '#A50034'
+      },
+      {
         id: 'agent_gemini_free',
         name: 'Gemini (무료 티어)',
         shortCode: 'GM',
@@ -98,7 +119,7 @@ function createDefaultDb() {
         spentKRW: 0,
         domains: ['business', 'content', 'dev', 'life'],
         strengths: 'Google AI Studio 무료 API로 추가 비용 0원 자동 분해·리서치·초안·회의실 대화 처리',
-        bridgeGuide: '사전 추천 설정: 유일하게 자동 실행(무료 0원)으로 설정됨. Google AI Studio 무료 키 1개만 넣으면 즉시 자동 가동됩니다.',
+        bridgeGuide: 'Google AI Studio 무료 키를 넣으면 LG 엑사원과 함께 무료 자동 실행 팀원으로 가동됩니다.',
         active: true,
         accent: '#1D5B8C'
       },
@@ -106,19 +127,19 @@ function createDefaultDb() {
         id: 'agent_muse',
         name: 'Meta Muse',
         shortCode: 'MS',
-        roleTitle: '개인 컨텍스트·프로젝트 팀원 (무료 앱)',
+        roleTitle: '개인 컨텍스트·프로젝트 팀원 (무료 MCP)',
         tier: 'specialist',
         reportsTo: 'agent_gemini_neon',
         provider: 'muse',
         modelId: 'meta-muse',
-        connectionMode: 'bridge',
+        connectionMode: 'mcp',
         costTier: 'free',
         appUrl: 'https://www.meta.ai',
         monthlyCapKRW: 0,
         spentKRW: 0,
         domains: ['life', 'business', 'content'],
         strengths: 'CEO 취향·제약 장기 기억, Spaces 프로젝트 보드, 이메일 정리 및 개인화 기획',
-        bridgeGuide: '사전 추천 설정: 설정 없이 무료 앱에 지시서 복사 전달로 바로 시작합니다. (추후 고급 MCP 자동화 전환 가능)',
+        bridgeGuide: 'Render 무료 MCP 서버(/api/mcp)를 Muse Settings → Connectors에 등록하면 복사·붙여넣기 없이 자동 연동됩니다.',
         active: true,
         accent: '#2B59C3'
       },
@@ -126,19 +147,19 @@ function createDefaultDb() {
         id: 'agent_cue',
         name: 'Manus Cue',
         shortCode: 'CU',
-        roleTitle: '자율 리서치·메일 팀원 (무료/부분유료)',
+        roleTitle: '자율 리서치·메일 팀원 (무료 MCP)',
         tier: 'specialist',
         reportsTo: 'agent_gemini_neon',
         provider: 'manus',
         modelId: 'manus-cue',
-        connectionMode: 'bridge',
+        connectionMode: 'mcp',
         costTier: 'freemium',
         appUrl: 'https://manus.im',
         monthlyCapKRW: 0,
         spentKRW: 0,
         domains: ['business', 'content', 'dev'],
         strengths: '에이전트 전용 이메일·전화번호·가상 컴퓨터 기반 딥 리서치 및 외부 메일 송수신',
-        bridgeGuide: '사전 추천 설정: 지시서 복사 → Manus Cue 바로 열기(또는 전용 이메일 발송)로 추가 API 과금 없이 사용합니다.',
+        bridgeGuide: 'Render 무료 MCP 서버(/api/mcp)를 Cue Integrations에 연결하거나 전용 이메일(Mail Manus)로 자동 지시합니다.',
         active: true,
         accent: '#3F6212'
       },
@@ -567,6 +588,11 @@ async function callDirectAgent(agent, settings, systemPrompt, userPrompt, jsonMo
     const text = await callClaudeDirect(p.claude.apiKey, model, systemPrompt, userPrompt);
     return { text, label: `claude:${model}` };
   }
+  if (agent.provider === 'exaone' && p.exaone?.apiKey) {
+    const model = agent.modelId || p.exaone.model || 'k-exaone_v2.5';
+    const text = await callOpenAICompatDirect(p.exaone.baseUrl || 'https://api.exaone.ai/v1', p.exaone.apiKey, model, systemPrompt, userPrompt);
+    return { text, label: `exaone:${model}` };
+  }
   if (agent.provider === 'ollama' && p.ollama?.baseUrl) {
     const model = agent.modelId || p.ollama.model || 'qwen2.5:14b';
     const text = await callOpenAICompatDirect(p.ollama.baseUrl, '', model, systemPrompt, userPrompt);
@@ -587,9 +613,14 @@ async function sendTelegramDirect(settings, approval, agentName) {
   }).catch(() => {});
 }
 
-function selectLead(agents, costPolicy) {
+function selectLead(agents, costPolicy, settings) {
   const active = agents.filter((a) => a.active);
-  if (costPolicy === 'free_first') return active.find((a) => a.id === 'agent_gemini_free') || active[0];
+  if (costPolicy === 'free_first') {
+    const hasGem = Boolean(settings?.providers?.gemini?.apiKey);
+    const hasExa = Boolean(settings?.providers?.exaone?.apiKey);
+    if (hasExa && !hasGem) return active.find((a) => a.id === 'agent_exaone') || active[0];
+    return active.find((a) => a.id === 'agent_gemini_free') || active.find((a) => a.id === 'agent_exaone') || active[0];
+  }
   return active.find((a) => a.id === 'agent_gemini_neon') || active.find((a) => a.tier === 'lead') || active[0];
 }
 
@@ -603,7 +634,7 @@ function heuristicPlan({ directive, domain, costPolicy, agents, leadAgent }) {
   tasks.push({
     title: '핵심 자료 조사 및 요구사항 구조화',
     description: `CEO 지시("${directive.slice(0, 72)}${directive.length > 72 ? '…' : ''}")의 선행 자료, 벤치마크, 제약 조건을 구조화합니다.`,
-    assigneeId: (isFree ? pick(['agent_gemini_free', 'agent_vooy']) : pick(['agent_gemini_free', 'agent_cue'])).id,
+    assigneeId: (isFree ? pick(['agent_exaone', 'agent_gemini_free', 'agent_vooy']) : pick(['agent_gemini_free', 'agent_exaone', 'agent_cue'])).id,
     domain,
     requiresApproval: false,
     estimatedCostKRW: 0
@@ -613,7 +644,7 @@ function heuristicPlan({ directive, domain, costPolicy, agents, leadAgent }) {
     tasks.push({
       title: '아키텍처 설계 · 구현 코드 작성 및 리뷰',
       description: '핵심 구현 코드, 예외 처리, 단위 테스트 및 보안 체크리스트를 작성합니다.',
-      assigneeId: (isFree ? pick(['agent_gemini_free', 'agent_claude']) : pick(['agent_claude', 'agent_gemini_neon'])).id,
+      assigneeId: (isFree ? pick(['agent_exaone', 'agent_gemini_free', 'agent_claude']) : pick(['agent_claude', 'agent_gemini_neon'])).id,
       domain: 'dev',
       requiresApproval: /배포|프로덕션|결제/.test(text),
       estimatedCostKRW: 0
@@ -623,7 +654,7 @@ function heuristicPlan({ directive, domain, costPolicy, agents, leadAgent }) {
     tasks.push({
       title: '콘텐츠 기획안 · 대본 및 채널별 카피 제작',
       description: '후킹 제목 5종, 본문 초안, 블로그/스레드 확산용 버전을 제작합니다.',
-      assigneeId: (isFree ? pick(['agent_gemini_free', 'agent_muse']) : pick(['agent_claude', 'agent_gemini_neon'])).id,
+      assigneeId: (isFree ? pick(['agent_exaone', 'agent_gemini_free', 'agent_muse']) : pick(['agent_claude', 'agent_gemini_neon'])).id,
       domain: 'content',
       requiresApproval: /발행|업로드|게시|승인/.test(text),
       estimatedCostKRW: 0
@@ -634,7 +665,7 @@ function heuristicPlan({ directive, domain, costPolicy, agents, leadAgent }) {
     tasks.push({
       title: needEmail ? '대외 제안 문서 작성 및 메일 초안 준비' : '비즈니스 실행안 및 의사결정 옵션 비교',
       description: needEmail ? '고객/파트너 발송용 초안을 작성하고 실제 발송 전 CEO 결재를 거칩니다.' : '보수안/적극안 2가지 전략과 기대 ROI, 리스크를 비교 정리합니다.',
-      assigneeId: (needEmail ? pick(['agent_cue', 'agent_claude']) : isFree ? pick(['agent_gemini_free', 'agent_muse']) : pick(['agent_claude', 'agent_gemini_neon'])).id,
+      assigneeId: (needEmail ? pick(['agent_cue', 'agent_exaone', 'agent_claude']) : isFree ? pick(['agent_exaone', 'agent_gemini_free', 'agent_muse']) : pick(['agent_claude', 'agent_gemini_neon'])).id,
       domain: 'business',
       requiresApproval: needEmail,
       estimatedCostKRW: 0
@@ -664,7 +695,7 @@ function heuristicPlan({ directive, domain, costPolicy, agents, leadAgent }) {
     tasks.push({
       title: '개인 컨텍스트 대조 및 실행 체크리스트',
       description: 'CEO의 기존 일정과 우선순위에 맞춰 실행 순서를 정리하고 누락 항목을 점검합니다.',
-      assigneeId: pick(['agent_muse', 'agent_vooy', 'agent_gemini_free']).id,
+      assigneeId: pick(['agent_muse', 'agent_exaone', 'agent_vooy', 'agent_gemini_free']).id,
       domain,
       requiresApproval: false,
       estimatedCostKRW: 0
@@ -727,7 +758,7 @@ export async function standaloneApi(path, options = {}) {
     const domain = body.domain || 'business';
     const costPolicy = body.costPolicy || db.settings.defaultCostPolicy;
     const autoTitle = String(body.title || '').trim() || directive.split('\n')[0].slice(0, 40) + (directive.length > 40 ? '…' : '');
-    const leadAgent = selectLead(db.agents, costPolicy);
+    const leadAgent = selectLead(db.agents, costPolicy, db.settings);
 
     let plan = null;
     try {
@@ -939,7 +970,7 @@ export async function standaloneApi(path, options = {}) {
       if (typeof body.telegram.pollingEnabled === 'boolean') s.telegram.pollingEnabled = body.telegram.pollingEnabled;
     }
     if (body.providers) {
-      for (const k of ['gemini', 'claude', 'manus', 'litellm', 'ollama']) {
+      for (const k of ['exaone', 'gemini', 'claude', 'manus', 'litellm', 'ollama']) {
         if (!body.providers[k]) continue;
         s.providers[k] = s.providers[k] || {};
         if (body.providers[k].apiKey) s.providers[k].apiKey = body.providers[k].apiKey;
@@ -954,6 +985,11 @@ export async function standaloneApi(path, options = {}) {
 
   if (method === 'POST' && path === '/api/providers/test') {
     const p = db.settings.providers[body.provider];
+    if (body.provider === 'exaone') {
+      if (!p?.apiKey) throw new Error('LG EXAONE API 키를 입력하고 먼저 저장해 주세요.');
+      const reply = await callOpenAICompatDirect(p.baseUrl || 'https://api.exaone.ai/v1', p.apiKey, p.model || 'k-exaone_v2.5', '', 'Respond with OK');
+      return { ok: true, model: p.model || 'k-exaone_v2.5', reply };
+    }
     if (body.provider === 'gemini') {
       if (!p?.apiKey) throw new Error('Gemini API 키를 입력하고 먼저 저장해 주세요.');
       const reply = await callGeminiDirect(p.apiKey, p.freeModel || 'gemini-2.5-flash', '', 'Respond with OK');
@@ -1044,6 +1080,7 @@ export async function standaloneApi(path, options = {}) {
     const aliasMap = [
       { id: 'agent_gemini_neon', re: /네온|neon|총괄|팀장/ },
       { id: 'agent_claude', re: /클로드|claude|수석|개발|코드|제안서/ },
+      { id: 'agent_exaone', re: /엑사원|exaone|lg|요약|정리|단순|번역/ },
       { id: 'agent_gemini_free', re: /제미나이|gemini|무료|리서치|조사/ },
       { id: 'agent_muse', re: /뮤즈|muse|취향|일정|spaces/ },
       { id: 'agent_cue', re: /큐|cue|마누스|manus|이메일|메일/ },
@@ -1096,6 +1133,8 @@ export async function standaloneApi(path, options = {}) {
         const prevRef = prev ? `@${prev.senderName} 님 말씀 이어서, ` : '';
         if (ag.tier === 'lead') {
           replyText = `${ceoName} 확인했습니다! "${text.slice(0, 48)}${text.length > 48 ? '…' : ''}" 기준으로 팀원 우선순위를 조율하겠습니다. 결제나 외부 실행은 반드시 결재함으로 올리겠습니다.`;
+        } else if (ag.provider === 'exaone') {
+          replyText = `${prevRef}LG K-EXAONE 2.5입니다! 한국어 요약·초안·단순 자동화 작업은 무료 512K 컨텍스트로 즉시 깔끔하게 정리해 두겠습니다.`;
         } else if (ag.provider === 'pickle') {
           replyText = `${prevRef}피클입니다! 전화 문의·국내 예약 조건을 즉시 반영하겠습니다. 실제 확정·결제 직전에 꼭 멈추고 결재 올릴게요!`;
         } else if (ag.provider === 'vooy') {

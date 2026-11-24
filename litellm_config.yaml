@@ -1,8 +1,14 @@
 # LiteLLM Open-Source AI Gateway Configuration
-# Connects free Gemini tier, Gemini 4 Neon, Claude, OpenRouter free models, and local Ollama
+# Connects LG K-EXAONE 2.5 (Free), Gemini Free, Gemini 4 Neon, Claude, OpenRouter Free, and Local Ollama
 # Docs: https://github.com/BerriAI/litellm
 
 model_list:
+  - model_name: exaone-free
+    litellm_params:
+      model: openai/k-exaone_v2.5
+      api_base: https://api.exaone.ai/v1
+      api_key: os.environ/EXAONE_API_KEY
+
   - model_name: gemini-free
     litellm_params:
       model: gemini/gemini-2.5-flash

@@ -49,6 +49,18 @@ function resolveLanguageModel(agent, settings) {
     return { model: anthropic(modelName), label: `claude:${modelName}` };
   }
 
+  if (agent.provider === 'exaone') {
+    const cfg = providers.exaone;
+    if (!cfg?.apiKey) return null;
+    const exaone = createOpenAI({
+      baseURL: cfg.baseUrl || 'https://api.exaone.ai/v1',
+      apiKey: cfg.apiKey,
+      compatibility: 'compatible'
+    });
+    const modelName = agent.modelId || cfg.model || 'k-exaone_v2.5';
+    return { model: exaone(modelName), label: `exaone:${modelName}` };
+  }
+
   if (agent.provider === 'ollama') {
     const cfg = providers.ollama;
     if (!cfg?.baseUrl) return null;
@@ -117,6 +129,21 @@ export async function testProviderConnection(providerKey, settings) {
     const { text } = await generateText({
       model: anthropic(modelName),
       prompt: 'Respond with exactly: OK'
+    });
+    return { ok: true, model: modelName, reply: text.trim().slice(0, 60) };
+  }
+
+  if (providerKey === 'exaone') {
+    if (!p.apiKey) throw new Error('LG EXAONE API 키가 설정되지 않았습니다.');
+    const exaone = createOpenAI({
+      baseURL: p.baseUrl || 'https://api.exaone.ai/v1',
+      apiKey: p.apiKey,
+      compatibility: 'compatible'
+    });
+    const modelName = p.model || 'k-exaone_v2.5';
+    const { text } = await generateText({
+      model: exaone(modelName),
+      prompt: '간단히 "연결 OK"라고 답하세요.'
     });
     return { ok: true, model: modelName, reply: text.trim().slice(0, 60) };
   }
@@ -199,11 +226,17 @@ export function buildDispatchPrompt(agent, task, mission) {
   }
 }
 
-function selectLeadAgent(agents, costPolicy) {
+function selectLeadAgent(agents, costPolicy, settings) {
   const active = agents.filter((a) => a.active);
   if (costPolicy === 'free_first') {
+    const hasExaone = Boolean(settings?.providers?.exaone?.apiKey);
+    const hasGemini = Boolean(settings?.providers?.gemini?.apiKey);
+    if (hasExaone && !hasGemini) {
+      return active.find((a) => a.id === 'agent_exaone') || active[0];
+    }
     return (
       active.find((a) => a.id === 'agent_gemini_free') ||
+      active.find((a) => a.id === 'agent_exaone') ||
       active.find((a) => a.costTier === 'free') ||
       active[0]
     );
@@ -249,12 +282,12 @@ function heuristicDecompose({ directive, domain, costPolicy, agents, leadAgent }
   const isFreeOnly = costPolicy === 'free_first';
 
   const researchAgent = isFreeOnly
-    ? pick(['agent_gemini_free', 'agent_vooy', 'agent_cue'])
-    : pick(['agent_gemini_free', 'agent_cue', 'agent_gemini_neon']);
+    ? pick(['agent_exaone', 'agent_gemini_free', 'agent_vooy', 'agent_cue'])
+    : pick(['agent_gemini_free', 'agent_exaone', 'agent_cue', 'agent_gemini_neon']);
 
   const deepWorkAgent = isFreeOnly
-    ? pick(['agent_gemini_free', 'agent_muse', 'agent_claude'])
-    : pick(['agent_claude', 'agent_gemini_neon', 'agent_gemini_free']);
+    ? pick(['agent_exaone', 'agent_gemini_free', 'agent_muse', 'agent_claude'])
+    : pick(['agent_claude', 'agent_gemini_neon', 'agent_exaone', 'agent_gemini_free']);
 
   const needsCallOrBooking = /예약|식당|병원|전화|ktx|기차|호텔|숙소|주문|결제|구매/.test(text);
   const needsRecurring = /매일|매주|아침|브리핑|모니터링|가격|뉴스|트렌드|추적/.test(text);
@@ -387,7 +420,7 @@ function heuristicDecompose({ directive, domain, costPolicy, agents, leadAgent }
 }
 
 export async function decomposeDirective({ directive, title, domain, costPolicy, agents, settings }) {
-  const leadAgent = selectLeadAgent(agents, costPolicy);
+  const leadAgent = selectLeadAgent(agents, costPolicy, settings);
   const activeAgents = agents.filter((a) => a.active);
   const resolved = resolveLanguageModel(leadAgent, settings);
 
@@ -588,6 +621,7 @@ function pickResponders(text, agents, mission, tasks) {
   const aliasMap = [
     { id: 'agent_gemini_neon', re: /네온|neon|총괄|팀장/ },
     { id: 'agent_claude', re: /클로드|claude|수석|개발|코드|제안서/ },
+    { id: 'agent_exaone', re: /엑사원|exaone|lg|요약|정리|단순|번역/ },
     { id: 'agent_gemini_free', re: /제미나이|gemini|무료|리서치|조사/ },
     { id: 'agent_muse', re: /뮤즈|muse|취향|일정|spaces/ },
     { id: 'agent_cue', re: /큐|cue|마누스|manus|이메일|메일/ },
@@ -636,6 +670,8 @@ function buildPersonaFallbackReply(agent, userMessage, mission, agentTasks, prio
   }
 
   switch (agent.provider) {
+    case 'exaone':
+      return `${prevRef}${ceoName}, LG K-EXAONE 2.5입니다! 한국어 요약·문서 초안·단순 반복 정리는 비용 0원 무료 API로 빠르게 처리하겠습니다. ${myTask ? `("${myTask.title}" 기준)` : '필요한 초안 바로 뽑아 팀장님께 넘기겠습니다!'}`;
     case 'pickle':
       return `${prevRef}${ceoName}, 피클입니다! 전화 문의·국내 예약 조건을 바로 반영하겠습니다. ${myTask ? `("${myTask.title}" 기준)` : ''} 실제 예약 확정이나 예약금 결제 전에는 절대 먼저 결제하지 않고 후보와 금액을 정리해서 결재 올리겠습니다!`;
     case 'vooy':

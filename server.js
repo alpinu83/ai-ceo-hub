@@ -10,6 +10,7 @@ import {
   saveDb,
   appendLog,
   appendMessage,
+  initCloudPersistence,
   sanitizeStateForClient,
   createDefaultState,
   uid
@@ -810,7 +811,7 @@ app.put('/api/settings', async (c) => {
   }
 
   if (body.providers) {
-    for (const pKey of ['gemini', 'claude', 'manus', 'litellm', 'ollama']) {
+    for (const pKey of ['gemini', 'claude', 'exaone', 'manus', 'litellm', 'ollama']) {
       const incoming = body.providers[pKey];
       if (!incoming) continue;
       const target = s.providers[pKey] || (s.providers[pKey] = {});
@@ -908,8 +909,12 @@ const server = http.createServer(async (req, res) => {
   return honoListener(req, res);
 });
 
-server.listen(PORT, '0.0.0.0', () => {
-  const db = loadDb();
-  syncTelegramPolling(db.settings, getTelegramCallbacks());
-  console.log(`AI CEO Hub v2 (Hono + Official MCP SDK + Vercel AI SDK + Telegram Bot) listening on http://localhost:${PORT}`);
-});
+initCloudPersistence()
+  .catch(() => {})
+  .finally(() => {
+    server.listen(PORT, '0.0.0.0', () => {
+      const db = loadDb();
+      syncTelegramPolling(db.settings, getTelegramCallbacks());
+      console.log(`AI CEO Hub v2 (Hono + Official MCP SDK + Vercel AI SDK + LG K-EXAONE 2.5 + Telegram Bot) listening on http://localhost:${PORT}`);
+    });
+  });

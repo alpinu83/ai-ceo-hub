@@ -50,6 +50,12 @@ export function createDefaultState() {
           cueEmail: '',
           enabled: Boolean(process.env.MANUS_API_KEY)
         },
+        exaone: {
+          apiKey: process.env.EXAONE_API_KEY || '',
+          baseUrl: process.env.EXAONE_BASE_URL || 'https://api.exaone.ai/v1',
+          model: process.env.EXAONE_MODEL || 'k-exaone_v2.5',
+          enabled: Boolean(process.env.EXAONE_API_KEY)
+        },
         litellm: {
           apiKey: process.env.LITELLM_MASTER_KEY || '',
           baseUrl: process.env.LITELLM_BASE_URL || 'http://localhost:4000/v1',
@@ -106,6 +112,26 @@ export function createDefaultState() {
         accent: '#9A4A2E'
       },
       {
+        id: 'agent_exaone',
+        name: 'LG K-EXAONE 2.5',
+        shortCode: 'EX',
+        roleTitle: '한국어 실무·요약·단순업무 에이스 (무료 자동)',
+        tier: 'specialist',
+        reportsTo: 'agent_gemini_neon',
+        provider: 'exaone',
+        modelId: 'k-exaone_v2.5',
+        connectionMode: 'api',
+        costTier: 'free',
+        appUrl: 'https://docs.exaone.ai',
+        monthlyCapKRW: 0,
+        spentKRW: 0,
+        domains: ['business', 'content', 'dev', 'life'],
+        strengths: 'LG AI연구원 무료 K-EXAONE 2.5 API(512K 컨텍스트). 한국어 문서 요약, 이메일 초안, 단순 반복 정리, 코딩 보조를 비용 0원 자동 실행',
+        bridgeGuide: '보유하신 LG EXAONE API 키를 빠른 시작 화면에 넣으면 https://api.exaone.ai/v1 로 즉시 무료 자동 가동됩니다.',
+        active: true,
+        accent: '#A50034'
+      },
+      {
         id: 'agent_gemini_free',
         name: 'Gemini (무료 티어)',
         shortCode: 'GM',
@@ -121,7 +147,7 @@ export function createDefaultState() {
         spentKRW: 0,
         domains: ['business', 'content', 'dev', 'life'],
         strengths: 'Google AI Studio 무료 API로 추가 비용 0원 자동 분해·리서치·초안·회의실 대화 처리',
-        bridgeGuide: '사전 추천 설정: 유일하게 자동 실행(무료 0원)으로 설정됨. Google AI Studio 무료 키 1개만 넣으면 즉시 자동 가동됩니다.',
+        bridgeGuide: 'Google AI Studio 무료 키를 넣으면 LG 엑사원과 함께 무료 자동 실행 팀원으로 가동됩니다.',
         active: true,
         accent: '#1D5B8C'
       },
@@ -129,19 +155,19 @@ export function createDefaultState() {
         id: 'agent_muse',
         name: 'Meta Muse',
         shortCode: 'MS',
-        roleTitle: '개인 컨텍스트·프로젝트 팀원 (무료 앱)',
+        roleTitle: '개인 컨텍스트·프로젝트 팀원 (무료 MCP)',
         tier: 'specialist',
         reportsTo: 'agent_gemini_neon',
         provider: 'muse',
         modelId: 'meta-muse',
-        connectionMode: 'bridge',
+        connectionMode: 'mcp',
         costTier: 'free',
         appUrl: 'https://www.meta.ai',
         monthlyCapKRW: 0,
         spentKRW: 0,
         domains: ['life', 'business', 'content'],
         strengths: 'CEO 취향·제약 장기 기억, Spaces 프로젝트 보드, 이메일 정리 및 개인화 기획',
-        bridgeGuide: '사전 추천 설정: 설정 없이 무료 앱에 지시서 복사 전달로 바로 시작합니다. (추후 고급 MCP 자동화 전환 가능)',
+        bridgeGuide: 'Render 무료 MCP 서버(/api/mcp)를 Muse Settings → Connectors에 등록하면 복사·붙여넣기 없이 자동 연동됩니다.',
         active: true,
         accent: '#2B59C3'
       },
@@ -149,19 +175,19 @@ export function createDefaultState() {
         id: 'agent_cue',
         name: 'Manus Cue',
         shortCode: 'CU',
-        roleTitle: '자율 리서치·메일 팀원 (무료/부분유료)',
+        roleTitle: '자율 리서치·메일 팀원 (무료 MCP)',
         tier: 'specialist',
         reportsTo: 'agent_gemini_neon',
         provider: 'manus',
         modelId: 'manus-cue',
-        connectionMode: 'bridge',
+        connectionMode: 'mcp',
         costTier: 'freemium',
         appUrl: 'https://manus.im',
         monthlyCapKRW: 0,
         spentKRW: 0,
         domains: ['business', 'content', 'dev'],
         strengths: '에이전트 전용 이메일·전화번호·가상 컴퓨터 기반 딥 리서치 및 외부 메일 송수신',
-        bridgeGuide: '사전 추천 설정: 지시서 복사 → Manus Cue 바로 열기(또는 전용 이메일 발송)로 추가 API 과금 없이 사용합니다.',
+        bridgeGuide: 'Render 무료 MCP 서버(/api/mcp)를 Cue Integrations에 연결하거나 전용 이메일(Mail Manus)로 자동 지시합니다.',
         active: true,
         accent: '#3F6212'
       },
@@ -481,11 +507,69 @@ export function loadDb() {
   }
 }
 
+let gistSyncTimer = null;
+
+function isGistBackupEnabled() {
+  return Boolean(process.env.GITHUB_GIST_TOKEN && process.env.GIST_BACKUP_ID);
+}
+
+/**
+ * Free zero-data-loss persistence for Render Free Tier:
+ * Restores data/db.json from a private GitHub Gist on server boot when GITHUB_GIST_TOKEN + GIST_BACKUP_ID are set.
+ */
+export async function initCloudPersistence() {
+  if (!isGistBackupEnabled()) return { enabled: false };
+  try {
+    const res = await fetch(`https://api.github.com/gists/${encodeURIComponent(process.env.GIST_BACKUP_ID)}`, {
+      headers: {
+        Authorization: `Bearer ${process.env.GITHUB_GIST_TOKEN}`,
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'ai-ceo-hub'
+      }
+    });
+    if (!res.ok) return { enabled: true, restored: false, status: res.status };
+    const gist = await res.json();
+    const raw = gist?.files?.['ceo-office-db.json']?.content;
+    if (raw) {
+      JSON.parse(raw); // validate JSON before writing
+      if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+      fs.writeFileSync(DB_PATH, raw, 'utf8');
+      return { enabled: true, restored: true };
+    }
+    return { enabled: true, restored: false };
+  } catch (err) {
+    return { enabled: true, restored: false, error: err.message };
+  }
+}
+
+function scheduleGistBackup(serialized) {
+  if (!isGistBackupEnabled()) return;
+  if (gistSyncTimer) clearTimeout(gistSyncTimer);
+  gistSyncTimer = setTimeout(() => {
+    fetch(`https://api.github.com/gists/${encodeURIComponent(process.env.GIST_BACKUP_ID)}`, {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${process.env.GITHUB_GIST_TOKEN}`,
+        Accept: 'application/vnd.github+json',
+        'Content-Type': 'application/json',
+        'User-Agent': 'ai-ceo-hub'
+      },
+      body: JSON.stringify({
+        files: {
+          'ceo-office-db.json': { content: serialized }
+        }
+      })
+    }).catch(() => {});
+  }, 1800);
+}
+
 export function saveDb(db) {
   if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true });
   }
-  fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2), 'utf8');
+  const serialized = JSON.stringify(db, null, 2);
+  fs.writeFileSync(DB_PATH, serialized, 'utf8');
+  scheduleGistBackup(serialized);
 }
 
 export function appendLog(db, actor, message, level = 'info') {
