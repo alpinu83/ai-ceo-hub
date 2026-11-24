@@ -1,0 +1,425 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const DATA_DIR = path.join(__dirname, '..', 'data');
+const DB_PATH = path.join(DATA_DIR, 'db.json');
+
+export function uid(prefix = 'id') {
+  return `${prefix}_${crypto.randomBytes(4).toString('hex')}`;
+}
+
+export function createDefaultState() {
+  const now = new Date().toISOString();
+  const sampleMissionId = 'msn_welcome_01';
+
+  return {
+    settings: {
+      companyName: 'CEO Office',
+      ceoName: '대표님',
+      defaultCostPolicy: 'balanced', // 'free_first' | 'balanced' | 'max_quality'
+      monthlyBudgetKRW: 150000,
+      spentThisMonthKRW: 40000,
+      approvalThresholdKRW: 30000,
+      requireApprovalForExternal: true,
+      webhookUrl: process.env.WEBHOOK_URL || '', // Slack / Discord / n8n / OpenClaw approval alert webhook
+      telegram: {
+        botToken: process.env.TELEGRAM_BOT_TOKEN || '',
+        chatId: process.env.TELEGRAM_CHAT_ID || '',
+        pollingEnabled: process.env.TELEGRAM_POLLING === 'true'
+      },
+      mcpToken: process.env.MCP_TOKEN || `ceo_mcp_${crypto.randomBytes(8).toString('hex')}`,
+      providers: {
+        gemini: {
+          apiKey: process.env.GEMINI_API_KEY || '',
+          freeModel: 'gemini-2.5-flash',
+          paidModel: 'gemini-4-neon',
+          enabled: Boolean(process.env.GEMINI_API_KEY)
+        },
+        claude: {
+          apiKey: process.env.ANTHROPIC_API_KEY || '',
+          model: 'claude-sonnet-4-5',
+          enabled: Boolean(process.env.ANTHROPIC_API_KEY)
+        },
+        manus: {
+          apiKey: process.env.MANUS_API_KEY || '',
+          baseUrl: 'https://api.manus.ai/v1',
+          cueEmail: '',
+          enabled: Boolean(process.env.MANUS_API_KEY)
+        },
+        litellm: {
+          apiKey: process.env.LITELLM_MASTER_KEY || '',
+          baseUrl: process.env.LITELLM_BASE_URL || 'http://localhost:4000/v1',
+          model: 'gemini-free',
+          enabled: Boolean(process.env.LITELLM_MASTER_KEY)
+        },
+        ollama: {
+          apiKey: '',
+          baseUrl: 'http://localhost:11434/v1',
+          model: 'qwen2.5:14b',
+          enabled: false
+        }
+      }
+    },
+    agents: [
+      {
+        id: 'agent_gemini_neon',
+        name: 'Gemini 4 Neon',
+        shortCode: 'GN',
+        roleTitle: '전략·총괄 팀장 (Chief of Staff)',
+        tier: 'lead',
+        reportsTo: 'ceo',
+        provider: 'gemini',
+        modelId: 'gemini-4-neon',
+        connectionMode: 'api', // 'api' | 'litellm' | 'mcp' | 'bridge'
+        costTier: 'paid_or_sub',
+        monthlyCapKRW: 60000,
+        spentKRW: 0,
+        domains: ['business', 'content', 'dev', 'life'],
+        strengths: '복합 CEO 지시 분해, 장문 문서·PDF·표 분석, 전체 팀원 업무 배정 및 임원 종합 보고',
+        bridgeGuide: 'Vercel AI SDK(@ai-sdk/google) 또는 LiteLLM 프록시, Google AI Pro/Ultra 구독 브릿지로 연결됩니다.',
+        active: true,
+        accent: '#0E6245'
+      },
+      {
+        id: 'agent_claude',
+        name: 'Claude',
+        shortCode: 'CL',
+        roleTitle: '개발·기획 수석 팀장',
+        tier: 'lead',
+        reportsTo: 'ceo',
+        provider: 'claude',
+        modelId: 'claude-sonnet-4-5',
+        connectionMode: 'api',
+        costTier: 'paid_or_sub',
+        monthlyCapKRW: 60000,
+        spentKRW: 0,
+        domains: ['dev', 'business', 'content'],
+        strengths: '정밀 코딩·아키텍처 설계, 코드 리뷰, 높은 완성도의 제안서·기획서 작성 및 검수',
+        bridgeGuide: 'Vercel AI SDK(@ai-sdk/anthropic), Claude Code 공식 MCP 연결, 또는 Claude Pro/Max 구독 브릿지 지원.',
+        active: true,
+        accent: '#9A4A2E'
+      },
+      {
+        id: 'agent_gemini_free',
+        name: 'Gemini (무료 티어)',
+        shortCode: 'GM',
+        roleTitle: '리서치·초안 실무 팀원',
+        tier: 'specialist',
+        reportsTo: 'agent_gemini_neon',
+        provider: 'gemini',
+        modelId: 'gemini-2.5-flash',
+        connectionMode: 'api',
+        costTier: 'free',
+        monthlyCapKRW: 0,
+        spentKRW: 0,
+        domains: ['business', 'content', 'dev', 'life'],
+        strengths: 'Google AI Studio 무료 API로 빠른 1차 자료 조사, 블로그·유튜브 초안, 대량 문서 요약',
+        bridgeGuide: 'Google AI Studio 무료 API 키만 넣으면 추가 과금 없이 Vercel AI SDK로 자동 실행됩니다.',
+        active: true,
+        accent: '#1D5B8C'
+      },
+      {
+        id: 'agent_muse',
+        name: 'Meta Muse',
+        shortCode: 'MS',
+        roleTitle: '개인 컨텍스트·프로젝트 팀원',
+        tier: 'specialist',
+        reportsTo: 'agent_gemini_neon',
+        provider: 'muse',
+        modelId: 'meta-muse',
+        connectionMode: 'mcp',
+        costTier: 'free',
+        monthlyCapKRW: 0,
+        spentKRW: 0,
+        domains: ['life', 'business', 'content'],
+        strengths: 'CEO 취향·제약 장기 기억, Spaces 프로젝트 보드, 이메일 정리 및 개인화 기획',
+        bridgeGuide: 'Muse 앱 Settings → Connectors에 이 허브의 공식 MCP 서버(/api/mcp)를 등록해 양방향 연동합니다.',
+        active: true,
+        accent: '#2B59C3'
+      },
+      {
+        id: 'agent_cue',
+        name: 'Manus Cue',
+        shortCode: 'CU',
+        roleTitle: '자율 리서치·메일·컴퓨터 팀원',
+        tier: 'specialist',
+        reportsTo: 'agent_gemini_neon',
+        provider: 'manus',
+        modelId: 'manus-cue',
+        connectionMode: 'mcp',
+        costTier: 'freemium',
+        monthlyCapKRW: 30000,
+        spentKRW: 0,
+        domains: ['business', 'content', 'dev'],
+        strengths: '에이전트 전용 이메일·전화번호·가상 컴퓨터 기반 딥 리서치 및 외부 메일 송수신',
+        bridgeGuide: '공식 MCP 커넥터, Manus API 키, 또는 Cue 전용 이메일(Mail Manus) 원클릭 전달을 지원합니다.',
+        active: true,
+        accent: '#3F6212'
+      },
+      {
+        id: 'agent_pickle',
+        name: '피클 (Pickle)',
+        shortCode: 'PK',
+        roleTitle: '한국 전화 예약·생활 실행 팀원',
+        tier: 'executor',
+        reportsTo: 'agent_gemini_neon',
+        provider: 'pickle',
+        modelId: 'pickle-app',
+        connectionMode: 'bridge',
+        costTier: 'free',
+        monthlyCapKRW: 50000,
+        spentKRW: 40000,
+        domains: ['life', 'business'],
+        strengths: '국내 식당·병원 전화 문의 및 예약, KTX·국내 플랫폼 실행 (결제 전 CEO 승인 필수)',
+        bridgeGuide: '공개 API가 없어 승인 조건이 자동 포함된 한국어 지시서를 피클 앱에 전달하고 결과를 결재함에 올립니다.',
+        active: true,
+        accent: '#2F7D32'
+      },
+      {
+        id: 'agent_vooy',
+        name: '부이 (vooy)',
+        shortCode: 'VY',
+        roleTitle: '정기 브리핑·가격 모니터링 팀원',
+        tier: 'executor',
+        reportsTo: 'agent_gemini_neon',
+        provider: 'vooy',
+        modelId: 'vooy-app',
+        connectionMode: 'bridge',
+        costTier: 'free',
+        monthlyCapKRW: 0,
+        spentKRW: 0,
+        domains: ['life', 'business', 'content'],
+        strengths: '매일 아침 같은 조건으로 뉴스·트렌드·상품 가격 반복 수집, 모임·여행 일정 조율',
+        bridgeGuide: '기본 모델 무료. 반복 모니터링 조건 지시서를 부이 앱에 등록하고 아침 브리핑을 허브로 취합합니다.',
+        active: true,
+        accent: '#A15C07'
+      },
+      {
+        id: 'agent_instinct',
+        name: '인스팅스 (Instinct)',
+        shortCode: 'IN',
+        roleTitle: '문자·전화 빠른 심부름 팀원',
+        tier: 'executor',
+        reportsTo: 'agent_gemini_neon',
+        provider: 'instinct',
+        modelId: 'instinct-beta',
+        connectionMode: 'bridge',
+        costTier: 'free',
+        monthlyCapKRW: 0,
+        spentKRW: 0,
+        domains: ['life'],
+        strengths: '별도 앱 없이 문자(iMessage/WhatsApp)·전화만으로 빠르게 처리하는 생활 심부름',
+        bridgeGuide: '베타 무료. 원클릭 복사한 짧은 문자 지시문을 인스팅스 대화방에 보내고 회신을 등록합니다.',
+        active: true,
+        accent: '#52525B'
+      }
+    ],
+    missions: [
+      {
+        id: sampleMissionId,
+        title: '1인 기업 주간 운영 + 고객 미팅 성수동 식사 예약',
+        directive:
+          '이번 주 신규 클라이언트 제안서 초안을 준비하고, 목요일 저녁 성수역 근처 4인 비즈니스 미팅 식당을 조사해 예약까지 진행해줘. 매일 아침 경쟁사 소식 브리핑도 세팅해줘.',
+        domain: 'business',
+        costPolicy: 'balanced',
+        leadAgentId: 'agent_gemini_neon',
+        status: 'waiting_approval',
+        createdAt: now,
+        leadPlanSummary:
+          '총괄 팀장(Gemini 4 Neon)이 비용 균형 전략에 따라 1차 리서치는 무료 Gemini, 제안서 본문은 수석 Claude, 반복 뉴스 브리핑은 부이(vooy), 전화 예약은 피클(Pickle)에 배정했습니다. 식당 예약금 결제 직전에 CEO 결재 게이트를 배치했습니다.',
+        finalReport: ''
+      }
+    ],
+    tasks: [
+      {
+        id: 'tsk_sample_1',
+        missionId: sampleMissionId,
+        title: '경쟁사 3곳 가격·서비스 구조 1차 리서치',
+        description: '국내 주요 경쟁사 3곳의 요금제, 핵심 기능, 최근 업데이트를 표로 정리해 제안서 근거 자료를 확보합니다.',
+        assigneeId: 'agent_gemini_free',
+        domain: 'business',
+        status: 'completed',
+        requiresApproval: false,
+        estimatedCostKRW: 0,
+        dispatchPrompt: '[Gemini 무료 티어] 국내 주요 경쟁사 3곳의 요금제, 차별점, 약점을 비교 표로 정리해 주세요.',
+        output:
+          '### 경쟁사 3곳 비교 요약\n\n| 구분 | 가격 정책 | 핵심 강점 | 한계점 |\n| --- | --- | --- | --- |\n| **A사** | 월 49,000원 | 워크플로우 자동화 | 한국 전화 예약·생활 에이전트 부재 |\n| **B사** | 토큰 종량제 | 개발자 코딩 특화 | 비개발자용 CEO 결재 UI 복잡 |\n| **C사** | 무료 베타 | 개인 일상 비서 | 팀 단위 분업·예산 통제 불가 |\n\n**제안서 핵심 소구점**: 무료 에이전트(Gemini·Muse·피클·부이·인스팅스)와 유료 모델(Gemini 4 Neon·Claude)을 **오픈소스 MCP + CEO 결재 체계**로 통합.',
+        executionModeUsed: 'simulation',
+        createdAt: now,
+        updatedAt: now
+      },
+      {
+        id: 'tsk_sample_2',
+        missionId: sampleMissionId,
+        title: 'B2B 신규 클라이언트 제안서 본문 작성 및 검수',
+        description: '리서치 결과를 반영해 5페이지 분량의 설득력 있는 제안서 초안과 예상 Q&A를 작성합니다.',
+        assigneeId: 'agent_claude',
+        domain: 'business',
+        status: 'queued',
+        requiresApproval: false,
+        estimatedCostKRW: 0,
+        dispatchPrompt:
+          '[Claude 수석 팀장 지시서]\n목표: 신규 클라이언트용 5페이지 B2B 제안서 초안 작성\n포함 항목: 1) 문제 정의 2) 하이브리드 AI 팀 솔루션 3) 기대 ROI 4) 2주 파일럿 일정 5) 예상 질문 5선\n제약: 과장된 수치 금지, 의사결정권자가 바로 결재할 수 있는 간결한 톤 유지.',
+        output: '',
+        executionModeUsed: '',
+        createdAt: now,
+        updatedAt: now
+      },
+      {
+        id: 'tsk_sample_3',
+        missionId: sampleMissionId,
+        title: '성수역 4인 비즈니스 식당 후보 조사 및 전화 예약',
+        description: '목요일 오후 7시, 성수역 도보 10분 이내 조용한 프라이빗 룸 식당 3곳을 조사하고 전화 빈자리 확인 후 예약합니다.',
+        assigneeId: 'agent_pickle',
+        domain: 'life',
+        status: 'awaiting_approval',
+        requiresApproval: true,
+        estimatedCostKRW: 240000,
+        dispatchPrompt:
+          '[피클(Pickle) 전달용 지시서]\n목요일 오후 7시, 성수역 도보 10분 이내 4인 비즈니스 식사 가능한 조용한 식당 3곳을 찾아줘.\n1인 예상 비용(6만원 이내), 룸 여부, 취소 수수료 규정을 정리하고 전화로 빈자리만 먼저 확인해줘.\n⚠️ 중요: 실제 예약 확정 및 예약금 결제는 절대 먼저 진행하지 말고, 후보와 금액을 정리해서 내 승인을 받은 뒤 실행해줘.',
+        output:
+          '### 피클 전화 확인 결과 (1순위 확보)\n- **식당명**: 성수 모던 한식 다이닝 (성수역 3번 출구 도보 6분)\n- **일시/인원**: 목요일 19:00 · 4인 프라이빗 룸\n- **예상 비용**: 1인 60,000원 코스 (총 240,000원 / **예약금 40,000원**)\n- **취소 규정**: 전일 오후 6시까지 100% 무료 취소\n\n> 예약 확정 및 예약금 결제 직전 단계에서 **CEO 결재 대기 중**입니다.',
+        executionModeUsed: 'bridge',
+        createdAt: now,
+        updatedAt: now
+      },
+      {
+        id: 'tsk_sample_4',
+        missionId: sampleMissionId,
+        title: '매일 오전 8시 경쟁사·AI 업계 브리핑 루틴 등록',
+        description: '매일 아침 출근 전 경쟁사 업데이트와 AI 에이전트 업계 핵심 뉴스 5건을 자동 수집하도록 설정합니다.',
+        assigneeId: 'agent_vooy',
+        domain: 'business',
+        status: 'awaiting_bridge',
+        requiresApproval: false,
+        estimatedCostKRW: 0,
+        dispatchPrompt:
+          '[부이(vooy) 전달용 지시서]\n매일 오전 8시마다 아래 키워드로 최신 소식 5건을 요약해서 브리핑해줘.\n- 키워드: 개인 AI 에이전트, MCP 커넥터, 국내 B2B AI 자동화\n- 형식: 제목 / 1줄 핵심 / 원본 링크 / CEO 의사결정 필요 여부\n- 기본 무료 모델만 사용하고, 유료 토큰 전환 전에는 반드시 먼저 물어봐 줘.',
+        output: '',
+        executionModeUsed: 'bridge',
+        createdAt: now,
+        updatedAt: now
+      }
+    ],
+    approvals: [
+      {
+        id: 'apr_sample_1',
+        missionId: sampleMissionId,
+        taskId: 'tsk_sample_3',
+        agentId: 'agent_pickle',
+        title: '성수역 4인 비즈니스 식당 예약 확정 및 예약금 결제 승인',
+        category: '예약 · 결제',
+        riskLevel: 'medium',
+        estimatedCostKRW: 240000,
+        depositKRW: 40000,
+        summary:
+          '피클이 성수역 도보 6분 프라이빗 룸 식당(목요일 19:00, 4인)의 빈자리를 전화로 확인했습니다. 예약 확정 시 예약금 40,000원이 결제되며, 전일 18시까지 무료 취소가 가능합니다.',
+        proposedAction: '피클 앱에서 예약 확정 승인 → 확정 문자 수신 후 팀장 최종 임원 보고서에 반영',
+        status: 'pending',
+        ceoNote: '',
+        createdAt: now,
+        decidedAt: null
+      }
+    ],
+    logs: [
+      {
+        id: 'log_init_1',
+        timestamp: now,
+        actor: 'Gemini 4 Neon (총괄 팀장)',
+        level: 'info',
+        message: '샘플 미션 "1인 기업 주간 운영 + 고객 미팅 성수동 식사 예약"을 4개 실무 작업으로 분배했습니다.'
+      },
+      {
+        id: 'log_init_2',
+        timestamp: now,
+        actor: '피클 (Pickle)',
+        level: 'approval',
+        message: '성수역 식당 전화 확인 완료 — 예약금 40,000원 결제 전 CEO 결재함에 상신했습니다.'
+      }
+    ]
+  };
+}
+
+export function loadDb() {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+  if (!fs.existsSync(DB_PATH)) {
+    const initial = createDefaultState();
+    saveDb(initial);
+    return initial;
+  }
+  try {
+    const raw = fs.readFileSync(DB_PATH, 'utf8');
+    const parsed = JSON.parse(raw);
+    // Migrate v1 state smoothly if missing v2 fields
+    const def = createDefaultState();
+    parsed.settings = {
+      ...def.settings,
+      ...(parsed.settings || {}),
+      telegram: {
+        ...def.settings.telegram,
+        ...(parsed.settings?.telegram || {})
+      },
+      providers: {
+        ...def.settings.providers,
+        ...(parsed.settings?.providers || {})
+      }
+    };
+    parsed.agents = (parsed.agents || def.agents).map((a) => ({
+      reportsTo: a.tier === 'lead' ? 'ceo' : 'agent_gemini_neon',
+      monthlyCapKRW: a.costTier === 'free' ? 0 : 50000,
+      spentKRW: 0,
+      ...a
+    }));
+    return parsed;
+  } catch {
+    const initial = createDefaultState();
+    saveDb(initial);
+    return initial;
+  }
+}
+
+export function saveDb(db) {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+  fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2), 'utf8');
+}
+
+export function appendLog(db, actor, message, level = 'info') {
+  db.logs.unshift({
+    id: uid('log'),
+    timestamp: new Date().toISOString(),
+    actor,
+    level,
+    message
+  });
+  if (db.logs.length > 100) {
+    db.logs = db.logs.slice(0, 100);
+  }
+}
+
+export function sanitizeStateForClient(db) {
+  const clone = structuredClone(db);
+  const providers = clone.settings?.providers || {};
+  for (const key of Object.keys(providers)) {
+    const rawKey = providers[key].apiKey || '';
+    providers[key].hasApiKey = rawKey.length > 0;
+    providers[key].apiKeyPreview = rawKey
+      ? `${rawKey.slice(0, 4)}••••${rawKey.slice(-4)}`
+      : '';
+    delete providers[key].apiKey;
+  }
+  if (clone.settings?.telegram) {
+    const rawTg = clone.settings.telegram.botToken || '';
+    clone.settings.telegram.hasBotToken = rawTg.length > 0;
+    clone.settings.telegram.botTokenPreview = rawTg ? `${rawTg.slice(0, 6)}••••${rawTg.slice(-4)}` : '';
+    delete clone.settings.telegram.botToken;
+  }
+  return clone;
+}

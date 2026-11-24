@@ -1,0 +1,26 @@
+{
+  "name": "ai-ceo-hub",
+  "version": "2.0.0",
+  "description": "Open-source powered CEO multi-AI team command hub built with Hono, official @modelcontextprotocol/sdk, Vercel AI SDK, LiteLLM-compatible gateway, Marked, and Lucide.",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node scripts/test-e2e.mjs"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^1.2.12",
+    "@ai-sdk/google": "^1.2.19",
+    "@ai-sdk/openai": "^1.3.22",
+    "@hono/node-server": "^1.14.1",
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "ai": "^4.3.16",
+    "hono": "^4.7.10",
+    "lucide": "^0.511.0",
+    "marked": "^15.0.12",
+    "zod": "^3.25.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

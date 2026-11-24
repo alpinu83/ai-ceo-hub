@@ -1,0 +1,797 @@
+<!DOCTYPE html>
+<html lang="ko" data-theme="paper">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CEO Office — 오픈소스 멀티 AI 팀 지휘본부</title>
+  <meta name="description" content="Hono, 공식 MCP SDK, Vercel AI SDK, LiteLLM 호환 게이트웨이로 Gemini, Gemini 4 Neon, Claude, Meta Muse, Manus Cue, 피클, 부이, 인스팅스를 하나의 조직으로 통합 지휘하는 CEO 컨트롤 타워" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Newsreader:ital,opsz,wght@0,6..72,500;0,6..72,600;1,6..72,500&family=Noto+Sans+KR:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="/vendor/marked.umd.js" defer></script>
+  <script src="/vendor/lucide.min.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Left Executive Rail -->
+    <aside class="sidebar" aria-label="주 메뉴">
+      <div class="brand-block">
+        <div class="brand-seal" aria-hidden="true">CO</div>
+        <div class="brand-text">
+          <div class="brand-name" id="sidebar-company-name">CEO Office</div>
+          <div class="brand-sub">Open-Source AI HQ · v2</div>
+        </div>
+      </div>
+
+      <nav class="nav-list" role="navigation">
+        <button class="nav-item active" data-view="command" id="nav-command">
+          <span class="nav-left"><i data-lucide="compass" class="icon-sm"></i><span>지휘실</span></span>
+          <span class="nav-meta" id="nav-mission-count">1</span>
+        </button>
+        <button class="nav-item" data-view="approvals" id="nav-approvals">
+          <span class="nav-left"><i data-lucide="stamp" class="icon-sm"></i><span>CEO 결재함</span></span>
+          <span class="nav-badge" id="nav-approval-badge">0</span>
+        </button>
+        <button class="nav-item" data-view="roster" id="nav-roster">
+          <span class="nav-left"><i data-lucide="network" class="icon-sm"></i><span>AI 조직도 · 예산</span></span>
+          <span class="nav-meta" id="nav-agent-count">8</span>
+        </button>
+        <button class="nav-item" data-view="integrations" id="nav-integrations">
+          <span class="nav-left"><i data-lucide="blocks" class="icon-sm"></i><span>오픈소스 · MCP 허브</span></span>
+          <span class="nav-dot" id="nav-api-dot" title="실시간 API 연결 상태"></span>
+        </button>
+      </nav>
+
+      <div class="sidebar-divider"></div>
+
+      <section class="sidebar-summary" aria-label="예산 및 스택 상태">
+        <div class="sidebar-section-title">예산 · 운영 요약</div>
+        <div class="mini-budget-box">
+          <div class="mini-budget-row">
+            <span>이번 달 지출</span>
+            <strong class="mono" id="sidebar-budget-text">-</strong>
+          </div>
+          <div class="progress-track thin">
+            <div class="progress-fill" id="sidebar-budget-bar" style="width: 0%"></div>
+          </div>
+        </div>
+        <dl class="metric-pairs">
+          <div>
+            <dt>활성 AI 팀원</dt>
+            <dd id="stat-active-agents">-</dd>
+          </div>
+          <div>
+            <dt>실시간 SDK / API</dt>
+            <dd id="stat-live-apis">-</dd>
+          </div>
+          <div>
+            <dt>공식 MCP 서버</dt>
+            <dd class="mono">/api/mcp</dd>
+          </div>
+          <div>
+            <dt>기본 비용 전략</dt>
+            <dd id="stat-cost-policy">-</dd>
+          </div>
+        </dl>
+      </section>
+
+      <div class="sidebar-footer">
+        <div class="ceo-chip">
+          <span class="ceo-avatar" aria-hidden="true">CEO</span>
+          <div class="ceo-info">
+            <div class="ceo-name" id="sidebar-ceo-name">대표님</div>
+            <div class="ceo-role">최종 지시 · 결재권자</div>
+          </div>
+          <button type="button" class="icon-btn" id="btn-toggle-theme" title="테마 전환 (페이퍼 / 스튜디오)">
+            <i data-lucide="sun-moon" class="icon-sm"></i>
+          </button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Workspace -->
+    <div class="main-column">
+      <header class="topbar">
+        <div class="topbar-left">
+          <button class="mobile-menu-btn" id="mobile-menu-btn" aria-label="메뉴 열기">
+            <i data-lucide="menu" class="icon-sm"></i>
+          </button>
+          <div>
+            <h1 class="page-title" id="page-title">지휘실</h1>
+            <p class="page-subtitle" id="page-subtitle">CEO가 목표를 지시하면 팀장이 무료·유료·앱 에이전트에게 업무를 분배합니다.</p>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <button class="btn btn-ghost" id="btn-open-approvals-quick">
+            <i data-lucide="inbox" class="icon-xs"></i>
+            <span>결재 대기</span>
+            <strong class="mono" id="topbar-pending-count">0</strong>
+          </button>
+          <button class="btn btn-primary" id="btn-focus-directive">
+            <i data-lucide="plus" class="icon-xs"></i>
+            <span>새 CEO 지시</span>
+          </button>
+        </div>
+      </header>
+
+      <main class="content-area" id="content-area">
+        <!-- VIEW 1: COMMAND ROOM -->
+        <section class="view active" id="view-command" aria-label="지휘실">
+          <!-- Minimal Executive KPI Ledger -->
+          <div class="kpi-ledger" aria-label="핵심 지표">
+            <div class="kpi-cell">
+              <div class="kpi-label">AI 조직 편성</div>
+              <div class="kpi-value" id="kpi-agents-val">-</div>
+              <div class="kpi-sub" id="kpi-agents-sub">무료 · 유료 혼합</div>
+            </div>
+            <div class="kpi-cell">
+              <div class="kpi-label">월간 예산 통제 (FinOps)</div>
+              <div class="kpi-value mono" id="kpi-budget-val">-</div>
+              <div class="kpi-sub" id="kpi-budget-sub">한도 대비 지출</div>
+            </div>
+            <div class="kpi-cell clickable" id="kpi-approvals-cell" role="button" tabindex="0">
+              <div class="kpi-label">CEO 결재 대기</div>
+              <div class="kpi-value" id="kpi-approvals-val">-</div>
+              <div class="kpi-sub">예약 · 결제 · 대외 실행 게이트</div>
+            </div>
+            <div class="kpi-cell clickable" id="kpi-oss-cell" role="button" tabindex="0">
+              <div class="kpi-label">오픈소스 엔진</div>
+              <div class="kpi-value">Hono · MCP · AI SDK</div>
+              <div class="kpi-sub">LiteLLM · Ollama · Webhook 지원</div>
+            </div>
+          </div>
+
+          <!-- Directive Composer -->
+          <div class="sheet directive-sheet" id="directive-sheet">
+            <div class="sheet-header">
+              <div>
+                <h2 class="sheet-title">CEO 지시서 하달</h2>
+                <p class="sheet-desc">큰 방향만 지시하세요. 총괄 팀장이 비용 정책에 맞춰 무료 티어·유료 모델·소비자 앱에 자동 분배합니다.</p>
+              </div>
+              <div class="preset-row" aria-label="업무 템플릿">
+                <button type="button" class="chip-btn" data-preset="business">1인 기업</button>
+                <button type="button" class="chip-btn" data-preset="life">일상 · 예약</button>
+                <button type="button" class="chip-btn" data-preset="content">콘텐츠 · SNS</button>
+                <button type="button" class="chip-btn" data-preset="dev">개발 · 리뷰</button>
+              </div>
+            </div>
+
+            <form id="directive-form" class="directive-form">
+              <div class="form-row-two">
+                <label class="field">
+                  <span class="field-label">미션 제목 (선택)</span>
+                  <input type="text" id="input-mission-title" placeholder="비워두면 지시 첫 문장으로 자동 생성됩니다" />
+                </label>
+                <div class="form-row-sub">
+                  <label class="field">
+                    <span class="field-label">업무 영역</span>
+                    <select id="input-mission-domain">
+                      <option value="business">1인 기업 / 비즈니스</option>
+                      <option value="life">일상 · 예약 · 자동화</option>
+                      <option value="content">콘텐츠 · 마케팅</option>
+                      <option value="dev">개발 · 프로덕트</option>
+                    </select>
+                  </label>
+                  <label class="field">
+                    <span class="field-label">AI 배치 · 비용 전략</span>
+                    <select id="input-cost-policy">
+                      <option value="free_first">무료 · 구독 우선 (과금 최소)</option>
+                      <option value="balanced" selected>균형 (팀장 유료 + 실무 무료)</option>
+                      <option value="max_quality">최고 성능 (Neon · Claude 우선)</option>
+                    </select>
+                  </label>
+                </div>
+              </div>
+
+              <label class="field">
+                <span class="field-label">CEO 지시 내용</span>
+                <textarea id="input-directive" rows="3" placeholder="예: 이번 주 B2B 제안서 초안을 만들고, 목요일 성수역 4인 식당을 피클로 전화 조사해 예약 준비해줘. 매일 아침 AI 뉴스 브리핑도 부이에 세팅해줘." required></textarea>
+              </label>
+
+              <div class="form-actions">
+                <span class="form-hint">결제 · 예약 확정 · 외부 발송 · 배포 업무는 자동으로 CEO 결재 게이트에서 정지합니다.</span>
+                <button type="submit" class="btn btn-primary" id="btn-submit-directive">
+                  <i data-lucide="send" class="icon-xs"></i>
+                  <span>팀장에게 지시 하달</span>
+                </button>
+              </div>
+            </form>
+          </div>
+
+          <!-- Mission Switcher & Workspace -->
+          <div class="mission-layout">
+            <div class="mission-main">
+              <div class="mission-toolbar">
+                <div class="mission-tabs-bar" id="mission-tabs-bar"></div>
+                <div class="segmented" role="tablist" aria-label="미션 보기 전환">
+                  <button type="button" class="seg-btn active" data-mission-mode="board">보드</button>
+                  <button type="button" class="seg-btn" data-mission-mode="list">리스트</button>
+                  <button type="button" class="seg-btn" data-mission-mode="graph">조직 흐름도</button>
+                </div>
+              </div>
+              <div id="active-mission-container"></div>
+            </div>
+
+            <aside class="activity-column">
+              <div class="sheet activity-sheet">
+                <div class="sheet-header compact">
+                  <h2 class="sheet-title">실시간 조직 보고 로그</h2>
+                  <span class="mono muted-tag">LIVE</span>
+                </div>
+                <ol class="activity-list" id="activity-list"></ol>
+              </div>
+            </aside>
+          </div>
+        </section>
+
+        <!-- VIEW 2: CEO APPROVAL DESK (Master-Detail Memo) -->
+        <section class="view" id="view-approvals" aria-label="CEO 결재함">
+          <div class="approval-desk">
+            <div class="approval-queue-col">
+              <div class="queue-group-title">결재 대기 <span class="mono" id="queue-pending-count">0</span></div>
+              <div id="pending-approvals-list" class="queue-list"></div>
+
+              <div class="queue-group-title spaced">처리 이력 <span class="mono" id="queue-decided-count">0</span></div>
+              <div id="decided-approvals-list" class="queue-list"></div>
+            </div>
+
+            <div class="approval-memo-col">
+              <div id="approval-detail-pane" class="sheet memo-sheet"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- VIEW 3: AI ORG CHART & BUDGETS -->
+        <section class="view" id="view-roster" aria-label="AI 조직도 및 예산">
+          <div class="section-intro">
+            <div>
+              <h2 class="section-heading">CEO 직속 AI 조직도 · 월간 예산 통제</h2>
+              <p class="section-caption">Paperclip 스타일의 조직 계층과 팀원별 월 예산 한도를 한눈에 관리하고, 각 AI의 연동 방식을 즉시 전환합니다.</p>
+            </div>
+            <button class="btn btn-primary" id="btn-open-hire-modal">
+              <i data-lucide="user-plus" class="icon-xs"></i>
+              <span>새 AI 팀원 채용</span>
+            </button>
+          </div>
+
+          <!-- Interactive Visual Org Tree -->
+          <div class="sheet org-tree-sheet">
+            <div class="sheet-header compact">
+              <div>
+                <h3 class="sheet-title">실시간 조직 계층도</h3>
+                <p class="sheet-desc">노드를 클릭하면 아래 목록에서 해당 AI 설정으로 바로 이동합니다.</p>
+              </div>
+              <div class="legend-row">
+                <span class="legend-item"><i class="dot dot-green"></i>API · LiteLLM</span>
+                <span class="legend-item"><i class="dot dot-blue"></i>공식 MCP</span>
+                <span class="legend-item"><i class="dot dot-amber"></i>앱 · 구독 브릿지</span>
+              </div>
+            </div>
+            <div class="org-tree-canvas" id="org-tree-canvas"></div>
+          </div>
+
+          <div class="org-tier">
+            <div class="tier-header">
+              <span class="tier-kicker">TIER 1 · COMMAND LEADS</span>
+              <h3>총괄 · 수석 팀장</h3>
+            </div>
+            <div class="roster-grid" id="roster-leads"></div>
+          </div>
+
+          <div class="org-tier">
+            <div class="tier-header">
+              <span class="tier-kicker">TIER 2 · SPECIALISTS</span>
+              <h3>리서치 · 컨텍스트 · 자율 에이전트 팀원</h3>
+            </div>
+            <div class="roster-grid" id="roster-specialists"></div>
+          </div>
+
+          <div class="org-tier">
+            <div class="tier-header">
+              <span class="tier-kicker">TIER 3 · FIELD EXECUTORS</span>
+              <h3>전화 예약 · 정기 브리핑 · 문자 심부름 실행 팀원</h3>
+            </div>
+            <div class="roster-grid" id="roster-executors"></div>
+          </div>
+        </section>
+
+        <!-- VIEW 4: OPEN-SOURCE · INTEGRATIONS · MCP HUB -->
+        <section class="view" id="view-integrations" aria-label="오픈소스 및 MCP 허브">
+          <div class="hub-tab-bar" role="tablist">
+            <button type="button" class="hub-tab active" data-hub-tab="providers">API · LiteLLM · Ollama</button>
+            <button type="button" class="hub-tab" data-hub-tab="mcp">공식 MCP 서버 (/api/mcp)</button>
+            <button type="button" class="hub-tab" data-hub-tab="oss">GitHub 오픈소스 스택 · 배포</button>
+            <button type="button" class="hub-tab" data-hub-tab="bridges">소비자 앱 · 월정액 구독 브릿지</button>
+          </div>
+
+          <!-- HUB TAB 1: PROVIDERS & GOVERNANCE -->
+          <div class="hub-panel active" id="hub-panel-providers">
+            <div class="sheet">
+              <div class="sheet-header">
+                <div>
+                  <h2 class="sheet-title">Vercel AI SDK · LiteLLM · Ollama · 알림 Webhook 설정</h2>
+                  <p class="sheet-desc">API 키를 입력하면 실시간 실행되며, 비워두어도 시뮬레이션과 앱·구독 브릿지로 바로 사용할 수 있습니다.</p>
+                </div>
+              </div>
+
+              <form id="settings-form" class="settings-form">
+                <div class="form-row-three">
+                  <label class="field">
+                    <span class="field-label">조직명</span>
+                    <input type="text" id="set-company-name" />
+                  </label>
+                  <label class="field">
+                    <span class="field-label">CEO 호칭</span>
+                    <input type="text" id="set-ceo-name" />
+                  </label>
+                  <label class="field">
+                    <span class="field-label">기본 비용 전략</span>
+                    <select id="set-cost-policy">
+                      <option value="free_first">무료 · 구독 우선</option>
+                      <option value="balanced">균형 (팀장 유료 + 실무 무료)</option>
+                      <option value="max_quality">최고 성능</option>
+                    </select>
+                  </label>
+                </div>
+
+                <div class="form-row-two">
+                  <label class="field">
+                    <span class="field-label">월간 전체 AI·실행 예산 한도 (원)</span>
+                    <input type="number" id="set-monthly-budget" min="0" step="10000" />
+                  </label>
+                  <label class="field">
+                    <span class="field-label">자동 CEO 결재 상신 금액 기준 (원)</span>
+                    <input type="number" id="set-threshold" min="0" step="5000" />
+                  </label>
+                </div>
+
+                <div class="provider-group">
+                  <div class="provider-head">
+                    <div>
+                      <h3>Google Gemini (무료 티어 + Gemini 4 Neon)</h3>
+                      <span class="provider-sdk mono">@ai-sdk/google</span>
+                    </div>
+                    <div class="provider-right">
+                      <span class="key-status" id="status-gemini">미연결</span>
+                      <button type="button" class="btn btn-ghost btn-sm" data-ping-provider="gemini">연결 테스트</button>
+                    </div>
+                  </div>
+                  <div class="form-row-two">
+                    <label class="field">
+                      <span class="field-label">Gemini API 키</span>
+                      <input type="password" id="key-gemini" placeholder="AIza... (변경 시 입력)" autocomplete="off" />
+                    </label>
+                    <label class="field">
+                      <span class="field-label">무료 / 유료 모델 ID</span>
+                      <div class="inline-inputs">
+                        <input type="text" id="model-gemini-free" placeholder="gemini-2.5-flash" />
+                        <input type="text" id="model-gemini-paid" placeholder="gemini-4-neon" />
+                      </div>
+                    </label>
+                  </div>
+                </div>
+
+                <div class="provider-group">
+                  <div class="provider-head">
+                    <div>
+                      <h3>Anthropic Claude</h3>
+                      <span class="provider-sdk mono">@ai-sdk/anthropic</span>
+                    </div>
+                    <div class="provider-right">
+                      <span class="key-status" id="status-claude">미연결</span>
+                      <button type="button" class="btn btn-ghost btn-sm" data-ping-provider="claude">연결 테스트</button>
+                    </div>
+                  </div>
+                  <div class="form-row-two">
+                    <label class="field">
+                      <span class="field-label">Claude API 키</span>
+                      <input type="password" id="key-claude" placeholder="sk-ant-... (변경 시 입력)" autocomplete="off" />
+                    </label>
+                    <label class="field">
+                      <span class="field-label">모델 ID</span>
+                      <input type="text" id="model-claude" placeholder="claude-sonnet-4-5" />
+                    </label>
+                  </div>
+                </div>
+
+                <div class="provider-group">
+                  <div class="provider-head">
+                    <div>
+                      <h3>Manus / Cue (API + 전용 이메일 브릿지)</h3>
+                      <span class="provider-sdk mono">Manus REST + Mail Manus</span>
+                    </div>
+                    <div class="provider-right">
+                      <span class="key-status" id="status-manus">미연결</span>
+                      <button type="button" class="btn btn-ghost btn-sm" data-ping-provider="manus">연결 테스트</button>
+                    </div>
+                  </div>
+                  <div class="form-row-two">
+                    <label class="field">
+                      <span class="field-label">Manus API 키</span>
+                      <input type="password" id="key-manus" placeholder="Manus API 키 (선택)" autocomplete="off" />
+                    </label>
+                    <label class="field">
+                      <span class="field-label">Cue 에이전트 전용 이메일</span>
+                      <input type="email" id="email-cue" placeholder="my-agent@cue.manus.im" />
+                    </label>
+                  </div>
+                </div>
+
+                <div class="provider-group">
+                  <div class="provider-head">
+                    <div>
+                      <h3>LiteLLM 오픈소스 AI 게이트웨이 (100+ 모델 · Spend Cap)</h3>
+                      <span class="provider-sdk mono">BerriAI/litellm · OpenAI Compatible</span>
+                    </div>
+                    <div class="provider-right">
+                      <span class="key-status" id="status-litellm">미연결</span>
+                      <button type="button" class="btn btn-ghost btn-sm" data-ping-provider="litellm">연결 테스트</button>
+                    </div>
+                  </div>
+                  <div class="form-row-three">
+                    <label class="field">
+                      <span class="field-label">LiteLLM Proxy URL</span>
+                      <input type="url" id="url-litellm" placeholder="http://localhost:4000/v1" />
+                    </label>
+                    <label class="field">
+                      <span class="field-label">기본 라우트 모델</span>
+                      <input type="text" id="model-litellm" placeholder="gemini-free" />
+                    </label>
+                    <label class="field">
+                      <span class="field-label">Master / Virtual Key</span>
+                      <input type="password" id="key-litellm" placeholder="sk-ceo-litellm-local" autocomplete="off" />
+                    </label>
+                  </div>
+                </div>
+
+                <div class="provider-group">
+                  <div class="provider-head">
+                    <div>
+                      <h3>Ollama 로컬 무료 오픈소스 LLM</h3>
+                      <span class="provider-sdk mono">ollama/ollama · 비용 0원</span>
+                    </div>
+                    <div class="provider-right">
+                      <span class="key-status" id="status-ollama">로컬 대기</span>
+                      <button type="button" class="btn btn-ghost btn-sm" data-ping-provider="ollama">연결 테스트</button>
+                    </div>
+                  </div>
+                  <div class="form-row-two">
+                    <label class="field">
+                      <span class="field-label">Ollama OpenAI Endpoint</span>
+                      <input type="url" id="url-ollama" placeholder="http://localhost:11434/v1" />
+                    </label>
+                    <label class="field">
+                      <span class="field-label">로컬 모델명</span>
+                      <input type="text" id="model-ollama" placeholder="qwen2.5:14b" />
+                    </label>
+                  </div>
+                </div>
+
+                <div class="provider-group">
+                  <div class="provider-head">
+                    <div>
+                      <h3>텔레그램 CEO 결재 봇 (모바일 원터치 승인 · /order 지시)</h3>
+                      <span class="provider-sdk mono">Telegram Bot API · Long Polling + Webhook (/api/telegram/webhook)</span>
+                    </div>
+                    <div class="provider-right">
+                      <span class="key-status" id="status-telegram">미연결</span>
+                      <button type="button" class="btn btn-ghost btn-sm" id="btn-test-telegram">텔레그램 테스트 발송</button>
+                    </div>
+                  </div>
+                  <div class="form-row-two">
+                    <label class="field">
+                      <span class="field-label">Bot Token (@BotFather 발급)</span>
+                      <input type="password" id="tg-bot-token" placeholder="123456:ABC-DEF... (변경 시 입력)" autocomplete="off" />
+                    </label>
+                    <label class="field">
+                      <span class="field-label">CEO Chat ID (본인 텔레그램 숫자 ID)</span>
+                      <input type="text" id="tg-chat-id" placeholder="예: 123456789 (@userinfobot 확인)" />
+                    </label>
+                  </div>
+                  <label class="checkbox-row">
+                    <input type="checkbox" id="tg-polling-enabled" />
+                    <span>실시간 Long Polling 활성화 (폰에서 <code>✅ 승인</code> · <code>/order 지시내용</code> · <code>/status</code> 즉시 수신)</span>
+                  </label>
+                </div>
+
+                <div class="provider-group">
+                  <div class="provider-head">
+                    <div>
+                      <h3>CEO 모바일 결재 알림 Webhook (OpenClaw · n8n · Slack · Discord)</h3>
+                      <span class="provider-sdk mono">POST JSON Event</span>
+                    </div>
+                    <button type="button" class="btn btn-ghost btn-sm" id="btn-test-webhook">알림 테스트 발송</button>
+                  </div>
+                  <label class="field">
+                    <span class="field-label">Webhook URL (결재 안건 상신 시 자동 푸시)</span>
+                    <input type="url" id="set-webhook-url" placeholder="https://hooks.slack.com/services/... 또는 n8n/OpenClaw Webhook URL" />
+                  </label>
+                </div>
+
+                <div class="form-actions">
+                  <button type="button" class="btn btn-ghost" id="btn-reset-demo">샘플 데이터 초기화</button>
+                  <button type="submit" class="btn btn-primary">모든 설정 저장</button>
+                </div>
+              </form>
+            </div>
+          </div>
+
+          <!-- HUB TAB 2: OFFICIAL MCP SERVER -->
+          <div class="hub-panel" id="hub-panel-mcp">
+            <div class="integrations-grid">
+              <div class="sheet">
+                <div class="sheet-header compact">
+                  <div>
+                    <h2 class="sheet-title">공식 @modelcontextprotocol/sdk MCP 서버</h2>
+                    <p class="sheet-desc">Meta Muse, Manus Cue, Claude Desktop / Claude Code가 직접 접속해 업무를 가져가고 결과를 보고하는 Streamable HTTP 엔드포인트입니다.</p>
+                  </div>
+                </div>
+
+                <div class="mcp-meta-box">
+                  <div class="kv-row">
+                    <span>Streamable HTTP Endpoint</span>
+                    <code id="mcp-endpoint-url">/api/mcp</code>
+                  </div>
+                  <div class="kv-row">
+                    <span>Authorization Header</span>
+                    <code id="mcp-token-value">-</code>
+                  </div>
+                </div>
+
+                <div class="mcp-tabs">
+                  <button type="button" class="tab-pill active" data-mcp-tab="muse">Meta Muse</button>
+                  <button type="button" class="tab-pill" data-mcp-tab="claude">Claude Desktop / Code</button>
+                  <button type="button" class="tab-pill" data-mcp-tab="cue">Manus Cue</button>
+                </div>
+                <pre class="code-block" id="mcp-snippet-box"></pre>
+                <div class="snippet-actions">
+                  <button type="button" class="btn btn-ghost btn-sm" id="btn-copy-mcp-snippet">
+                    <i data-lucide="copy" class="icon-xs"></i>
+                    <span>설정 복사</span>
+                  </button>
+                </div>
+              </div>
+
+              <div class="sheet">
+                <div class="sheet-header compact">
+                  <div>
+                    <h2 class="sheet-title">실시간 MCP 프로토콜 테스트 콘솔</h2>
+                    <p class="sheet-desc">실제 <code class="mono">POST /api/mcp</code> 공식 SDK 트랜스포트에 JSON-RPC 2.0 요청을 보냅니다.</p>
+                  </div>
+                </div>
+                <div class="tester-btns" style="margin-bottom: 12px;">
+                  <button type="button" class="btn btn-primary btn-sm" data-mcp-test="tools/list">tools/list</button>
+                  <button type="button" class="btn btn-ghost btn-sm" data-mcp-test="get_company_brief">get_company_brief</button>
+                  <button type="button" class="btn btn-ghost btn-sm" data-mcp-test="list_my_tasks">list_my_tasks</button>
+                </div>
+                <pre class="code-block tall" id="mcp-test-output">위 버튼을 눌러 공식 @modelcontextprotocol/sdk 응답을 실시간으로 확인하세요.</pre>
+              </div>
+            </div>
+          </div>
+
+          <!-- HUB TAB 3: GITHUB OPEN-SOURCE STACK -->
+          <div class="hub-panel" id="hub-panel-oss">
+            <div class="oss-section-block">
+              <div class="section-intro">
+                <div>
+                  <h2 class="section-heading">현재 서버에 내장·구동 중인 GitHub 오픈소스</h2>
+                  <p class="section-caption">직접 짠 임시 코드 대신 검증된 오픈소스 SDK와 프레임워크 위에서 동작합니다.</p>
+                </div>
+              </div>
+              <div class="oss-grid" id="oss-builtin-grid"></div>
+            </div>
+
+            <div class="oss-section-block spaced">
+              <div class="section-intro">
+                <div>
+                  <h2 class="section-heading">원클릭 확장 가능한 GitHub 오픈소스 생태계</h2>
+                  <p class="section-caption">LiteLLM 프록시·Docker Compose 설정 파일이 프로젝트에 이미 동봉되어 있습니다.</p>
+                </div>
+              </div>
+              <div class="oss-grid" id="oss-pluggable-grid"></div>
+            </div>
+
+            <div class="sheet" style="margin-top: 20px;">
+              <div class="sheet-header compact">
+                <div>
+                  <h3 class="sheet-title">동봉된 오픈소스 배포 파일 미리보기</h3>
+                  <p class="sheet-desc">아래 설정을 그대로 사용해 로컬 PC나 클라우드에서 1분 만에 LiteLLM + CEO Office를 띄울 수 있습니다.</p>
+                </div>
+                <div class="tester-btns">
+                  <button type="button" class="btn btn-ghost btn-sm" data-load-export="litellm">litellm_config.yaml</button>
+                  <button type="button" class="btn btn-ghost btn-sm" data-load-export="docker-compose">docker-compose.yml</button>
+                  <button type="button" class="btn btn-ghost btn-sm" data-load-export="railway">railway.json</button>
+                  <button type="button" class="btn btn-ghost btn-sm" data-load-export="render">render.yaml</button>
+                  <button type="button" class="btn btn-primary btn-sm" id="btn-copy-export">내용 복사</button>
+                </div>
+              </div>
+              <pre class="code-block tall" id="oss-export-preview">위 버튼을 눌러 동봉된 설정 파일을 확인하세요.</pre>
+            </div>
+          </div>
+
+          <!-- HUB TAB 4: CONSUMER APPS & SUBSCRIPTION BRIDGES -->
+          <div class="hub-panel" id="hub-panel-bridges">
+            <div class="sheet">
+              <div class="sheet-header">
+                <div>
+                  <h2 class="sheet-title">소비자 에이전트 앱 · 월정액 구독 안전 연동 매트릭스</h2>
+                  <p class="sheet-desc">API가 없거나 추가 API 과금을 피하고 싶은 서비스는 약관 위반 스크래핑 없이 합법적 브릿지·MCP로 통합합니다.</p>
+                </div>
+              </div>
+              <div class="table-wrap">
+                <table class="bridge-table">
+                  <thead>
+                    <tr>
+                      <th>AI / 서비스</th>
+                      <th>권장 연결 방식</th>
+                      <th>추가 비용</th>
+                      <th>CEO Office 내 실전 운영법</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td><strong>Gemini (무료 티어)</strong></td>
+                      <td><span class="badge badge-green">Vercel AI SDK</span></td>
+                      <td>무료</td>
+                      <td>Google AI Studio 무료 키 등록 → 1차 리서치·요약·초안 자동 실행</td>
+                    </tr>
+                    <tr>
+                      <td><strong>Gemini 4 Neon</strong></td>
+                      <td><span class="badge badge-green">API</span> / <span class="badge badge-amber">구독 브릿지</span></td>
+                      <td>AI Pro 구독 / 종량</td>
+                      <td>총괄 팀장 배치. 구독 앱만 쓸 때는 브릿지 모드로 전환해 지시서 복사</td>
+                    </tr>
+                    <tr>
+                      <td><strong>Claude</strong></td>
+                      <td><span class="badge badge-green">API</span> / <span class="badge badge-blue">Claude Code MCP</span></td>
+                      <td>Pro·Max 구독 / 종량</td>
+                      <td>코딩·제안서 수석 팀장. Claude Desktop/Code에 <code>/api/mcp</code> 연결 시 양방향</td>
+                    </tr>
+                    <tr>
+                      <td><strong>Meta Muse</strong></td>
+                      <td><span class="badge badge-blue">공식 MCP</span> + 브릿지</td>
+                      <td>무료</td>
+                      <td>Muse Settings → Connectors에 <code>/api/mcp</code> 등록, 취향·Spaces 연동</td>
+                    </tr>
+                    <tr>
+                      <td><strong>Manus Cue</strong></td>
+                      <td><span class="badge badge-blue">공식 MCP</span> + 전용 이메일</td>
+                      <td>부분 무료</td>
+                      <td>Cue 에이전트 전용 이메일을 등록하면 드로어에서 원클릭 메일 지시 가능</td>
+                    </tr>
+                    <tr>
+                      <td><strong>피클 (Pickle)</strong></td>
+                      <td><span class="badge badge-amber">앱 브릿지 + 결재 게이트</span></td>
+                      <td>무료 한도</td>
+                      <td>승인 조건이 자동 삽입된 지시서를 복사해 피클 실행 → 예약금 결제 전 CEO 결재</td>
+                    </tr>
+                    <tr>
+                      <td><strong>부이 (vooy)</strong></td>
+                      <td><span class="badge badge-amber">앱 브릿지</span></td>
+                      <td>기본 무료</td>
+                      <td>매일 아침 반복 모니터링 지시서 복사 → 브리핑 결과를 허브에 붙여넣어 취합</td>
+                    </tr>
+                    <tr>
+                      <td><strong>인스팅스 (Instinct)</strong></td>
+                      <td><span class="badge badge-amber">문자 브릿지</span></td>
+                      <td>베타 무료</td>
+                      <td>짧은 문자형 지시문을 복사해 iMessage/WhatsApp 대화방 전송 후 회신 기록</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <!-- Slide-over Drawer: Task Dispatch Prompt & Result Report -->
+  <div class="drawer-backdrop" id="task-drawer-backdrop" aria-hidden="true">
+    <aside class="drawer" id="task-drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
+      <div class="drawer-header">
+        <div>
+          <div class="drawer-kicker" id="drawer-agent-meta">담당 AI</div>
+          <h2 class="drawer-title" id="drawer-title">업무 상세</h2>
+        </div>
+        <button type="button" class="btn btn-ghost btn-sm" id="btn-close-drawer">닫기</button>
+      </div>
+      <div class="drawer-body" id="drawer-body"></div>
+    </aside>
+  </div>
+
+  <!-- Modal: Hire New AI Agent (with Open-Source Quick Presets) -->
+  <div class="modal-backdrop" id="hire-modal-backdrop" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="hire-modal-title">
+      <div class="modal-header">
+        <h2 id="hire-modal-title">새 AI 팀원 채용</h2>
+        <button type="button" class="btn btn-ghost btn-sm" id="btn-close-hire-modal">닫기</button>
+      </div>
+      <form id="hire-agent-form" class="modal-body">
+        <div class="hire-presets">
+          <span class="field-label">오픈소스 · 인기 AI 빠른 채우기:</span>
+          <div class="preset-row">
+            <button type="button" class="chip-btn" data-hire-preset="ollama">Ollama 로컬 무료</button>
+            <button type="button" class="chip-btn" data-hire-preset="openrouter">OpenRouter 무료 Llama</button>
+            <button type="button" class="chip-btn" data-hire-preset="openclaw">OpenClaw 메신저 비서</button>
+            <button type="button" class="chip-btn" data-hire-preset="perplexity">Perplexity 팩트체커</button>
+          </div>
+        </div>
+        <div class="form-row-two">
+          <label class="field">
+            <span class="field-label">AI 이름 *</span>
+            <input type="text" id="hire-name" placeholder="예: Ollama Qwen 2.5" required />
+          </label>
+          <label class="field">
+            <span class="field-label">직책 / 역할</span>
+            <input type="text" id="hire-role" placeholder="예: 로컬 무료 초안·보안 분석 팀원" required />
+          </label>
+        </div>
+        <div class="form-row-three">
+          <label class="field">
+            <span class="field-label">조직 계층</span>
+            <select id="hire-tier">
+              <option value="lead">팀장 (Lead)</option>
+              <option value="specialist" selected>전문 팀원</option>
+              <option value="executor">실행 팀원</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">연동 방식</span>
+            <select id="hire-mode">
+              <option value="bridge" selected>구독 · 앱 브릿지</option>
+              <option value="api">API 자동 (AI SDK)</option>
+              <option value="litellm">LiteLLM 프록시</option>
+              <option value="mcp">공식 MCP</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">비용 구분</span>
+            <select id="hire-cost">
+              <option value="free" selected>무료</option>
+              <option value="freemium">부분 무료</option>
+              <option value="paid_or_sub">유료 · 구독</option>
+            </select>
+          </label>
+        </div>
+        <div class="form-row-three">
+          <label class="field">
+            <span class="field-label">프로바이더</span>
+            <select id="hire-provider">
+              <option value="ollama">Ollama (로컬)</option>
+              <option value="litellm">LiteLLM / OpenRouter</option>
+              <option value="gemini">Google Gemini</option>
+              <option value="claude">Anthropic Claude</option>
+              <option value="manus">Manus / Cue</option>
+              <option value="custom" selected>기타 앱 / 커스텀</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">모델 ID (선택)</span>
+            <input type="text" id="hire-model" placeholder="qwen2.5:14b" />
+          </label>
+          <label class="field">
+            <span class="field-label">월 예산 한도 (원)</span>
+            <input type="number" id="hire-cap" value="0" min="0" step="5000" />
+          </label>
+        </div>
+        <label class="field">
+          <span class="field-label">핵심 강점 (팀장이 업무 분배 시 참고)</span>
+          <textarea id="hire-strengths" rows="2" placeholder="예: 민감한 사내 문서를 외부 전송 없이 로컬에서 무료 요약·검토"></textarea>
+        </label>
+        <div class="form-actions">
+          <button type="button" class="btn btn-ghost" id="btn-cancel-hire">취소</button>
+          <button type="submit" class="btn btn-primary">조직에 합류시키기</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Toast feedback -->
+  <div class="toast-region" id="toast-region" aria-live="polite"></div>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

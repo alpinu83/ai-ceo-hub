@@ -1,0 +1,30 @@
+services:
+  ceo-hub:
+    build: .
+    container_name: ai-ceo-hub
+    ports:
+      - "3456:3456"
+    environment:
+      - PORT=3456
+      - NODE_ENV=production
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+
+  # Optional: Open-source LiteLLM Proxy (100+ free/paid/local models behind 1 spend-capped gateway)
+  # Run with: docker compose --profile litellm up -d
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    container_name: ai-ceo-litellm
+    profiles: ["litellm"]
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./litellm_config.yaml:/app/config.yaml:ro
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-sk-ceo-litellm-local}
+    restart: unless-stopped
