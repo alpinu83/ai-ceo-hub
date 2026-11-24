@@ -1,5 +1,4 @@
-// Minimal Network-First PWA Service Worker for CEO Office
-// Enables native Chrome/Android "앱 설치" (WebAPK) without ever trapping users on stale UI caches.
+// Network-First PWA Service Worker + Native Web Push Notification Handler for CEO Office
 
 self.addEventListener('install', (event) => {
   event.waitUntil(self.skipWaiting());
@@ -15,7 +14,6 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
-  // Always pass through to network so live Render updates & API calls are never stale
   if (event.request.method !== 'GET') return;
   event.respondWith(
     fetch(event.request).catch(() => {
@@ -26,6 +24,50 @@ self.addEventListener('fetch', (event) => {
         );
       }
       return new Response('', { status: 503 });
+    })
+  );
+});
+
+// Receive Web Push (works even when app is closed / phone screen is locked!)
+self.addEventListener('push', (event) => {
+  let data = { title: 'CEO Office', body: '새 알림이 도착했습니다.', url: './?view=approvals', tag: 'ceo-office' };
+  if (event.data) {
+    try {
+      data = { ...data, ...event.data.json() };
+    } catch {
+      data.body = event.data.text();
+    }
+  }
+
+  event.waitUntil(
+    self.registration.showNotification(data.title || 'CEO Office', {
+      body: data.body || '',
+      icon: './icons/icon-192.png',
+      badge: './icons/icon-192.png',
+      vibrate: [120, 60, 120],
+      tag: data.tag || 'ceo-office',
+      renotify: true,
+      data: { url: data.url || './', view: data.view || 'command' }
+    })
+  );
+});
+
+// Focus or open CEO Office directly to the target tab (approvals / missions) when tapped
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const targetUrl = new URL(event.notification.data?.url || './', self.location.origin).href;
+
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientsList) => {
+      for (const client of clientsList) {
+        if (client.url.startsWith(self.location.origin) && 'focus' in client) {
+          client.navigate(targetUrl).catch(() => {});
+          return client.focus();
+        }
+      }
+      if (self.clients.openWindow) {
+        return self.clients.openWindow(targetUrl);
+      }
     })
   );
 });

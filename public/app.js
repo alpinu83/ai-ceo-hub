@@ -1176,6 +1176,7 @@ function renderIntegrationsView() {
   document.getElementById('mcp-endpoint-url').textContent = endpoint;
   document.getElementById('mcp-token-value').textContent = `Bearer ${s.mcpToken || ''}`;
   renderMcpSnippet(endpoint, s.mcpToken || '');
+  refreshPushUi().catch(() => {});
 }
 
 function setKeyStatus(elId, providerObj) {
@@ -2220,11 +2221,121 @@ async function init() {
 }
 
 let deferredInstallPrompt = null;
+let swRegistration = null;
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+}
+
+async function refreshPushUi() {
+  const statusEl = document.getElementById('status-push-live');
+  const toggleBtn = document.getElementById('btn-toggle-push');
+  const testBtn = document.getElementById('btn-test-push');
+  if (!statusEl || !toggleBtn) return;
+
+  if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
+    statusEl.textContent = '미지원 브라우저';
+    statusEl.classList.remove('ok');
+    toggleBtn.style.display = 'none';
+    if (testBtn) testBtn.style.display = 'none';
+    return;
+  }
+
+  try {
+    const reg = swRegistration || (await navigator.serviceWorker.ready);
+    const sub = await reg.pushManager.getSubscription();
+    if (sub && Notification.permission === 'granted') {
+      const cnt = state?.pushSubscribedCount || 1;
+      statusEl.textContent = `켜짐 (${cnt}대 연결)`;
+      statusEl.classList.add('ok');
+      toggleBtn.textContent = '알림 끄기';
+      toggleBtn.className = 'btn btn-ghost btn-sm';
+      if (testBtn) testBtn.style.display = 'inline-flex';
+    } else {
+      statusEl.textContent = Notification.permission === 'denied' ? '브라우저 차단됨' : '꺼짐';
+      statusEl.classList.remove('ok');
+      toggleBtn.textContent = '알림 켜기';
+      toggleBtn.className = 'btn btn-primary btn-sm';
+      if (testBtn) testBtn.style.display = 'none';
+    }
+  } catch {
+    statusEl.textContent = '꺼짐';
+  }
+}
+
+async function toggleWebPush() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+    toast('이 브라우저에서는 푸시 알림을 지원하지 않습니다. (크롬 앱 설치 후 이용해 주세요)', true);
+    return;
+  }
+  const toggleBtn = document.getElementById('btn-toggle-push');
+  if (toggleBtn) toggleBtn.disabled = true;
+
+  try {
+    const reg = swRegistration || (await navigator.serviceWorker.register('./sw.js', { scope: './' }));
+    swRegistration = reg;
+    await navigator.serviceWorker.ready;
+
+    const existing = await reg.pushManager.getSubscription();
+    if (existing) {
+      await api('/api/push/unsubscribe', {
+        method: 'POST',
+        body: JSON.stringify({ endpoint: existing.endpoint })
+      }).catch(() => {});
+      await existing.unsubscribe();
+      state = await api('/api/state').catch(() => state);
+      await refreshPushUi();
+      toast('이 기기의 푸시 알림을 껐습니다.');
+      return;
+    }
+
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') {
+      toast('브라우저 알림 권한을 허용해 주세요.', true);
+      await refreshPushUi();
+      return;
+    }
+
+    const { publicKey } = await api('/api/push/public-key');
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(publicKey)
+    });
+
+    await api('/api/push/subscribe', {
+      method: 'POST',
+      body: JSON.stringify({
+        subscription: sub.toJSON(),
+        deviceLabel: /Android|iPhone|iPad/i.test(navigator.userAgent) ? '모바일' : 'PC'
+      })
+    });
+
+    state = await api('/api/state').catch(() => state);
+    await refreshPushUi();
+    toast('푸시 알림이 켜졌습니다! 결재 요청·업무 완료 시 바로 알림이 옵니다.');
+  } catch (err) {
+    toast(`푸시 알림 설정 오류: ${err.message}`, true);
+  } finally {
+    if (toggleBtn) toggleBtn.disabled = false;
+  }
+}
 
 function setupPwa() {
   if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js', { scope: './' }).catch(() => {});
+    window.addEventListener('load', async () => {
+      try {
+        swRegistration = await navigator.serviceWorker.register('./sw.js', { scope: './' });
+        await refreshPushUi();
+      } catch {
+        // ignore sw errors on unsupported local origins
+      }
     });
   }
 
@@ -2250,6 +2361,26 @@ function setupPwa() {
     const btn = document.getElementById('btn-install-pwa');
     if (btn) btn.style.display = 'none';
   });
+
+  document.getElementById('btn-toggle-push')?.addEventListener('click', toggleWebPush);
+  document.getElementById('btn-test-push')?.addEventListener('click', async () => {
+    const btn = document.getElementById('btn-test-push');
+    if (btn) btn.disabled = true;
+    try {
+      const res = await api('/api/push/test', { method: 'POST' });
+      toast(`푸시 알림 테스트 발송 완료 (${res.sent}대)`);
+    } catch (err) {
+      toast(err.message, true);
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  });
+
+  // Jump directly to requested view when opened from a push notification tap (?view=approvals / ?view=missions)
+  const urlView = new URLSearchParams(window.location.search).get('view');
+  if (urlView && VIEW_META[urlView]) {
+    switchView(urlView);
+  }
 }
 
 setupPwa();

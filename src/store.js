@@ -512,6 +512,10 @@ export function loadDb() {
     if (!parsed.agentConnections || typeof parsed.agentConnections !== 'object') {
       parsed.agentConnections = {};
     }
+    if (!Array.isArray(parsed.pushSubscriptions)) {
+      parsed.pushSubscriptions = [];
+    }
+    parsed.settings.webPush = parsed.settings.webPush || { publicKey: '', privateKey: '' };
     return parsed;
   } catch {
     const initial = createDefaultState();
@@ -746,6 +750,14 @@ export function sanitizeStateForClient(db) {
     clone.settings.telegram.botTokenPreview = rawTg ? `${rawTg.slice(0, 6)}••••${rawTg.slice(-4)}` : '';
     delete clone.settings.telegram.botToken;
   }
+  if (clone.settings?.webPush) {
+    clone.settings.webPush = {
+      publicKey: clone.settings.webPush.publicKey || '',
+      enabled: Boolean(clone.settings.webPush.publicKey)
+    };
+  }
+  clone.pushSubscribedCount = Array.isArray(clone.pushSubscriptions) ? clone.pushSubscriptions.length : 0;
+  delete clone.pushSubscriptions;
   clone.cloudBackup = getCloudPersistenceStatus();
   return clone;
 }

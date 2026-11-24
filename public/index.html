@@ -342,6 +342,14 @@
               </div>
               <div class="simple-list">
                 <div class="simple-row">
+                  <div><strong>푸시 알림 (결재 · 업무 완료)</strong></div>
+                  <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                    <span class="key-status" id="status-push-live">꺼짐</span>
+                    <button type="button" class="btn btn-primary btn-sm" id="btn-toggle-push">알림 켜기</button>
+                    <button type="button" class="btn btn-ghost btn-sm" id="btn-test-push" style="display:none;">테스트</button>
+                  </div>
+                </div>
+                <div class="simple-row">
                   <div><strong>서버 · PC/모바일 동기화</strong></div>
                   <span class="key-status" id="status-sync-live">확인 중…</span>
                 </div>
@@ -578,6 +586,6 @@
   </nav>
 
   <div class="toast-region" id="toast-region" aria-live="polite"></div>
-  <script type="module" src="./app.js?v=20261124i"></script>
+  <script type="module" src="./app.js?v=20261124j"></script>
 </body>
 </html>

@@ -196,9 +196,14 @@ async function runTests() {
     const leftoverMsgs = (delRes.state.messages || []).filter((m) => m.missionId === created.mission.id);
     assert.equal(leftoverMsgs.length, 0, 'deleting a mission must delete its meeting room messages');
 
+    // 12. Native Web Push VAPID public key auto-generation
+    const pushKeyRes = await (await fetch(`${BASE}/api/push/public-key`)).json();
+    assert.equal(pushKeyRes.ok, true, 'push public-key must return ok');
+    assert.ok(pushKeyRes.publicKey && pushKeyRes.publicKey.length > 40, 'VAPID publicKey must be generated');
+
     // Clean reset after tests
     await fetch(`${BASE}/api/reset`, { method: 'POST' });
-    console.log('✅ All AI CEO Hub E2E tests (REST + Auto-Start + Team Lead Chat + Official MCP SDK + Async Pickle HTTPS Inbox + Heartbeat + Cascade Delete + Telegram) passed!');
+    console.log('✅ All AI CEO Hub E2E tests (REST + Auto-Start + Team Lead Chat + Official MCP SDK + Async Pickle HTTPS Inbox + Heartbeat + Cascade Delete + Web Push + Telegram) passed!');
   } finally {
     child.kill('SIGTERM');
   }

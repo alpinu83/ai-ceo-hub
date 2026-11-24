@@ -32,11 +32,13 @@ import {
 import { handleOfficialMcpHttp, MCP_TOOL_CATALOG } from './src/mcp.js';
 import {
   sendTelegramApprovalCard,
+  sendTelegramText,
   testTelegramBot,
   handleTelegramUpdate,
   syncTelegramPolling,
   isTelegramPollingActive
 } from './src/telegram.js';
+import { ensureVapidKeys, sendWebPushNotification } from './src/push.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -225,6 +227,7 @@ async function autoStartLiveMissionTasks(missionId) {
         } else {
           taskRow.status = 'completed';
           appendLog(fresh, ag.name, `"${taskRow.title}" 자동 처리 완료.`, 'success');
+          notifyTaskCompleted(fresh.settings, taskRow, ag.name);
         }
 
         const firstLine = (res.output || '')
@@ -360,6 +363,28 @@ function getTelegramCallbacks() {
 function notifyAllApprovalChannels(settings, apr, agentName) {
   notifyWebhook(settings, 'approval_requested', apr).catch(() => {});
   sendTelegramApprovalCard(settings, apr, agentName).catch(() => {});
+  sendWebPushNotification({
+    title: `[결재 요청] ${apr.title}`,
+    body: `${agentName || '총괄 팀장'} · ${(apr.summary || '').slice(0, 90)}`,
+    view: 'approvals',
+    tag: `apr-${apr.id}`
+  }).catch(() => {});
+}
+
+function notifyTaskCompleted(settings, task, agentName) {
+  sendWebPushNotification({
+    title: `[업무 완료] ${task.title}`,
+    body: `${agentName || 'AI 팀원'}가 작업을 완료했습니다.`,
+    view: 'missions',
+    tag: `tsk-${task.id}`
+  }).catch(() => {});
+  if (settings?.telegram?.botToken && settings?.telegram?.chatId) {
+    sendTelegramText(
+      settings.telegram.botToken,
+      settings.telegram.chatId,
+      `<b>✅ [업무 완료]</b> ${task.title}\n담당: ${agentName || 'AI 팀원'}`
+    ).catch(() => {});
+  }
 }
 
 const app = new Hono();
@@ -375,6 +400,63 @@ app.get('/api/health', (c) =>
     cloudBackup: getCloudPersistenceStatus()
   })
 );
+
+// Native Web Push (VAPID) Endpoints — works on Android PWA, PC Chrome, iOS Home Screen PWA
+app.get('/api/push/public-key', (c) => {
+  const db = loadDb();
+  const { publicKey } = ensureVapidKeys(db);
+  return c.json({
+    ok: true,
+    publicKey,
+    subscribedCount: (db.pushSubscriptions || []).length
+  });
+});
+
+app.post('/api/push/subscribe', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const sub = body.subscription || body;
+  if (!sub?.endpoint || !sub?.keys?.p256dh || !sub?.keys?.auth) {
+    return c.json({ ok: false, error: '유효한 푸시 구독 정보가 아닙니다.' }, 400);
+  }
+  const db = loadDb();
+  ensureVapidKeys(db);
+  db.pushSubscriptions = Array.isArray(db.pushSubscriptions) ? db.pushSubscriptions : [];
+  const existingIdx = db.pushSubscriptions.findIndex((s) => s.endpoint === sub.endpoint);
+  const entry = {
+    endpoint: sub.endpoint,
+    keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth },
+    deviceLabel: String(body.deviceLabel || '').slice(0, 60),
+    createdAt: new Date().toISOString()
+  };
+  if (existingIdx >= 0) db.pushSubscriptions[existingIdx] = entry;
+  else db.pushSubscriptions.push(entry);
+  saveDb(db);
+  await flushCloudBackup(db);
+  return c.json({ ok: true, subscribedCount: db.pushSubscriptions.length });
+});
+
+app.post('/api/push/unsubscribe', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const endpoint = String(body.endpoint || '').trim();
+  const db = loadDb();
+  db.pushSubscriptions = (db.pushSubscriptions || []).filter((s) => s.endpoint !== endpoint);
+  saveDb(db);
+  await flushCloudBackup(db);
+  return c.json({ ok: true, subscribedCount: db.pushSubscriptions.length });
+});
+
+app.post('/api/push/test', async (c) => {
+  const res = await sendWebPushNotification({
+    title: 'CEO Office 푸시 알림 연결 완료',
+    body: '이제 결재 요청이나 업무가 완료되면 앱을 닫아둬도 바로 알림이 옵니다!',
+    view: 'approvals',
+    tag: 'push-test'
+  });
+  if (res.total === 0) {
+    return c.json({ ok: false, error: '등록된 알림 기기가 없습니다. 먼저 [알림 켜기]를 눌러주세요.' }, 400);
+  }
+  return c.json({ ok: res.sent > 0, ...res });
+});
 
 // Open-source vendor bundles served directly from node_modules
 app.get('/vendor/marked.umd.js', (c) => {
@@ -810,8 +892,7 @@ async function handleAgentInboxReply(c) {
         };
         db.approvals.unshift(apr);
         approvalId = apr.id;
-        notifyWebhook(db.settings, 'approval_requested', apr).catch(() => {});
-        sendTelegramApprovalCard(db.settings, apr, agent.name).catch(() => {});
+        notifyAllApprovalChannels(db.settings, apr, agent.name);
       } else {
         approvalId = existing.id;
       }
@@ -819,6 +900,7 @@ async function handleAgentInboxReply(c) {
     } else {
       task.status = 'completed';
       appendLog(db, `${agent.name} (HTTPS 보고)`, `"${task.title}" 실제 작업 완료 보고.`, 'success');
+      notifyTaskCompleted(db.settings, task, agent.name);
     }
     updateMissionStatus(db, task.missionId);
   } else if (requestApproval) {
@@ -841,11 +923,16 @@ async function handleAgentInboxReply(c) {
     };
     db.approvals.unshift(apr);
     approvalId = apr.id;
-    notifyWebhook(db.settings, 'approval_requested', apr).catch(() => {});
-    sendTelegramApprovalCard(db.settings, apr, agent.name).catch(() => {});
+    notifyAllApprovalChannels(db.settings, apr, agent.name);
     appendLog(db, `${agent.name} (HTTPS 보고)`, `실제 결재 안건 상신: "${apr.title}"`, 'approval');
   } else {
     appendLog(db, `${agent.name} (HTTPS 보고)`, `사내 회의실에 실제 답변을 올렸습니다.`, 'success');
+    sendWebPushNotification({
+      title: `[새 보고] ${agent.name}`,
+      body: message.slice(0, 100),
+      view: 'office',
+      tag: `msg-${postedMsg.id}`
+    }).catch(() => {});
   }
 
   saveDb(db);

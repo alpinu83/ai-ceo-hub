@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { loadDb, saveDb, appendLog, recordAgentHeartbeat, uid } from './store.js';
 import { notifyWebhook } from './orchestrator.js';
 import { sendTelegramApprovalCard } from './telegram.js';
+import { sendWebPushNotification } from './push.js';
 
 export const MCP_TOOL_CATALOG = [
   {
@@ -169,6 +170,12 @@ export function createCeoMcpServer() {
           approvalId = apr.id;
           notifyWebhook(db.settings, 'approval_requested', apr).catch(() => {});
           sendTelegramApprovalCard(db.settings, apr, agent?.name || task.assigneeId).catch(() => {});
+          sendWebPushNotification({
+            title: `[결재 요청] ${apr.title}`,
+            body: `${agent?.name || 'AI'} · ${apr.summary.slice(0, 90)}`,
+            view: 'approvals',
+            tag: `apr-${apr.id}`
+          }).catch(() => {});
         } else {
           approvalId = existing.id;
         }
@@ -186,6 +193,12 @@ export function createCeoMcpServer() {
           `"${task.title}" 작업을 공식 MCP로 완료 보고했습니다.`,
           'success'
         );
+        sendWebPushNotification({
+          title: `[업무 완료] ${task.title}`,
+          body: `${agent?.name || 'AI'}가 작업 결과를 보고했습니다.`,
+          view: 'missions',
+          tag: `tsk-${task.id}`
+        }).catch(() => {});
       }
 
       saveDb(db);
@@ -242,6 +255,12 @@ export function createCeoMcpServer() {
       saveDb(db);
       notifyWebhook(db.settings, 'approval_requested', apr).catch(() => {});
       sendTelegramApprovalCard(db.settings, apr, agent?.name || 'MCP 에이전트').catch(() => {});
+      sendWebPushNotification({
+        title: `[결재 요청] ${apr.title}`,
+        body: `${agent?.name || 'AI'} · ${apr.summary.slice(0, 90)}`,
+        view: 'approvals',
+        tag: `apr-${apr.id}`
+      }).catch(() => {});
       return {
         content: [{ type: 'text', text: JSON.stringify({ ok: true, approval_id: apr.id, status: 'pending' }, null, 2) }]
       };
