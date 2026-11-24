@@ -8,8 +8,29 @@ let pollingTimer = null;
 let lastUpdateId = 0;
 let activeToken = '';
 
+function cleanBotToken(token) {
+  return String(token || '')
+    .trim()
+    .replace(/^["']|["']$/g, '')
+    .replace(/^bot/i, '')
+    .trim();
+}
+
+function isValidBotToken(token) {
+  return /^\d+:[A-Za-z0-9_-]{20,}$/.test(cleanBotToken(token));
+}
+
+function isNumericChatId(chatId) {
+  return /^-?\d+$/.test(String(chatId || '').trim());
+}
+
 async function tgCall(token, method, payload = {}) {
-  const cleanToken = String(token || '').trim().replace(/^bot/i, '');
+  const cleanToken = cleanBotToken(token);
+  if (!isValidBotToken(cleanToken)) {
+    throw new Error(
+      "Bot Token 형식이 올바르지 않습니다. 앞부분 '숫자:'까지 포함한 BotFather 전체 토큰(예: 1234567890:AAHuGU...)을 입력해 주세요."
+    );
+  }
   const url = `https://api.telegram.org/bot${cleanToken}/${method}`;
   const res = await fetch(url, {
     method: 'POST',
@@ -19,8 +40,15 @@ async function tgCall(token, method, payload = {}) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok || !data.ok) {
     const desc = data.description || `Telegram API 오류 (${res.status})`;
+    if (/not found|unauthorized/i.test(desc)) {
+      throw new Error(
+        `Telegram 인증 실패(${desc}) — BotFather 전체 토큰(숫자:영문)이 맞는지 확인해 주세요.`
+      );
+    }
     if (/chat not found|can't initiate/i.test(desc)) {
-      throw new Error(`${desc} — 텔레그램에서 내 봇 채팅방을 열어 [시작(/start)] 버튼을 먼저 1번 눌러주시고, Chat ID(숫자)를 확인해 주세요!`);
+      throw new Error(
+        `${desc} — 텔레그램에서 내 봇 채팅방을 열어 [시작(/start)] 버튼을 먼저 눌러주세요.`
+      );
     }
     throw new Error(desc);
   }
@@ -30,7 +58,7 @@ async function tgCall(token, method, payload = {}) {
 export async function sendTelegramText(token, chatId, text, replyMarkup = undefined) {
   if (!token || !chatId) return { ok: false, skipped: true };
   const result = await tgCall(token, 'sendMessage', {
-    chat_id: chatId,
+    chat_id: String(chatId).trim(),
     text,
     parse_mode: 'HTML',
     ...(replyMarkup ? { reply_markup: replyMarkup } : {})
@@ -40,7 +68,7 @@ export async function sendTelegramText(token, chatId, text, replyMarkup = undefi
 
 export async function sendTelegramApprovalCard(settings, approval, agentName) {
   const tg = settings?.telegram;
-  if (!tg?.botToken || !tg?.chatId) return { ok: false, skipped: true };
+  if (!isValidBotToken(tg?.botToken) || !isNumericChatId(tg?.chatId)) return { ok: false, skipped: true };
 
   const costText =
     (approval.estimatedCostKRW || 0) > 0
@@ -51,8 +79,8 @@ export async function sendTelegramApprovalCard(settings, approval, agentName) {
     `<b>[CEO 결재 요청] ${escapeHtml(settings.companyName || 'CEO Office')}</b>`,
     ``,
     `<b>안건:</b> ${escapeHtml(approval.title)}`,
-    `<b>상신 AI:</b> ${escapeHtml(agentName || approval.agentId)}`,
-    `<b>유형 / 리스크:</b> ${escapeHtml(approval.category)} (${escapeHtml(String(approval.riskLevel || 'medium').toUpperCase())})`,
+    `<b>상신:</b> ${escapeHtml(agentName || approval.agentId)}`,
+    `<b>유형:</b> ${escapeHtml(approval.category)}`,
     `<b>예상 비용:</b> ${costText}`,
     ``,
     `<b>요약:</b>`,
@@ -80,10 +108,15 @@ export async function sendTelegramApprovalCard(settings, approval, agentName) {
 
 export async function testTelegramBot(settings) {
   const tg = settings?.telegram;
-  if (!tg?.botToken || !tg?.chatId) {
-    throw new Error('Telegram Bot Token과 CEO Chat ID를 먼저 입력하고 저장해 주세요.');
+  if (!tg?.botToken) {
+    throw new Error('Telegram Bot Token을 먼저 입력하고 저장해 주세요.');
   }
   const me = await tgCall(tg.botToken, 'getMe', {});
+  if (!isNumericChatId(tg.chatId)) {
+    throw new Error(
+      `봇(@${me.username}) 토큰은 정상입니다! 단, Chat ID("${tg.chatId || '비어 있음'}")가 숫자 ID가 아닙니다. 텔레그램에서 @${me.username} 채팅방을 열어 /start 를 한 번 보내시면 숫자 Chat ID가 자동 등록됩니다.`
+    );
+  }
   await sendTelegramText(
     tg.botToken,
     tg.chatId,
@@ -92,9 +125,9 @@ export async function testTelegramBot(settings) {
       `봇 계정: @${escapeHtml(me.username || 'bot')}`,
       ``,
       `사용 가능 명령어:`,
-      `• <code>/status</code> — 현재 미션 · 예산 · 결재 대기 현황`,
+      `• <code>/status</code> — 현재 미션 · 결재 대기 현황`,
       `• <code>/approvals</code> — 대기 중인 결재 카드 다시 받기`,
-      `• <code>/order 지시내용</code> — 모바일에서 바로 팀장에게 새 지시 하달`
+      `• <code>/order 지시내용</code> — 텔레그램에서 바로 새 업무 지시`
     ].join('\n')
   );
   return { ok: true, botUsername: me.username };
@@ -106,13 +139,15 @@ export async function testTelegramBot(settings) {
 export async function handleTelegramUpdate(update, callbacks) {
   const settings = callbacks.getSettings();
   const tg = settings?.telegram;
-  if (!tg?.botToken) return { handled: false };
+  if (!isValidBotToken(tg?.botToken)) return { handled: false };
+
+  const hasValidSavedChatId = isNumericChatId(tg.chatId);
 
   // 1. Inline button click (Approve / Revise / Reject)
   if (update.callback_query) {
     const cq = update.callback_query;
     const fromChat = String(cq.message?.chat?.id || '');
-    if (tg.chatId && fromChat !== String(tg.chatId)) {
+    if (hasValidSavedChatId && fromChat !== String(tg.chatId).trim()) {
       await tgCall(tg.botToken, 'answerCallbackQuery', {
         callback_query_id: cq.id,
         text: '인가된 CEO 계정이 아닙니다.'
@@ -148,13 +183,26 @@ export async function handleTelegramUpdate(update, callbacks) {
     }
   }
 
-  // 2. Text commands (/status, /approvals, /order ...)
+  // 2. Text commands (/start, /status, /approvals, /order ...)
   if (update.message?.text) {
     const chatId = String(update.message.chat.id);
-    if (tg.chatId && chatId !== String(tg.chatId)) {
+    const text = update.message.text.trim();
+
+    // Auto-register CEO numeric Chat ID on /start if unset or previously entered as bot username
+    if (!hasValidSavedChatId && typeof callbacks.onAutoRegisterChatId === 'function') {
+      await callbacks.onAutoRegisterChatId(chatId);
+      const summary = await callbacks.onStatus();
+      await sendTelegramText(
+        tg.botToken,
+        chatId,
+        `<b>✅ CEO 텔레그램 연결 완료!</b> (Chat ID: <code>${chatId}</code> 자동 등록됨)\n\n${summary}`
+      ).catch(() => {});
+      return { handled: true, command: '/start', autoRegisteredChatId: chatId };
+    }
+
+    if (hasValidSavedChatId && chatId !== String(tg.chatId).trim()) {
       return { handled: false };
     }
-    const text = update.message.text.trim();
 
     if (text === '/start' || text === '/help' || text === '/status') {
       const summary = await callbacks.onStatus();
@@ -193,18 +241,20 @@ export async function handleTelegramUpdate(update, callbacks) {
 
 export function syncTelegramPolling(settings, callbacks) {
   const tg = settings?.telegram;
-  const shouldRun = Boolean(tg?.botToken && tg?.chatId && tg?.pollingEnabled);
+  // Run polling whenever a valid botToken is present and polling is enabled (even before Chat ID is registered so /start auto-registers it!)
+  const shouldRun = Boolean(isValidBotToken(tg?.botToken) && tg?.pollingEnabled);
 
   if (!shouldRun) {
     stopTelegramPolling();
     return;
   }
 
-  if (pollingActive && activeToken === tg.botToken) return;
+  const cleaned = cleanBotToken(tg.botToken);
+  if (pollingActive && activeToken === cleaned) return;
   stopTelegramPolling();
 
   pollingActive = true;
-  activeToken = tg.botToken;
+  activeToken = cleaned;
 
   const loop = async () => {
     if (!pollingActive) return;
@@ -219,7 +269,6 @@ export function syncTelegramPolling(settings, callbacks) {
         await handleTelegramUpdate(u, callbacks);
       }
     } catch {
-      // Back off slightly on transient network errors
       await new Promise((r) => setTimeout(r, 3000));
     }
     if (pollingActive) {
@@ -227,7 +276,12 @@ export function syncTelegramPolling(settings, callbacks) {
     }
   };
 
-  pollingTimer = setTimeout(loop, 500);
+  // Clear any stale webhook first so getUpdates long polling always receives /start
+  tgCall(activeToken, 'deleteWebhook', { drop_pending_updates: false })
+    .catch(() => {})
+    .finally(() => {
+      if (pollingActive) pollingTimer = setTimeout(loop, 400);
+    });
 }
 
 export function stopTelegramPolling() {

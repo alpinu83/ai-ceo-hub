@@ -366,6 +366,10 @@
                   <span class="badge badge-amber">대기 중</span>
                 </div>
                 <div class="simple-row">
+                  <div><strong>인스팅스 (Instinct)</strong> <span class="mono" style="color:var(--ink-muted);">HTTPS · 문자</span></div>
+                  <span class="badge badge-neutral" id="status-instinct-live">통신 대기</span>
+                </div>
+                <div class="simple-row">
                   <div><strong>Gemini 4 Neon · Claude</strong> <span class="mono" style="color:var(--ink-muted);">구독 · MCP</span></div>
                   <span class="badge badge-blue">구독 (0원)</span>
                 </div>
@@ -397,12 +401,12 @@
                     </div>
                   </div>
                   <div class="form-row-two">
-                    <label class="field"><span class="field-label">Bot Token</span><input type="password" id="tg-bot-token" placeholder="변경 시 입력" autocomplete="off" /></label>
-                    <label class="field"><span class="field-label">Chat ID</span><input type="text" id="tg-chat-id" placeholder="숫자 ID" /></label>
+                    <label class="field"><span class="field-label">Bot Token (숫자:영문 전체)</span><input type="password" id="tg-bot-token" placeholder="1234567890:AAH..." autocomplete="off" /></label>
+                    <label class="field"><span class="field-label">Chat ID (숫자 — 비워두고 /start 시 자동)</span><input type="text" id="tg-chat-id" placeholder="숫자 ID (봇 이름 아님)" /></label>
                   </div>
                   <label class="checkbox-row">
                     <input type="checkbox" id="tg-polling-enabled" />
-                    <span>실시간 수신 활성화 (<code>/order</code>, <code>/status</code>, 결재 버튼)</span>
+                    <span>실시간 수신 활성화 (<code>/start</code>, <code>/order</code>, <code>/status</code>, 결재 버튼)</span>
                   </label>
                 </div>
 
@@ -422,7 +426,7 @@
             </div>
           </div>
 
-          <!-- TAB 2: MCP & PICKLE/VOOY HTTPS -->
+          <!-- TAB 2: MCP & PICKLE/VOOY/INSTINCT HTTPS -->
           <div class="hub-panel" id="hub-panel-mcp">
             <div class="integrations-grid">
               <div class="card">
@@ -446,6 +450,7 @@
                 <div class="mcp-tabs">
                   <button type="button" class="tab-pill active" data-mcp-tab="pickle">피클</button>
                   <button type="button" class="tab-pill" data-mcp-tab="vooy">부이</button>
+                  <button type="button" class="tab-pill" data-mcp-tab="instinct">인스팅스</button>
                   <button type="button" class="tab-pill" data-mcp-tab="muse">Muse</button>
                   <button type="button" class="tab-pill" data-mcp-tab="cue">Cue</button>
                   <button type="button" class="tab-pill" data-mcp-tab="claude">Claude</button>
@@ -573,6 +578,6 @@
   </nav>
 
   <div class="toast-region" id="toast-region" aria-live="polite"></div>
-  <script type="module" src="./app.js?v=20261124g"></script>
+  <script type="module" src="./app.js?v=20261124i"></script>
 </body>
 </html>

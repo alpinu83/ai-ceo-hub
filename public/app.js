@@ -1156,6 +1156,7 @@ function renderIntegrationsView() {
   setConnBadge('status-muse-live', 'agent_muse');
   setConnBadge('status-pickle-live', 'agent_pickle');
   setConnBadge('status-cue-live', 'agent_cue');
+  setConnBadge('status-instinct-live', 'agent_instinct');
 
   const tg = s.telegram || {};
   document.getElementById('tg-chat-id').value = tg.chatId || '';
@@ -1218,6 +1219,7 @@ function renderMcpSnippet(endpoint, token) {
   const snippets = {
     pickle: buildAsyncAgentPrompt('pickle', '피클(알렉스)', origin, token),
     vooy: buildAsyncAgentPrompt('vooy', '부이(vooy)', origin, token),
+    instinct: buildAsyncAgentPrompt('instinct', '인스팅스(Instinct)', origin, token),
     muse: `# Meta Muse 채팅창에 아래처럼 말해서 커스텀 커넥터 추가:
 Add CEO Office as a custom connector. The server URL is ${endpoint}
 

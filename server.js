@@ -320,6 +320,14 @@ function applyApprovalDecisionInDb(aprId, decision, ceoNote = '') {
 function getTelegramCallbacks() {
   return {
     getSettings: () => loadDb().settings,
+    onAutoRegisterChatId: async (chatId) => {
+      const db = loadDb();
+      db.settings.telegram = db.settings.telegram || { botToken: '', chatId: '', pollingEnabled: true };
+      db.settings.telegram.chatId = String(chatId).trim();
+      appendLog(db, '텔레그램 봇', `CEO Chat ID(${chatId})를 /start로 자동 등록했습니다.`, 'success');
+      saveDb(db);
+      await flushCloudBackup(db);
+    },
     onDecision: async (aprId, decision, note) => applyApprovalDecisionInDb(aprId, decision, note),
     onStatus: async () => {
       const db = loadDb();
@@ -328,10 +336,9 @@ function getTelegramCallbacks() {
       const activeAgents = db.agents.filter((a) => a.active).length;
       return [
         `<b>${db.settings.companyName} 현황 보고</b>`,
-        `• 활성 AI 조직원: ${activeAgents}명`,
-        `• 진행 중 미션: ${activeMissions}건`,
+        `• 활성 AI 팀원: ${activeAgents}명`,
+        `• 진행 중 업무: ${activeMissions}건`,
         `• CEO 결재 대기: <b>${pending}건</b>`,
-        `• 월 지출: ${(db.settings.spentThisMonthKRW || 0).toLocaleString('ko-KR')}원 / ${(db.settings.monthlyBudgetKRW || 0).toLocaleString('ko-KR')}원`,
         ``,
         `명령어: /approvals · /order 지시내용`
       ].join('\n');
