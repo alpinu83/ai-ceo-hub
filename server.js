@@ -495,14 +495,33 @@ function resolveInboxAgent(db, rawKey) {
   return db.agents.find((a) => a.id === targetId) || null;
 }
 
-function checkInboxToken(c, db, bodyToken = '') {
+function normalizeTokenCandidate(val = '') {
+  return String(val || '')
+    .trim()
+    .replace(/^["']|["']$/g, '')
+    .replace(/^(?:Bearer|Token)\s+/i, '')
+    .replace(/^(?:Bearer|Token)\s+/i, '')
+    .trim();
+}
+
+function checkInboxToken(c, db, body = {}) {
   const expected = db.settings?.mcpToken;
   if (!expected) return true;
-  const queryToken = c.req.query('token') || '';
-  const authHeader = (c.req.header('authorization') || '').replace(/^Bearer\s+/i, '').trim();
-  const apiKeyHeader = (c.req.header('x-api-key') || '').trim();
-  const provided = queryToken || authHeader || apiKeyHeader || String(bodyToken || '').trim();
-  return provided === expected;
+  const candidates = [
+    c.req.query('token'),
+    c.req.query('api_key'),
+    c.req.query('key'),
+    c.req.header('authorization'),
+    c.req.header('x-api-key'),
+    c.req.header('x-token'),
+    c.req.header('x-mcp-token'),
+    body?.token,
+    body?.apiKey,
+    body?.api_key
+  ]
+    .map(normalizeTokenCandidate)
+    .filter(Boolean);
+  return candidates.some((cand) => cand === expected);
 }
 
 app.get('/api/agent-inbox/:agentKey', (c) => {
@@ -585,7 +604,7 @@ app.get('/api/agent-inbox/:agentKey', (c) => {
 app.post('/api/agent-inbox/:agentKey/reply', async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const db = loadDb();
-  if (!checkInboxToken(c, db, body.token)) {
+  if (!checkInboxToken(c, db, body)) {
     return c.json({ error: '유효한 토큰이 필요합니다.' }, 401);
   }
   const agent = resolveInboxAgent(db, c.req.param('agentKey'));

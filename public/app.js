@@ -1862,6 +1862,11 @@ function bindEvents() {
       return;
     }
 
+    if (target.id === 'btn-copy-raw-token') {
+      copyText(state.settings?.mcpToken || '', '순수 토큰(ceo_mcp_...)만 복사했습니다. 보안 폼에 그대로 붙여넣으세요!');
+      return;
+    }
+
     if (target.dataset.mcpTest) {
       const action = target.dataset.mcpTest;
       const out = document.getElementById('mcp-test-output');
