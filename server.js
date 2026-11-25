@@ -617,6 +617,37 @@ const CODE_STATUS_PENDING = new Set(['waiting_team', 'preparing']);
 const CODE_STATUS_DONE = new Set(['merging', 'merged', 'deployed', 'deploy_failed', 'deploy_unknown']);
 const codeBundleLocks = new Map();
 const codeBundleTimers = new Map();
+const failedRetryTimers = new Map();
+
+// AI quota / provider hiccups are usually temporary: retry failed PR preparation in the background (max 3 times)
+function scheduleFailedCodeRetry(missionId, delayMs = 8 * 60 * 1000) {
+  if (!missionId || failedRetryTimers.has(missionId)) return;
+  failedRetryTimers.set(
+    missionId,
+    setTimeout(() => {
+      failedRetryTimers.delete(missionId);
+      const db = loadDb();
+      let count = 0;
+      for (const a of db.approvals) {
+        if (
+          a.missionId === missionId &&
+          a.status === 'pending' &&
+          a.codeChange?.status === 'failed' &&
+          !a.prNumber &&
+          Number(a.codeChange.retries || 0) < 3
+        ) {
+          setCodeStatus(a, 'waiting_team', { retries: Number(a.codeChange.retries || 0) + 1 });
+          count += 1;
+        }
+      }
+      if (count) {
+        appendLog(db, 'IT 유지보수팀', `실코드 변경안 작성 재시도 (${count}건)`, 'info');
+        saveDb(db);
+        runCodeBundle(missionId).catch((err) => console.warn('code retry error:', err.message));
+      }
+    }, delayMs)
+  );
+}
 
 function getMissionRepoCfg(settings, mission) {
   if (!mission?.githubRepo) return null;
@@ -954,7 +985,9 @@ async function runCodeBundleInner(missionId, { retryEmpty = false } = {}) {
       apr.summary = `${apr.summary}\n\n[IT팀 검토] ${failure.message}`;
     } else {
       setCodeStatus(apr, 'failed', { error: failure?.message || '알 수 없는 오류' });
-      apr.proposedAction = `${apr.proposedAction}\n(실코드 변경안 사전 작성 실패: 승인하시면 IT팀이 다시 작성하고, 보안 감사를 통과하면 바로 머지·배포합니다.)`;
+      if (!/사전 작성 실패/.test(apr.proposedAction || '')) {
+        apr.proposedAction = `${apr.proposedAction}\n(실코드 변경안 사전 작성 실패: IT팀이 자동으로 다시 시도하고, 그 전에 승인하셔도 다시 작성해 보안 감사를 통과하면 바로 머지·배포합니다.)`;
+      }
     }
   }
   appendLog(
@@ -970,13 +1003,20 @@ async function runCodeBundleInner(missionId, { retryEmpty = false } = {}) {
   if (!noChange && freshWaiting.length === 0) {
     notifyTelegramAnomaly(db.settings, 'IT팀 실코드 변경안 작성 실패', `"${mission.title}" (${cfg.repo}) — ${failure?.message}`);
   }
+  let retryNeeded = false;
   for (const apr of freshWaiting) {
     if (apr.status === 'pending') {
-      sendApprovalNotifications(db.settings, apr, apr.codeChange?.agentName || 'IT 유지보수팀');
+      if (!noChange && Number(apr.codeChange?.retries || 0) < 3) retryNeeded = true;
+      if (!apr.codeChange?.notified) {
+        setCodeStatus(apr, apr.codeChange.status, { notified: true });
+        sendApprovalNotifications(db.settings, apr, apr.codeChange?.agentName || 'IT 유지보수팀');
+      }
     } else if (apr.status === 'approved' && !noChange) {
       applyApprovedCodeChange(apr.id).catch((err) => console.warn('apply code change error:', err.message));
     }
   }
+  saveDb(db);
+  if (retryNeeded) scheduleFailedCodeRetry(missionId);
   return { ok: false, error: failure?.message, noChange };
 }
 
@@ -1310,6 +1350,8 @@ async function recoverCodeApprovalsOnBoot() {
     if (CODE_STATUS_PENDING.has(st) && !apr.prNumber && ['pending', 'approved'].includes(apr.status)) {
       setCodeStatus(apr, 'waiting_team');
       if (apr.missionId) bundleMissions.add(apr.missionId);
+    } else if (st === 'failed' && apr.status === 'pending' && !apr.prNumber && Number(apr.codeChange.retries || 0) < 3) {
+      if (apr.missionId) scheduleFailedCodeRetry(apr.missionId, 60 * 1000);
     } else if ((st === 'merging' || (st === 'preparing' && apr.prNumber)) && apr.status === 'approved') {
       setCodeStatus(apr, 'ready');
       resumeMerge.push(apr.id);
