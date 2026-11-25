@@ -35,6 +35,51 @@ function createGeminiResilientFetch(primaryModel) {
   };
 }
 
+function createOpenAiModelFallbackFetch(fallbackModels = []) {
+  return async (url, init) => {
+    const withTimeout = (opts) => ({
+      ...opts,
+      signal: opts?.signal || AbortSignal.timeout(22000)
+    });
+    let res;
+    try {
+      res = await fetch(url, withTimeout(init));
+      if (res.ok || ![400, 404, 429, 502, 503].includes(res.status)) return res;
+    } catch {
+      res = null;
+    }
+    if (!init?.body || typeof init.body !== 'string') {
+      if (res) return res;
+      throw new Error('모델 요청 시간 초과');
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(init.body);
+    } catch {
+      if (res) return res;
+      throw new Error('모델 요청 시간 초과');
+    }
+    if (!parsed?.model) {
+      if (res) return res;
+      throw new Error('모델 요청 시간 초과');
+    }
+    for (const fb of fallbackModels) {
+      if (!fb || fb === parsed.model) continue;
+      try {
+        const fbRes = await fetch(url, withTimeout({
+          ...init,
+          body: JSON.stringify({ ...parsed, model: fb })
+        }));
+        if (fbRes.ok) return fbRes;
+      } catch {
+        // try next fallback
+      }
+    }
+    if (res) return res;
+    throw new Error('모델 응답 시간 초과');
+  };
+}
+
 export function resolveLanguageModel(agent, settings) {
   const providers = settings?.providers || {};
 
@@ -87,51 +132,6 @@ export function resolveLanguageModel(agent, settings) {
     const modelName = agent.modelId || cfg.model || 'claude-sonnet-4-5';
     return { model: anthropic(modelName), label: `claude:${modelName}` };
   }
-
-function createOpenAiModelFallbackFetch(fallbackModels = []) {
-  return async (url, init) => {
-    const withTimeout = (opts) => ({
-      ...opts,
-      signal: opts?.signal || AbortSignal.timeout(22000)
-    });
-    let res;
-    try {
-      res = await fetch(url, withTimeout(init));
-      if (res.ok || ![400, 404, 429, 502, 503].includes(res.status)) return res;
-    } catch {
-      res = null;
-    }
-    if (!init?.body || typeof init.body !== 'string') {
-      if (res) return res;
-      throw new Error('모델 요청 시간 초과');
-    }
-    let parsed;
-    try {
-      parsed = JSON.parse(init.body);
-    } catch {
-      if (res) return res;
-      throw new Error('모델 요청 시간 초과');
-    }
-    if (!parsed?.model) {
-      if (res) return res;
-      throw new Error('모델 요청 시간 초과');
-    }
-    for (const fb of fallbackModels) {
-      if (!fb || fb === parsed.model) continue;
-      try {
-        const fbRes = await fetch(url, withTimeout({
-          ...init,
-          body: JSON.stringify({ ...parsed, model: fb })
-        }));
-        if (fbRes.ok) return fbRes;
-      } catch {
-        // try next fallback
-      }
-    }
-    if (res) return res;
-    throw new Error('모델 응답 시간 초과');
-  };
-}
 
   if (agent.provider === 'groq') {
     const groqCfg = providers.groq;
