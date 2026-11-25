@@ -185,12 +185,13 @@ function formatFact(f, missionTitles) {
 export function buildCompanyContext(db, missionId = '', { compact = false } = {}) {
   if (!db) return '';
   ensureLeadDefaults(db);
-  const maxChars = compact ? 1400 : 3200;
+  const maxChars = compact ? 2400 : 4000;
   const missionTitles = Object.fromEntries((db.missions || []).map((m) => [m.id, m.title]));
   const directives = String(db.settings.globalDirectives || '').trim();
   const facts = db.memory.facts || [];
 
-  const pinned = facts.filter((f) => f.pinned).slice(0, compact ? 5 : 10);
+  // 고정 기억(대표님 지침·교훈)은 작은 모델에도 최대한 많이 전달
+  const pinned = facts.filter((f) => f.pinned).slice(0, compact ? 9 : 14);
   const pinnedIds = new Set(pinned.map((f) => f.id));
   const own = facts.filter((f) => !pinnedIds.has(f.id) && missionId && f.missionId === missionId).slice(0, compact ? 6 : 12);
   const ownIds = new Set(own.map((f) => f.id));
