@@ -12,6 +12,29 @@ import { uid } from './store.js';
  * - LiteLLM Proxy (100+ providers & spend caps) via @ai-sdk/openai
  * - Ollama (Local open-source free models) via @ai-sdk/openai
  */
+function createGeminiResilientFetch(primaryModel) {
+  const fallbacks = ['gemini-3.8-flash', 'gemini-3.1-flash-lite-preview'].filter((m) => m !== primaryModel);
+  return async (url, init) => {
+    const res = await fetch(url, init);
+    if (res.status !== 503 && res.status !== 429) return res;
+    const urlStr = String(url);
+    for (const fb of fallbacks) {
+      if (urlStr.includes(encodeURIComponent(primaryModel)) || urlStr.includes(primaryModel)) {
+        const fbUrl = urlStr
+          .replace(encodeURIComponent(primaryModel), encodeURIComponent(fb))
+          .replace(primaryModel, fb);
+        try {
+          const fbRes = await fetch(fbUrl, init);
+          if (fbRes.ok) return fbRes;
+        } catch {
+          // try next fallback
+        }
+      }
+    }
+    return res;
+  };
+}
+
 function resolveLanguageModel(agent, settings) {
   const providers = settings?.providers || {};
 
@@ -34,6 +57,7 @@ function resolveLanguageModel(agent, settings) {
     if (!cfg?.apiKey) return null;
     const rawModel = String(cfg.freeModel || '').trim();
     const modelName = rawModel && rawModel !== 'gemini-2.5-flash' ? rawModel : 'gemini-4-hydrogen';
+    const resilientFetch = createGeminiResilientFetch(modelName);
     if (cfg.transport === 'openai_compat') {
       const client = createOpenAI({
         baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai',
@@ -45,11 +69,12 @@ function resolveLanguageModel(agent, settings) {
     if (cfg.transport === 'vertex_express') {
       const google = createGoogleGenerativeAI({
         baseURL: 'https://aiplatform.googleapis.com/v1beta1/publishers/google',
-        apiKey: cfg.apiKey.trim()
+        apiKey: cfg.apiKey.trim(),
+        fetch: resilientFetch
       });
       return { model: google(modelName), label: `gemini-vertex:${modelName}` };
     }
-    const google = createGoogleGenerativeAI({ apiKey: cfg.apiKey.trim() });
+    const google = createGoogleGenerativeAI({ apiKey: cfg.apiKey.trim(), fetch: resilientFetch });
     return { model: google(modelName), label: `gemini:${modelName}` };
   }
 
@@ -243,6 +268,48 @@ export async function testProviderConnection(providerKey, settings) {
         model: modelName,
         transport: winner.transport,
         reply: `${winner.reply.slice(0, 40)} (${winner.label})`
+      };
+    }
+
+    // 503 UNAVAILABLE on AI Studio means the API key PASSED authentication and only the model is temporarily overloaded!
+    const overloaded = results.find(
+      (r) => (r.transport === 'native' || r.transport === 'openai_compat') && r.status === 503
+    );
+    if (overloaded) {
+      const fallbacks = ['gemini-3.8-flash', 'gemini-3.1-flash-lite-preview'].filter((m) => m !== modelName);
+      for (const fb of fallbacks) {
+        try {
+          const fbRes = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(fb)}:generateContent`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+              body: JSON.stringify({
+                contents: [{ role: 'user', parts: [{ text: 'Reply with OK' }] }],
+                generationConfig: { thinkingConfig: { thinkingLevel: 'low' } }
+              }),
+              signal: AbortSignal.timeout(8000)
+            }
+          );
+          if (fbRes.ok) {
+            const fbData = await fbRes.json().catch(() => ({}));
+            const fbText = (fbData?.candidates?.[0]?.content?.parts || []).map((pt) => pt?.text || '').join('').trim() || 'OK';
+            return {
+              ok: true,
+              model: `${modelName} (혼잡 시 ${fb} 자동전환)`,
+              transport: 'native',
+              reply: `키 인증 성공! ${fbText.slice(0, 20)} (${modelName} 구글 서버 일시 혼잡 → ${fb} 자동 대체)`
+            };
+          }
+        } catch {
+          // try next fallback
+        }
+      }
+      return {
+        ok: true,
+        model: modelName,
+        transport: 'native',
+        reply: `API 키 인증 통과! (현재 ${modelName} 구글 서버 일시 혼잡 503 — 잠시 후 자동 정상화)`
       };
     }
 
