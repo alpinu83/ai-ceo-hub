@@ -321,10 +321,12 @@ export function loadDb() {
 }
 
 let gistSyncTimer = null;
-let activeGistId = (process.env.GIST_BACKUP_ID || '').trim();
-let cloudBackupState = { enabled: false, restored: false, gistId: '', lastSyncAt: null, error: '' };
-const GIST_FILENAME = 'ceo-office-db.json';
-const GIST_DESCRIPTION = 'CEO Office (ai-ceo-hub) Private Cloud Backup';
+let activeGistId = '';
+let cachedBackupKey = null;
+let cloudBackupState = { enabled: false, restored: false, encrypted: true, purgedLegacyCount: 0, gistId: '', lastSyncAt: null, error: '' };
+const GIST_ENC_FILENAME = 'ceo-office-db.enc.json';
+const LEGACY_GIST_FILENAME = 'ceo-office-db.json';
+const GIST_DESCRIPTION = 'CEO Office (ai-ceo-hub) Encrypted Cloud Backup';
 
 function getGistHeaders() {
   return {
@@ -339,10 +341,65 @@ function isGistTokenSet() {
   return Boolean(process.env.GITHUB_GIST_TOKEN && process.env.GITHUB_GIST_TOKEN.trim());
 }
 
+function getBackupEncryptionKey() {
+  if (cachedBackupKey) return cachedBackupKey;
+  const secret = (process.env.BACKUP_ENCRYPTION_KEY || process.env.GITHUB_GIST_TOKEN || '').trim();
+  if (!secret) return null;
+  cachedBackupKey = crypto.scryptSync(secret, 'ai-ceo-hub-aes256gcm-v1', 32);
+  return cachedBackupKey;
+}
+
+export function encryptBackupPayload(plainJson) {
+  const key = getBackupEncryptionKey();
+  if (!key) throw new Error('Backup encryption key unavailable');
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const enc = Buffer.concat([cipher.update(String(plainJson), 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return JSON.stringify(
+    {
+      format: 'ai-ceo-hub-enc-v1',
+      alg: 'aes-256-gcm',
+      iv: iv.toString('base64'),
+      tag: tag.toString('base64'),
+      ciphertext: enc.toString('base64')
+    },
+    null,
+    2
+  );
+}
+
+export function decryptBackupPayload(rawText) {
+  const env = JSON.parse(rawText);
+  if (env?.format !== 'ai-ceo-hub-enc-v1' || !env.iv || !env.tag || !env.ciphertext) {
+    return null;
+  }
+  const key = getBackupEncryptionKey();
+  if (!key) throw new Error('Backup encryption key unavailable');
+  const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(env.iv, 'base64'));
+  decipher.setAuthTag(Buffer.from(env.tag, 'base64'));
+  const dec = Buffer.concat([
+    decipher.update(Buffer.from(env.ciphertext, 'base64')),
+    decipher.final()
+  ]);
+  return JSON.parse(dec.toString('utf8'));
+}
+
+async function readGistFileContent(fileObj, headers) {
+  let raw = fileObj?.content || '';
+  if (fileObj?.truncated && fileObj?.raw_url) {
+    const rawRes = await fetch(fileObj.raw_url, { headers });
+    if (rawRes.ok) raw = await rawRes.text();
+  }
+  return raw;
+}
+
 export function getCloudPersistenceStatus() {
   return {
     enabled: cloudBackupState.enabled,
     restored: cloudBackupState.restored,
+    encrypted: true,
+    purgedLegacyCount: cloudBackupState.purgedLegacyCount || 0,
     gistId: activeGistId ? `${activeGistId.slice(0, 6)}…${activeGistId.slice(-4)}` : '',
     lastSyncAt: cloudBackupState.lastSyncAt,
     error: cloudBackupState.error || ''
@@ -350,101 +407,183 @@ export function getCloudPersistenceStatus() {
 }
 
 /**
- * Free zero-data-loss persistence for Render Free Tier:
- * Needs ONLY GITHUB_GIST_TOKEN (GIST_BACKUP_ID is optional!).
- * Auto-discovers an existing private ceo-office-db.json Gist, or auto-creates one on first run.
+ * Encrypted zero-data-loss persistence for Render Free Tier:
+ * - Always encrypts full DB with AES-256-GCM (never stores plaintext secrets on GitHub Gist!)
+ * - Automatically detects & permanently DELETES any legacy plaintext ceo-office-db.json Gists
+ *   (wiping their revision history too) and rotates exposed Web Push VAPID keys.
  */
 export async function initCloudPersistence() {
   if (!isGistTokenSet()) {
-    cloudBackupState = { enabled: false, restored: false, gistId: '', lastSyncAt: null, error: '' };
+    cloudBackupState = { enabled: false, restored: false, encrypted: true, purgedLegacyCount: 0, gistId: '', lastSyncAt: null, error: '' };
     return cloudBackupState;
   }
   cloudBackupState.enabled = true;
   const headers = getGistHeaders();
 
   try {
-    // 1) If no GIST_BACKUP_ID is provided, auto-discover existing private backup Gist
-    if (!activeGistId) {
-      const listRes = await fetch('https://api.github.com/gists?per_page=30', { headers });
-      if (listRes.ok) {
-        const list = await listRes.json();
-        const found = Array.isArray(list) ? list.find((g) => g?.files?.[GIST_FILENAME]) : null;
-        if (found?.id) {
-          activeGistId = found.id;
-        }
-      }
+    // 1) Discover all gists owned by the token to locate encrypted backup and ANY legacy plaintext gists
+    const discovered = [];
+    const listRes = await fetch('https://api.github.com/gists?per_page=50', { headers });
+    if (listRes.ok) {
+      const list = await listRes.json();
+      if (Array.isArray(list)) discovered.push(...list);
     }
 
-    // 2) If found or provided, fetch & restore full DB from Gist
-    if (activeGistId) {
-      const res = await fetch(`https://api.github.com/gists/${encodeURIComponent(activeGistId)}`, { headers });
+    const envGistId = (process.env.GIST_BACKUP_ID || '').trim();
+    if (envGistId && !discovered.some((g) => g?.id === envGistId)) {
+      const oneRes = await fetch(`https://api.github.com/gists/${encodeURIComponent(envGistId)}`, { headers });
+      if (oneRes.ok) discovered.push(await oneRes.json());
+    }
+
+    const encGist = discovered.find((g) => g && g.public === false && g.files?.[GIST_ENC_FILENAME]);
+    const legacyGists = discovered.filter(
+      (g) =>
+        g &&
+        (g.files?.[LEGACY_GIST_FILENAME] || (g.public === true && g.files?.[GIST_ENC_FILENAME]))
+    );
+
+    let restoredDb = null;
+    let migratedFromPlaintext = false;
+
+    // 2) Prefer restoring from encrypted private Gist
+    if (encGist?.id) {
+      const res = await fetch(`https://api.github.com/gists/${encodeURIComponent(encGist.id)}`, { headers });
       if (res.ok) {
-        const gist = await res.json();
-        const fileObj = gist?.files?.[GIST_FILENAME];
-        let raw = fileObj?.content || '';
-        if (fileObj?.truncated && fileObj?.raw_url) {
-          const rawRes = await fetch(fileObj.raw_url, { headers });
-          if (rawRes.ok) raw = await rawRes.text();
-        }
+        const fullGist = await res.json();
+        const raw = await readGistFileContent(fullGist?.files?.[GIST_ENC_FILENAME], headers);
         if (raw) {
-          const parsed = JSON.parse(raw);
-          if (parsed && parsed.settings && Array.isArray(parsed.agents)) {
-            // App settings saved in Gist take priority! Only fall back to Render env vars when Gist value is empty/invalid.
-            if (!parsed.settings.providers?.gemini?.apiKey && process.env.GEMINI_API_KEY) {
-              parsed.settings.providers.gemini = parsed.settings.providers.gemini || { freeModel: 'gemini-2.5-flash' };
-              parsed.settings.providers.gemini.apiKey = process.env.GEMINI_API_KEY;
+          try {
+            const dec = decryptBackupPayload(raw);
+            if (dec && dec.settings && Array.isArray(dec.agents)) {
+              restoredDb = dec;
+              activeGistId = encGist.id;
             }
-            if (!parsed.settings.providers?.exaone?.apiKey && process.env.EXAONE_API_KEY) {
-              parsed.settings.providers.exaone.apiKey = process.env.EXAONE_API_KEY;
-            }
-            if (!parsed.settings.providers?.claude?.apiKey && process.env.ANTHROPIC_API_KEY) {
-              parsed.settings.providers.claude.apiKey = process.env.ANTHROPIC_API_KEY;
-            }
-            const validTgToken = (v) => /^\d+:[A-Za-z0-9_-]{20,}$/.test(String(v || '').trim().replace(/^bot/i, ''));
-            const validChatId = (v) => /^-?\d+$/.test(String(v || '').trim());
-            if (!validTgToken(parsed.settings.telegram?.botToken) && validTgToken(process.env.TELEGRAM_BOT_TOKEN)) {
-              parsed.settings.telegram.botToken = process.env.TELEGRAM_BOT_TOKEN.trim();
-            }
-            if (!validChatId(parsed.settings.telegram?.chatId) && validChatId(process.env.TELEGRAM_CHAT_ID)) {
-              parsed.settings.telegram.chatId = process.env.TELEGRAM_CHAT_ID.trim();
-            }
-            if (parsed.settings.telegram?.pollingEnabled === undefined && process.env.TELEGRAM_POLLING === 'true') {
-              parsed.settings.telegram.pollingEnabled = true;
-            }
-            if (process.env.MCP_TOKEN || process.env.RENDER_SERVICE_ID) {
-              parsed.settings.mcpToken = resolveStableMcpToken();
-            }
-            if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-            fs.writeFileSync(DB_PATH, JSON.stringify(parsed, null, 2), 'utf8');
-            cloudBackupState = { enabled: true, restored: true, gistId: activeGistId, lastSyncAt: new Date().toISOString(), error: '' };
-            console.log(`☁️  GitHub Gist cloud backup restored (${activeGistId})`);
-            return cloudBackupState;
+          } catch {
+            // corrupted or rotated key
           }
         }
       }
     }
 
-    // 3) No backup Gist exists yet → auto-create a private (secret) Gist right now!
-    const initialDb = loadDb();
-    const createRes = await fetch('https://api.github.com/gists', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        description: GIST_DESCRIPTION,
-        public: false,
-        files: {
-          [GIST_FILENAME]: { content: JSON.stringify(initialDb, null, 2) }
+    // 3) If no encrypted backup yet, restore from legacy plaintext Gist before permanently deleting it
+    if (!restoredDb && legacyGists.length > 0) {
+      for (const lg of legacyGists) {
+        const res = await fetch(`https://api.github.com/gists/${encodeURIComponent(lg.id)}`, { headers });
+        if (!res.ok) continue;
+        const fullGist = await res.json();
+        const fileObj = fullGist?.files?.[LEGACY_GIST_FILENAME];
+        const raw = await readGistFileContent(fileObj, headers);
+        if (!raw) continue;
+        try {
+          const parsed = JSON.parse(raw);
+          if (parsed && parsed.settings && Array.isArray(parsed.agents)) {
+            restoredDb = parsed;
+            migratedFromPlaintext = true;
+            break;
+          }
+        } catch {
+          // ignore
         }
-      })
-    });
-    if (createRes.ok) {
-      const created = await createRes.json();
-      activeGistId = created.id || '';
-      cloudBackupState = { enabled: true, restored: false, gistId: activeGistId, lastSyncAt: new Date().toISOString(), error: '' };
-      console.log(`☁️  Created new private GitHub Gist backup (${activeGistId})`);
+      }
+    }
+
+    // 4) Permanently DELETE every legacy plaintext / public Gist (destroys revision history too!)
+    let purgedCount = 0;
+    for (const lg of legacyGists) {
+      try {
+        const delRes = await fetch(`https://api.github.com/gists/${encodeURIComponent(lg.id)}`, {
+          method: 'DELETE',
+          headers
+        });
+        if (delRes.ok || delRes.status === 204 || delRes.status === 404) {
+          purgedCount += 1;
+          console.log(`🔒 Permanently deleted exposed legacy Gist (${lg.id})`);
+        }
+      } catch {
+        // non-fatal
+      }
+    }
+    cloudBackupState.purgedLegacyCount = purgedCount;
+
+    // 5) Apply restored DB + rotate exposed Web Push VAPID keys if migrated from plaintext
+    if (restoredDb) {
+      if (migratedFromPlaintext && restoredDb.settings?.webPush) {
+        // Force fresh VAPID keypair generation on startup since old private key was in plaintext Gist
+        restoredDb.settings.webPush = { publicKey: '', privateKey: '', subject: 'mailto:ceo@ai-ceo-hub.local' };
+        restoredDb.pushSubscriptions = [];
+      }
+      if (!restoredDb.settings.providers?.gemini?.apiKey && process.env.GEMINI_API_KEY) {
+        restoredDb.settings.providers.gemini = restoredDb.settings.providers.gemini || { freeModel: 'gemini-4-hydrogen' };
+        restoredDb.settings.providers.gemini.apiKey = process.env.GEMINI_API_KEY;
+      }
+      if (!restoredDb.settings.providers?.exaone?.apiKey && process.env.EXAONE_API_KEY) {
+        restoredDb.settings.providers.exaone.apiKey = process.env.EXAONE_API_KEY;
+      }
+      if (!restoredDb.settings.providers?.claude?.apiKey && process.env.ANTHROPIC_API_KEY) {
+        restoredDb.settings.providers.claude.apiKey = process.env.ANTHROPIC_API_KEY;
+      }
+      const validTgToken = (v) => /^\d+:[A-Za-z0-9_-]{20,}$/.test(String(v || '').trim().replace(/^bot/i, ''));
+      const validChatId = (v) => /^-?\d+$/.test(String(v || '').trim());
+      if (!validTgToken(restoredDb.settings.telegram?.botToken) && validTgToken(process.env.TELEGRAM_BOT_TOKEN)) {
+        restoredDb.settings.telegram.botToken = process.env.TELEGRAM_BOT_TOKEN.trim();
+      }
+      if (!validChatId(restoredDb.settings.telegram?.chatId) && validChatId(process.env.TELEGRAM_CHAT_ID)) {
+        restoredDb.settings.telegram.chatId = process.env.TELEGRAM_CHAT_ID.trim();
+      }
+      if (restoredDb.settings.telegram?.pollingEnabled === undefined && process.env.TELEGRAM_POLLING === 'true') {
+        restoredDb.settings.telegram.pollingEnabled = true;
+      }
+      if (process.env.MCP_TOKEN || process.env.RENDER_SERVICE_ID) {
+        restoredDb.settings.mcpToken = resolveStableMcpToken();
+      }
+      if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+      fs.writeFileSync(DB_PATH, JSON.stringify(restoredDb, null, 2), 'utf8');
+    }
+
+    // 6) Ensure an encrypted private Gist exists (create one if none yet or if we migrated from legacy)
+    if (!activeGistId) {
+      const currentDb = loadDb();
+      const encryptedContent = encryptBackupPayload(JSON.stringify(currentDb));
+      const createRes = await fetch('https://api.github.com/gists', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          description: GIST_DESCRIPTION,
+          public: false,
+          files: {
+            [GIST_ENC_FILENAME]: { content: encryptedContent }
+          }
+        })
+      });
+      if (createRes.ok) {
+        const created = await createRes.json();
+        activeGistId = created.id || '';
+        cloudBackupState = {
+          enabled: true,
+          restored: Boolean(restoredDb),
+          encrypted: true,
+          purgedLegacyCount: purgedCount,
+          gistId: activeGistId,
+          lastSyncAt: new Date().toISOString(),
+          error: ''
+        };
+        console.log(`🔒 Created new AES-256-GCM encrypted secret Gist (${activeGistId})`);
+        return cloudBackupState;
+      }
+      cloudBackupState.error = `Gist init HTTP ${createRes.status}`;
       return cloudBackupState;
     }
-    cloudBackupState.error = `Gist init HTTP ${createRes.status}`;
+
+    cloudBackupState = {
+      enabled: true,
+      restored: Boolean(restoredDb),
+      encrypted: true,
+      purgedLegacyCount: purgedCount,
+      gistId: activeGistId,
+      lastSyncAt: new Date().toISOString(),
+      error: ''
+    };
+    console.log(`🔒 Encrypted GitHub Gist backup ready (${activeGistId})`);
     return cloudBackupState;
   } catch (err) {
     cloudBackupState.error = err.message;
@@ -452,15 +591,16 @@ export async function initCloudPersistence() {
   }
 }
 
-async function patchGistContent(serialized) {
+async function patchGistContent(plainSerialized) {
   if (!isGistTokenSet() || !activeGistId) return false;
   try {
+    const encryptedContent = encryptBackupPayload(plainSerialized);
     const res = await fetch(`https://api.github.com/gists/${encodeURIComponent(activeGistId)}`, {
       method: 'PATCH',
       headers: getGistHeaders(),
       body: JSON.stringify({
         files: {
-          [GIST_FILENAME]: { content: serialized }
+          [GIST_ENC_FILENAME]: { content: encryptedContent }
         }
       })
     });

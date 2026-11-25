@@ -76,7 +76,8 @@ const HIRE_PRESETS = {
 
 const VIEW_META = {
   command: { title: '홈', subtitle: '' },
-  missions: { title: '업무', subtitle: '' },
+  projects: { title: '프로젝트', subtitle: '' },
+  missions: { title: '일반 업무', subtitle: '' },
   office: { title: '회의실', subtitle: '' },
   approvals: { title: '결재함', subtitle: '' },
   roster: { title: 'AI 팀', subtitle: '' },
@@ -434,43 +435,18 @@ function renderHomeView() {
 }
 
 function renderCommandView() {
-  const kindBar = document.getElementById('mission-kind-bar');
   const tabsBar = document.getElementById('mission-tabs-bar');
   const allMissions = state.missions || [];
-  const projectList = allMissions.filter((m) => m.mode === 'project');
-  const oneOffList = allMissions.filter((m) => m.mode !== 'project');
-
-  if (kindBar) {
-    const kinds = [
-      { key: 'all', label: '전체', count: allMissions.length },
-      { key: 'project', label: '지속 프로젝트', count: projectList.length },
-      { key: 'one_off', label: '일반 업무', count: oneOffList.length }
-    ];
-    kindBar.innerHTML = kinds
-      .map(
-        (k) => `<button type="button" class="filter-chip ${missionKindFilter === k.key ? 'active' : ''}" data-mission-kind="${k.key}">
-          <span>${k.label}</span>
-          <span class="mono">${k.count}</span>
-        </button>`
-      )
-      .join('');
-  }
-
-  const visibleMissions =
-    missionKindFilter === 'project'
-      ? projectList
-      : missionKindFilter === 'one_off'
-        ? oneOffList
-        : allMissions;
+  const isProjectsMenu = currentView === 'projects' || missionKindFilter === 'project';
+  const visibleMissions = isProjectsMenu
+    ? allMissions.filter((m) => m.mode === 'project')
+    : allMissions.filter((m) => m.mode !== 'project');
 
   if (visibleMissions.length === 0) {
     tabsBar.innerHTML = '';
-    const emptyMsg =
-      missionKindFilter === 'project'
-        ? '지속 프로젝트가 없습니다. 홈에서 "지속 프로젝트"로 지시하거나 기존 업무에서 "프로젝트 전환"을 눌러보세요.'
-        : missionKindFilter === 'one_off'
-          ? '일반 업무가 없습니다.'
-          : '진행 중인 업무가 없습니다. 홈에서 새 지시를 내려보세요.';
+    const emptyMsg = isProjectsMenu
+      ? '진행 중인 프로젝트가 없습니다. 홈에서 "프로젝트"를 선택해 지시하거나 일반 업무에서 "프로젝트 전환"을 눌러보세요.'
+      : '진행 중인 일반 업무가 없습니다. 홈에서 새 지시를 내려보세요.';
     document.getElementById('active-mission-container').innerHTML = `<div class="empty-state">${emptyMsg}</div>`;
   } else {
     if (!visibleMissions.some((m) => m.id === selectedMissionId)) {
@@ -530,7 +506,7 @@ function renderActiveMission(mission) {
           <div class="mission-meta-row">
             ${
               isProject
-                ? `<span class="badge badge-blue">지속 프로젝트 · Phase ${currentPhase}</span>`
+                ? `<span class="badge badge-blue">프로젝트 · Phase ${currentPhase}</span>`
                 : `<span class="badge badge-neutral">${esc(DOMAIN_LABELS[mission.domain] || mission.domain)}</span>`
             }
             <span class="badge badge-green">총괄 팀장: ${esc(lead?.name || '팀장')}</span>
@@ -554,7 +530,7 @@ function renderActiveMission(mission) {
               : ''
           }
           <button type="button" class="btn btn-ghost btn-sm" id="btn-toggle-project-mode" data-mission-id="${esc(mission.id)}" data-next-mode="${isProject ? 'one_off' : 'project'}">
-            ${isProject ? '단발 전환' : '프로젝트 전환'}
+            ${isProject ? '일반 업무 전환' : '프로젝트 전환'}
           </button>
           <button type="button" class="btn btn-ghost btn-sm" id="btn-open-office-mission">
             <i data-lucide="messages-square" class="icon-xs"></i>
@@ -1518,12 +1494,21 @@ function setOfficeMobileTab() {
 
 function switchView(viewName) {
   currentView = viewName;
+  if (viewName === 'projects') missionKindFilter = 'project';
+  else if (viewName === 'missions') missionKindFilter = 'one_off';
+
+  const domViewId = viewName === 'projects' ? 'missions' : viewName;
   document.querySelectorAll('.nav-item, .mobile-nav-item, .nav-gear-btn').forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.view === viewName);
   });
   document.querySelectorAll('.view').forEach((sec) => {
-    sec.classList.toggle('active', sec.id === `view-${viewName}`);
+    sec.classList.toggle('active', sec.id === `view-${domViewId}`);
   });
+  if (viewName === 'projects' || viewName === 'missions') {
+    missionStatusFilter = 'all';
+    if (state) renderCommandView();
+    refreshIcons();
+  }
   closeMobileSidebar();
   closeParticipantsDrawer();
   renderChrome();
@@ -1637,7 +1622,7 @@ function bindEvents() {
       document.getElementById('input-mission-title').value = '';
       document.getElementById('input-directive').value = '';
       renderAll();
-      switchView('missions');
+      switchView(res.mission.mode === 'project' ? 'projects' : 'missions');
       toast(res.deduplicated ? '이미 접수된 지시입니다.' : `팀장이 ${res.tasks.length}개 업무로 분배했습니다.`);
     } catch (err) {
       toast(err.message, true);
@@ -1692,9 +1677,8 @@ function bindEvents() {
     if (target.dataset.openMissionBoard) {
       selectedMissionId = target.dataset.openMissionBoard;
       officeMissionFilter = target.dataset.openMissionBoard;
-      renderCommandView();
-      switchView('missions');
-      refreshIcons();
+      const mObj = state.missions.find((m) => m.id === selectedMissionId);
+      switchView(mObj?.mode === 'project' ? 'projects' : 'missions');
       return;
     }
 

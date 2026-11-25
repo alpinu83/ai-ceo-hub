@@ -14,7 +14,7 @@
   <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png" />
   <link rel="apple-touch-icon" href="./icons/icon-192.png" />
   <link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" />
-  <link rel="stylesheet" href="./styles.css?v=20261124m" />
+  <link rel="stylesheet" href="./styles.css?v=20261124s" />
   <script src="./vendor/marked.umd.js" defer></script>
   <script src="./vendor/lucide.min.js" defer></script>
 </head>
@@ -34,8 +34,11 @@
         <button class="nav-item active" data-view="command" id="nav-command">
           <span class="nav-left"><i data-lucide="home" class="icon-sm"></i><span>홈</span></span>
         </button>
+        <button class="nav-item" data-view="projects" id="nav-projects">
+          <span class="nav-left"><i data-lucide="folder" class="icon-sm"></i><span>프로젝트</span></span>
+        </button>
         <button class="nav-item" data-view="missions" id="nav-missions">
-          <span class="nav-left"><i data-lucide="clipboard-list" class="icon-sm"></i><span>업무</span></span>
+          <span class="nav-left"><i data-lucide="clipboard-list" class="icon-sm"></i><span>일반 업무</span></span>
         </button>
         <button class="nav-item" data-view="office" id="nav-office">
           <span class="nav-left"><i data-lucide="messages-square" class="icon-sm"></i><span>회의실</span></span>
@@ -121,8 +124,8 @@
                 </div>
                 <div class="composer-send-group">
                   <select id="input-mission-mode" class="assignee-select" aria-label="업무 유형">
-                    <option value="one_off">단발 업무</option>
-                    <option value="project">지속 프로젝트</option>
+                    <option value="one_off">일반 업무</option>
+                    <option value="project">프로젝트</option>
                   </select>
                   <button type="button" class="icon-btn voice-btn" id="btn-voice-directive" title="음성 지시" aria-label="음성 지시">
                     <i data-lucide="mic" class="icon-sm"></i>
@@ -167,7 +170,7 @@
             <div class="card">
               <div class="card-head">
                 <h2 class="card-title">결재 대기</h2>
-                <button type="button" class="text-link" data-jump-view="approvals">전체 보기</button>
+                <button type="button" class="text-link" data-jump-view="approvals">전체</button>
               </div>
               <div id="home-approvals-list" class="clean-stack"></div>
             </div>
@@ -175,7 +178,7 @@
             <div class="card">
               <div class="card-head">
                 <h2 class="card-title">진행 미션</h2>
-                <button type="button" class="text-link" data-jump-view="missions">보드 열기</button>
+                <button type="button" class="text-link" data-jump-view="projects">프로젝트</button>
               </div>
               <div id="home-missions-list" class="clean-stack"></div>
               <div id="home-chat-teaser" class="chat-teaser-wrap"></div>
@@ -183,11 +186,10 @@
           </div>
         </section>
 
-        <!-- 2. MISSIONS BOARD -->
-        <section class="view" id="view-missions" aria-label="업무">
+        <!-- 2. PROJECTS & MISSIONS VIEW -->
+        <section class="view" id="view-missions" aria-label="프로젝트 및 일반 업무">
           <div class="mission-layout">
             <div class="mission-main">
-              <div class="task-filter-bar" id="mission-kind-bar" role="tablist" aria-label="업무 유형 필터"></div>
               <div class="mission-toolbar">
                 <div class="mission-tabs-bar" id="mission-tabs-bar"></div>
                 <div class="segmented" role="tablist">
@@ -616,10 +618,13 @@
     </div>
   </div>
 
-  <!-- Mobile Bottom Navigation (4 Core Tabs — Settings is corner gear icon) -->
+  <!-- Mobile Bottom Navigation (5 Core Tabs) -->
   <nav class="mobile-bottom-nav" aria-label="하단 메뉴">
     <button type="button" class="mobile-nav-item active" data-view="command">
       <i data-lucide="home" class="icon-sm"></i><span>홈</span>
+    </button>
+    <button type="button" class="mobile-nav-item" data-view="projects">
+      <i data-lucide="folder" class="icon-sm"></i><span>프로젝트</span>
     </button>
     <button type="button" class="mobile-nav-item" data-view="missions">
       <i data-lucide="clipboard-list" class="icon-sm"></i><span>업무</span>
@@ -634,6 +639,6 @@
   </nav>
 
   <div class="toast-region" id="toast-region" aria-live="polite"></div>
-  <script type="module" src="./app.js?v=20261124r"></script>
+  <script type="module" src="./app.js?v=20261124s"></script>
 </body>
 </html>
