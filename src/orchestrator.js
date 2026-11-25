@@ -88,15 +88,51 @@ function resolveLanguageModel(agent, settings) {
     return { model: anthropic(modelName), label: `claude:${modelName}` };
   }
 
+function createOpenAiModelFallbackFetch(fallbackModels = []) {
+  return async (url, init) => {
+    const res = await fetch(url, init);
+    if (res.ok || ![400, 404, 429, 502, 503].includes(res.status) || !init?.body || typeof init.body !== 'string') {
+      return res;
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(init.body);
+    } catch {
+      return res;
+    }
+    if (!parsed?.model) return res;
+    for (const fb of fallbackModels) {
+      if (!fb || fb === parsed.model) continue;
+      try {
+        const fbRes = await fetch(url, {
+          ...init,
+          body: JSON.stringify({ ...parsed, model: fb })
+        });
+        if (fbRes.ok) return fbRes;
+      } catch {
+        // try next fallback
+      }
+    }
+    return res;
+  };
+}
+
   if (agent.provider === 'groq') {
     const groqCfg = providers.groq;
     if (groqCfg?.apiKey) {
       const client = createOpenAI({
         baseURL: groqCfg.baseUrl || 'https://api.groq.com/openai/v1',
         apiKey: groqCfg.apiKey.trim(),
-        compatibility: 'compatible'
+        compatibility: 'compatible',
+        fetch: createOpenAiModelFallbackFetch(['openai/gpt-oss-120b', 'openai/gpt-oss-20b'])
       });
-      const modelName = agent.modelId || groqCfg.model || 'llama-3.3-70b-versatile';
+      const rawModel = agent.modelId || groqCfg.model || 'openai/gpt-oss-120b';
+      const modelName =
+        rawModel === 'llama-3.3-70b-versatile'
+          ? 'openai/gpt-oss-120b'
+          : rawModel === 'qwen/qwen3-32b'
+            ? 'qwen/qwen3.8-27b'
+            : rawModel;
       return { model: client(modelName), label: `groq:${modelName}` };
     }
     const orCfg = providers.openrouter;
@@ -105,10 +141,10 @@ function resolveLanguageModel(agent, settings) {
         baseURL: orCfg.baseUrl || 'https://openrouter.ai/api/v1',
         apiKey: orCfg.apiKey.trim(),
         compatibility: 'compatible',
-        headers: { 'HTTP-Referer': 'https://ai-ceo-hub.onrender.com', 'X-Title': 'CEO Office' }
+        headers: { 'HTTP-Referer': 'https://ai-ceo-hub.onrender.com', 'X-Title': 'CEO Office' },
+        fetch: createOpenAiModelFallbackFetch(['openrouter/free'])
       });
-      const fbModel = agent.id === 'agent_qwen' ? 'qwen/qwen3-coder:free' : (orCfg.model || 'openrouter/free');
-      return { model: client(fbModel), label: `openrouter:${fbModel}` };
+      return { model: client('openrouter/free'), label: 'openrouter:openrouter/free' };
     }
     return null;
   }
@@ -123,9 +159,14 @@ function resolveLanguageModel(agent, settings) {
         headers: {
           'HTTP-Referer': 'https://ai-ceo-hub.onrender.com',
           'X-Title': 'CEO Office'
-        }
+        },
+        fetch: createOpenAiModelFallbackFetch(['openrouter/free', 'nvidia/nemotron-3.5-super-vl:free'])
       });
-      const modelName = agent.modelId || orCfg.model || 'openrouter/free';
+      const rawModel = agent.modelId || orCfg.model || 'openrouter/free';
+      const modelName =
+        rawModel === 'deepseek/deepseek-r1:free' || rawModel === 'qwen/qwen3-coder:free'
+          ? 'nvidia/nemotron-3-ultra-550b-a55b:free'
+          : rawModel;
       return { model: client(modelName), label: `openrouter:${modelName}` };
     }
     const groqCfg = providers.groq;
@@ -133,10 +174,10 @@ function resolveLanguageModel(agent, settings) {
       const client = createOpenAI({
         baseURL: groqCfg.baseUrl || 'https://api.groq.com/openai/v1',
         apiKey: groqCfg.apiKey.trim(),
-        compatibility: 'compatible'
+        compatibility: 'compatible',
+        fetch: createOpenAiModelFallbackFetch(['openai/gpt-oss-120b', 'openai/gpt-oss-20b'])
       });
-      const fbModel = groqCfg.model || 'openai/gpt-oss-120b';
-      return { model: client(fbModel), label: `groq:${fbModel}` };
+      return { model: client('openai/gpt-oss-120b'), label: 'groq:openai/gpt-oss-120b' };
     }
     return null;
   }

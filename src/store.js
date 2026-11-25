@@ -117,60 +117,60 @@ export function createDefaultState() {
       },
       {
         id: 'agent_deepseek',
-        name: 'DeepSeek R1',
-        shortCode: 'DS',
-        roleTitle: '심층 추론·전략·수익 분석 팀원 (무료 API)',
+        name: 'Nemotron 3 Ultra (OR)',
+        shortCode: 'NM',
+        roleTitle: '심층 추론·전략·수익 분석 팀원 (OpenRouter 무료 550B)',
         tier: 'specialist',
         reportsTo: 'agent_gemini_neon',
         provider: 'openrouter',
-        modelId: 'deepseek/deepseek-r1:free',
+        modelId: 'nvidia/nemotron-3-ultra-550b-a55b:free',
         connectionMode: 'api',
         costTier: 'free',
         appUrl: 'https://openrouter.ai',
         monthlyCapKRW: 0,
         spentKRW: 0,
         domains: ['business', 'dev'],
-        strengths: 'OpenRouter 무료 DeepSeek R1 추론 엔진으로 복잡한 수익 모델 설계, 데이터 분석, 리스크 검증 수행',
-        bridgeGuide: 'OpenRouter 무료 API 키(sk-or-v1-…)를 저장하면 0원으로 자동 실행됩니다. (Groq 키만 있어도 자동 대체)',
+        strengths: 'OpenRouter 무료 1위 550B 추론 엔진(Nemotron 3 Ultra · 자동 openrouter/free 백업)으로 수익 모델 설계, 데이터 분석, 리스크 검증 수행',
+        bridgeGuide: 'OpenRouter 무료 API 키(sk-or-v1-…)를 저장하면 0원으로 자동 실행됩니다.',
         active: true,
         accent: '#2563EB'
       },
       {
         id: 'agent_qwen',
-        name: 'Qwen3',
+        name: 'Qwen 3.8 (Groq)',
         shortCode: 'QW',
-        roleTitle: '코딩·웹개발·자동화 전문 팀원 (무료 API)',
+        roleTitle: '코딩·웹개발·자동화 전문 팀원 (Groq 무료)',
         tier: 'specialist',
         reportsTo: 'agent_gemini_neon',
         provider: 'groq',
-        modelId: 'qwen/qwen3-32b',
+        modelId: 'qwen/qwen3.8-27b',
         connectionMode: 'api',
         costTier: 'free',
         appUrl: 'https://console.groq.com',
         monthlyCapKRW: 0,
         spentKRW: 0,
         domains: ['dev', 'business'],
-        strengths: 'Groq(Qwen3 32B) 및 OpenRouter(Qwen3 Coder 무료)로 코드 작성, SEO·웹사이트 개선, 자동화 스크립트 구현',
-        bridgeGuide: 'Groq 또는 OpenRouter 무료 API 키 중 하나만 저장하면 0원으로 자동 실행됩니다.',
+        strengths: 'Groq 최신 무료 Qwen 3.8 27B로 코드 작성, SEO·웹사이트 개선, 자동화 스크립트 구현',
+        bridgeGuide: 'Groq 무료 API 키(gsk_…)를 저장하면 0원으로 자동 실행됩니다.',
         active: true,
         accent: '#6D28D9'
       },
       {
         id: 'agent_groq',
-        name: 'Llama 3.3 (Groq)',
-        shortCode: 'LL',
-        roleTitle: '초고속 기획·마케팅·문서 팀원 (무료 API)',
+        name: 'GPT-OSS 120B (Groq)',
+        shortCode: 'GQ',
+        roleTitle: '초고속 기획·마케팅·문서 팀원 (Groq 무료)',
         tier: 'specialist',
         reportsTo: 'agent_gemini_neon',
         provider: 'groq',
-        modelId: 'llama-3.3-70b-versatile',
+        modelId: 'openai/gpt-oss-120b',
         connectionMode: 'api',
         costTier: 'free',
         appUrl: 'https://console.groq.com',
         monthlyCapKRW: 0,
         spentKRW: 0,
         domains: ['business', 'content', 'dev'],
-        strengths: 'Groq 초고속 무료 API(Llama 3.3 70B)로 콘텐츠 기획, 마케팅 카피, 구조화 초안을 초단위로 작성',
+        strengths: 'Groq 초고속 무료 API(GPT-OSS 120B · 500t/s)로 콘텐츠 기획, 마케팅 카피, 구조화 초안을 초단위로 작성',
         bridgeGuide: 'Groq 무료 API 키(gsk_…)를 설정에 저장하면 즉시 0원으로 자동 실행됩니다.',
         active: true,
         accent: '#C2410C'
@@ -345,13 +345,31 @@ export function loadDb() {
             reportsTo: 'ceo'
           };
         }
-        if (a.id === 'agent_groq' && a.name === 'Groq') {
+        if (a.id === 'agent_groq' && (a.name === 'Groq' || a.modelId === 'llama-3.3-70b-versatile')) {
           return {
             ...a,
-            name: 'Llama 3.3 (Groq)',
-            shortCode: 'LL',
-            roleTitle: '초고속 기획·마케팅·문서 팀원 (무료 API)',
-            modelId: 'llama-3.3-70b-versatile'
+            name: 'GPT-OSS 120B (Groq)',
+            shortCode: 'GQ',
+            roleTitle: '초고속 기획·마케팅·문서 팀원 (Groq 무료)',
+            modelId: 'openai/gpt-oss-120b'
+          };
+        }
+        if (a.id === 'agent_qwen' && a.modelId === 'qwen/qwen3-32b') {
+          return {
+            ...a,
+            name: 'Qwen 3.8 (Groq)',
+            shortCode: 'QW',
+            roleTitle: '코딩·웹개발·자동화 전문 팀원 (Groq 무료)',
+            modelId: 'qwen/qwen3.8-27b'
+          };
+        }
+        if (a.id === 'agent_deepseek' && a.modelId === 'deepseek/deepseek-r1:free') {
+          return {
+            ...a,
+            name: 'Nemotron 3 Ultra (OR)',
+            shortCode: 'NM',
+            roleTitle: '심층 추론·전략·수익 분석 팀원 (OpenRouter 무료 550B)',
+            modelId: 'nvidia/nemotron-3-ultra-550b-a55b:free'
           };
         }
         return {
