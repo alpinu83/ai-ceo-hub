@@ -673,6 +673,17 @@
                   <input type="checkbox" id="tg-polling-enabled" />
                   <span>비서 알림 활성화 — <strong>결재 필요 · 특이점(오류/이상) 발생 시에만</strong> 조용히 연락 (<code>/status</code>, <code>/order</code> 지원)</span>
                 </label>
+                <div class="provider-head" style="margin-top:14px;"><h3>알림 종류 · 방해금지</h3></div>
+                <label class="checkbox-row" style="margin-top:6px;"><input type="checkbox" id="tg-notify-reports" /><span>팀장 보고 받기 (완료 보고·점검·배포 결과·정기 마감)</span></label>
+                <label class="checkbox-row" style="margin-top:6px;"><input type="checkbox" id="tg-notify-approvals" /><span>결재 요청 카드 받기</span></label>
+                <label class="checkbox-row" style="margin-top:6px;"><input type="checkbox" id="tg-notify-alerts" /><span>특이점(오류·실패) 알림 받기</span></label>
+                <label class="checkbox-row" style="margin-top:10px;"><input type="checkbox" id="tg-quiet-enabled" /><span>방해금지 시간 사용 (그 사이 알림은 모아두었다가 끝나면 요약해서 보냄)</span></label>
+                <div class="form-row-two" style="margin-top:8px;">
+                  <label class="field"><span class="field-label">시작 (한국 시간)</span><input type="time" id="tg-quiet-start" /></label>
+                  <label class="field"><span class="field-label">끝</span><input type="time" id="tg-quiet-end" /></label>
+                </div>
+                <label class="checkbox-row" style="margin-top:6px;"><input type="checkbox" id="tg-quiet-urgent" /><span>방해금지 중에도 특이점(오류·실패) 알림은 바로 받기</span></label>
+                <p class="field-label" style="margin:6px 0 0;">텔레그램에서도 바꿀 수 있어요: <code>/report on|off</code> · <code>/quiet 23:00-08:00</code> · <code>/quiet off</code> · <code>/notify</code></p>
                 <div class="form-actions">
                   <span></span>
                   <button type="submit" class="btn btn-primary">저장</button>
@@ -697,16 +708,40 @@
                   <span>총괄 팀장 <strong>완료 보고 · 정기 점검</strong> 켜기 (작업이 끝나면 물어보기 전에 보고)</span>
                 </label>
                 <label class="checkbox-row" style="margin-top:6px;">
-                  <input type="checkbox" id="set-lead-telegram" />
-                  <span>팀장 보고를 텔레그램으로도 받기</span>
-                </label>
-                <label class="checkbox-row" style="margin-top:6px;">
                   <input type="checkbox" id="set-lead-autofollow" />
-                  <span>끝난 업무는 팀장이 다음 단계를 스스로 배정·실행 (결제·외부 발송·배포는 계속 결재)</span>
+                  <span>단계가 끝나면 팀장이 스스로 다음 단계를 추진</span>
+                </label>
+                <label class="field" style="margin-top:8px;">
+                  <span class="field-label">다음 단계 추진 방식</span>
+                  <select id="set-lead-advance">
+                    <option value="propose">제안서를 결재에 올리기 (승인하면 착수)</option>
+                    <option value="auto">팀장 전결로 바로 후속 작업 실행</option>
+                  </select>
                 </label>
                 <div class="form-row-two" style="margin-top:10px;">
                   <label class="field"><span class="field-label">대표님 개입 없이 이어갈 라운드 수 (0~5)</span><input type="number" id="set-lead-maxrounds" min="0" max="5" /></label>
                   <label class="field"><span class="field-label">정기 점검 간격(분)</span><input type="number" id="set-lead-interval" min="10" max="1440" /></label>
+                </div>
+
+                <div class="provider-head" style="margin-top:18px;"><h3>AI 스킬 · 품질 검수</h3></div>
+                <p class="field-label" style="margin:6px 0 8px;">작업 유형에 맞는 스킬(절차·출력 형식·자체 점검표)을 골라 AI에게 주입합니다. 중요한 작업은 다른 무료 모델이 채점하고, 기준 미달이면 고쳐 씁니다.</p>
+                <label class="checkbox-row"><input type="checkbox" id="skills-enabled" /><span>스킬 주입 사용</span></label>
+                <div class="form-row-two" style="margin-top:8px;">
+                  <label class="field"><span class="field-label">교차 검수</span>
+                    <select id="skills-review-mode">
+                      <option value="important">중요한 작업만 (코드·보안·세금·전략·결재 건)</option>
+                      <option value="always">모든 작업 (무료 한도 많이 사용)</option>
+                      <option value="off">끄기</option>
+                    </select>
+                  </label>
+                  <label class="field"><span class="field-label">통과 점수 (10점 만점)</span><input type="number" id="skills-min-score" min="1" max="10" /></label>
+                </div>
+                <ul id="skills-list" style="list-style:none;padding:0;margin:10px 0 0;"></ul>
+                <div style="display:grid;gap:6px;margin-top:10px;">
+                  <input type="text" id="skill-new-name" placeholder="새 스킬 이름 (예: 우리 브랜드 톤)" />
+                  <input type="text" id="skill-new-keywords" placeholder="적용 키워드, 쉼표로 구분 (비우면 항상 적용)" />
+                  <textarea id="skill-new-instructions" rows="4" placeholder="지침: 절차·형식·판단 기준을 번호로 적어 주세요" style="width:100%;font:inherit;resize:vertical;"></textarea>
+                  <div><button type="button" class="btn btn-ghost btn-sm" id="btn-skill-add">스킬 추가</button></div>
                 </div>
 
                 <div class="provider-head" style="margin-top:18px;">

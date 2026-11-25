@@ -1,6 +1,7 @@
 import { generateObject, generateText } from 'ai';
 import { z } from 'zod';
 import { resolveLanguageModel, resolveLiveBackendModel } from './orchestrator.js';
+import { selectSkills, renderSkills } from './skills.js';
 
 const PROTECTED_PATH_RE = /^(\.github\/|data\/db\.json$|data\/state\.json$|node_modules\/|\.env|package-lock\.json|public\/icons\/|public\/vendor\/)/i;
 const ALLOWED_EXT_RE = /\.(js|mjs|cjs|ts|tsx|jsx|html|css|json|md|yml|yaml|txt|xml|svg)$/i;
@@ -347,7 +348,9 @@ export async function runItMaintenancePipeline({
 - HTML/CSS/JS/JSON 파일 수정 시 문법 오류나 기존 기능 깨짐이 없도록 하세요.
 - 보안을 약화시키거나 비밀키를 코드에 하드코딩하지 마세요.
 - 팀 결정사항에 실제 파일에 없는 구조가 언급되어 있으면 지어내지 말고, 실제 코드에 맞는 부분만 구현하세요.
-- 큰 파일은 관련 부분만 발췌되어 있습니다. search 문자열은 발췌된 코드 안에서만 고르고, '/* ... (N자 위치) ... */' 표시는 search에 넣지 마세요.`,
+- 큰 파일은 관련 부분만 발췌되어 있습니다. search 문자열은 발췌된 코드 안에서만 고르고, '/* ... (N자 위치) ... */' 표시는 search에 넣지 마세요.
+
+${renderSkills(selectSkills({ task: { title: missionTitle || '', description: instruction, domain: 'it_ops' }, purpose: 'code_patch', settings, max: 2 }), { compact: true })}`,
     prompt: `[대상 저장소: ${cfg.repo}]\n[CEO 지시]\n${instruction}${teamBlock}\n\n[실제 저장소 소스 코드]\n${fileContext}`
   });
 
@@ -382,7 +385,9 @@ export async function runItMaintenancePipeline({
   try {
     const { object: secObj } = await generateObjectResilient(secModels, {
       schema: SecurityAuditSchema,
-      system: `당신은 GM Corporation IT 보안 감사관입니다. 아래 코드 수정(diff)이 보안 취약점(비밀키 노출, XSS/인젝션, 인증 우회, 치명적 문법 오류)을 유발하지 않는지 엄격히 검토하세요.`,
+      system: `당신은 GM Corporation IT 보안 감사관입니다. 아래 코드 수정(diff)이 보안 취약점(비밀키 노출, XSS/인젝션, 인증 우회, 치명적 문법 오류)을 유발하지 않는지 엄격히 검토하세요.
+
+${renderSkills(selectSkills({ task: { title: '보안 감사', description: instruction }, purpose: 'security_audit', settings, max: 1 }), { compact: true })}`,
       prompt: `[대상 저장소: ${cfg.repo}]\n[보수 지시]\n${instruction}\n\n[코드 변경 내역]\n${diffSummary}`
     });
     audit = secObj;

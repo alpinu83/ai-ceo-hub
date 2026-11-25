@@ -180,6 +180,55 @@ async function runTests() {
     const followRes = await (await fetch(`${BASE}/api/lead/follow-up`, { method: 'POST' })).json();
     assert.equal(followRes.ok, true, 'team lead follow-up must run');
 
+    // 8c. AI skills: catalog, task-based selection, custom skill, review settings
+    const skillCat = await (await fetch(`${BASE}/api/skills`)).json();
+    assert.ok(skillCat.builtin.length >= 8, 'built-in skill library must be available');
+    const prevCode = await (
+      await fetch(`${BASE}/api/skills/preview`, {
+        method: 'POST',
+        headers: jsonHeaders,
+        body: JSON.stringify({ title: '푸터 저작권 문구 추가', description: 'HTML 푸터 코드 수정', agentId: 'agent_it_dev' })
+      })
+    ).json();
+    assert.ok(prevCode.skills.some((s) => s.id === 'code_patch'), 'code tasks must get the code_patch skill');
+    assert.ok(prevCode.skills.some((s) => s.id === 'core_operating'), 'core skill always applies');
+    const prevTax = await (
+      await fetch(`${BASE}/api/skills/preview`, {
+        method: 'POST',
+        headers: jsonHeaders,
+        body: JSON.stringify({ title: '양도소득세 계산기 세율 점검' })
+      })
+    ).json();
+    assert.ok(prevTax.skills.some((s) => s.id === 'korean_tax_accuracy'), 'tax tasks must get the tax accuracy skill');
+    const customRes = await (
+      await fetch(`${BASE}/api/skills/custom`, {
+        method: 'POST',
+        headers: jsonHeaders,
+        body: JSON.stringify({ name: '브랜드 톤', keywords: '블로그, 카피', instructions: '1. 존댓말 2. 문장은 짧게' })
+      })
+    ).json();
+    assert.ok(customRes.skill?.id, 'custom skill must be created');
+    const prevCustom = await (
+      await fetch(`${BASE}/api/skills/preview`, { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ title: '블로그 카피 작성' }) })
+    ).json();
+    assert.ok(prevCustom.skills.some((s) => s.id === customRes.skill.id), 'custom skill must be selected by its keywords');
+    const skillSet = await (
+      await fetch(`${BASE}/api/settings`, {
+        method: 'PUT',
+        headers: jsonHeaders,
+        body: JSON.stringify({
+          skills: { reviewMode: 'always', minScore: 9 },
+          leadEngine: { advanceMode: 'propose' },
+          telegram: { notify: { reports: false, quiet: { enabled: true, start: '23:00', end: '07:30' } } }
+        })
+      })
+    ).json();
+    assert.equal(skillSet.state.settings.skills.reviewMode, 'always', 'review mode must be saved');
+    assert.equal(skillSet.state.settings.leadEngine.advanceMode, 'propose', 'advance mode must be saved');
+    assert.equal(skillSet.state.settings.telegram.notify.reports, false, 'telegram report toggle must be saved');
+    assert.equal(skillSet.state.settings.telegram.notify.quiet.end, '07:30', 'quiet hours must be saved');
+    await fetch(`${BASE}/api/skills/custom/${customRes.skill.id}`, { method: 'DELETE' });
+
     const standupRes = await (
       await fetch(`${BASE}/api/missions/${created.mission.id}/standup`, { method: 'POST' })
     ).json();

@@ -66,6 +66,82 @@ export async function sendTelegramText(token, chatId, text, replyMarkup = undefi
   return { ok: true, messageId: result?.message_id };
 }
 
+// ================================================================
+// 알림 권한(gate): 보고/특이점/결재 요청별 켜기·끄기 + 방해금지 시간(KST)
+// 방해금지 중에는 보내지 않고 서버에 맡겨두었다가(defer) 끝나면 요약해서 보냅니다.
+// 대표님이 직접 보낸 메시지에 대한 답장·로그인 코드는 항상 바로 보냅니다.
+// ================================================================
+let deferHandler = null;
+export function setTelegramDeferHandler(fn) {
+  deferHandler = typeof fn === 'function' ? fn : null;
+}
+
+export function getTelegramNotifyPrefs(settings) {
+  const n = settings?.telegram?.notify || {};
+  const q = n.quiet || {};
+  return {
+    reports: n.reports !== false,
+    alerts: n.alerts !== false,
+    approvals: n.approvals !== false,
+    quiet: {
+      enabled: Boolean(q.enabled),
+      start: q.start || '23:00',
+      end: q.end || '08:00',
+      allowUrgent: Boolean(q.allowUrgent)
+    }
+  };
+}
+
+function hmToMinutes(s, def) {
+  const m = String(s || '').match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return def;
+  return (Number(m[1]) % 24) * 60 + Math.min(59, Number(m[2]));
+}
+
+export function isQuietNow(settings, date = new Date()) {
+  const { quiet } = getTelegramNotifyPrefs(settings);
+  if (!quiet.enabled) return false;
+  const start = hmToMinutes(quiet.start, 23 * 60);
+  const end = hmToMinutes(quiet.end, 8 * 60);
+  if (start === end) return false;
+  const kst = new Date(date.getTime() + 9 * 3600 * 1000);
+  const now = kst.getUTCHours() * 60 + kst.getUTCMinutes();
+  return start < end ? now >= start && now < end : now >= start || now < end;
+}
+
+/** returns 'send' | 'skip' | 'defer' */
+function gateTelegram(settings, kind, item = {}) {
+  const p = getTelegramNotifyPrefs(settings);
+  if (kind === 'report' && !p.reports) return 'skip';
+  if (kind === 'alert' && !p.alerts) return 'skip';
+  if (kind === 'approval' && !p.approvals) return 'skip';
+  if (isQuietNow(settings)) {
+    if (kind === 'alert' && p.quiet.allowUrgent) return 'send';
+    if (deferHandler) {
+      try {
+        deferHandler({ kind, ...item, at: new Date().toISOString() });
+      } catch {
+        // ignore
+      }
+    }
+    return 'defer';
+  }
+  return 'send';
+}
+
+/** Gated plain HTML message (e.g. routine reports) */
+export async function sendTelegramGated(settings, kind, html, title = '') {
+  const tg = settings?.telegram;
+  if (!isValidBotToken(tg?.botToken) || !isNumericChatId(tg?.chatId)) return { ok: false, skipped: true };
+  const g = gateTelegram(settings, kind, { title: title || String(html || '').replace(/<[^>]+>/g, '').slice(0, 80), body: String(html || '').replace(/<[^>]+>/g, ' ').slice(0, 600) });
+  if (g !== 'send') return { ok: true, [g === 'skip' ? 'skipped' : 'deferred']: true };
+  try {
+    return await sendTelegramText(tg.botToken, tg.chatId, html);
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
 const recentTelegramAlerts = new Map();
 const TELEGRAM_DEDUP_MS = 10 * 60 * 1000;
 
@@ -89,6 +165,8 @@ function shouldThrottleTelegram(dedupKey) {
 export async function sendTelegramReport(settings, title, body, dedupKey = '') {
   const tg = settings?.telegram;
   if (!isValidBotToken(tg?.botToken) || !isNumericChatId(tg?.chatId)) return { ok: false, skipped: true };
+  const g = gateTelegram(settings, 'report', { title, body: String(body || '').slice(0, 600) });
+  if (g !== 'send') return { ok: true, [g === 'skip' ? 'skipped' : 'deferred']: true };
   if (shouldThrottleTelegram(`report:${dedupKey || String(title || '').slice(0, 60)}`)) return { ok: true, deduplicated: true };
   const text = [`<b>📋 [팀장 보고] ${escapeHtml(title)}</b>`, '', escapeHtml(String(body || '').slice(0, 3200))].join('\n');
   try {
@@ -101,6 +179,8 @@ export async function sendTelegramReport(settings, title, body, dedupKey = '') {
 export async function sendTelegramAlert(settings, title, detail) {
   const tg = settings?.telegram;
   if (!isValidBotToken(tg?.botToken) || !isNumericChatId(tg?.chatId)) return { ok: false, skipped: true };
+  const g = gateTelegram(settings, 'alert', { title, body: String(detail || '').slice(0, 400) });
+  if (g !== 'send') return { ok: true, [g === 'skip' ? 'skipped' : 'deferred']: true };
   const dedupKey = `alert:${String(title || '').slice(0, 60)}`;
   if (shouldThrottleTelegram(dedupKey)) return { ok: true, deduplicated: true };
 
@@ -120,10 +200,14 @@ export async function sendTelegramAlert(settings, title, detail) {
   }
 }
 
-export async function sendTelegramApprovalCard(settings, approval, agentName, missionLabel = '') {
+export async function sendTelegramApprovalCard(settings, approval, agentName, missionLabel = '', { force = false } = {}) {
   const tg = settings?.telegram;
   if (!isValidBotToken(tg?.botToken) || !isNumericChatId(tg?.chatId)) return { ok: false, skipped: true };
-  if (approval?.id && shouldThrottleTelegram(`apr:${approval.id}`)) {
+  if (!force) {
+    const g = gateTelegram(settings, 'approval', { title: approval?.title || '', body: String(approval?.summary || '').slice(0, 300), approvalId: approval?.id || '' });
+    if (g !== 'send') return { ok: true, [g === 'skip' ? 'skipped' : 'deferred']: true };
+  }
+  if (!force && approval?.id && shouldThrottleTelegram(`apr:${approval.id}`)) {
     return { ok: true, deduplicated: true };
   }
 
@@ -312,6 +396,14 @@ export async function handleTelegramUpdate(update, callbacks) {
         ).catch(() => {});
         return { handled: true, command: '/order' };
       }
+    }
+
+    // 알림 설정 명령어: /notify, /report on|off, /quiet 23:00-08:00 | off
+    const notifyCmd = text.match(/^\/(notify|report|quiet)(?:@\S+)?\s*([\s\S]*)$/i);
+    if (notifyCmd && typeof callbacks.onNotifyCommand === 'function') {
+      const reply = await callbacks.onNotifyCommand(notifyCmd[1].toLowerCase(), notifyCmd[2] || '');
+      if (reply) await sendTelegramText(tg.botToken, chatId, reply).catch(() => {});
+      return { handled: true, command: `/${notifyCmd[1].toLowerCase()}` };
     }
 
     // 자유 대화: 명령어가 아닌 메시지는 회의실 발언과 똑같이 처리(지시면 실제 업무 등록, 질문이면 팀장이 답변)
