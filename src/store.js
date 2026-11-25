@@ -116,21 +116,61 @@ export function createDefaultState() {
         accent: '#0E6245'
       },
       {
-        id: 'agent_groq',
-        name: 'Groq',
-        shortCode: 'GQ',
-        roleTitle: '초고속 분석·기획·개발 팀원 (무료 API)',
+        id: 'agent_deepseek',
+        name: 'DeepSeek R1',
+        shortCode: 'DS',
+        roleTitle: '심층 추론·전략·수익 분석 팀원 (무료 API)',
+        tier: 'specialist',
+        reportsTo: 'agent_gemini_neon',
+        provider: 'openrouter',
+        modelId: 'deepseek/deepseek-r1:free',
+        connectionMode: 'api',
+        costTier: 'free',
+        appUrl: 'https://openrouter.ai',
+        monthlyCapKRW: 0,
+        spentKRW: 0,
+        domains: ['business', 'dev'],
+        strengths: 'OpenRouter 무료 DeepSeek R1 추론 엔진으로 복잡한 수익 모델 설계, 데이터 분석, 리스크 검증 수행',
+        bridgeGuide: 'OpenRouter 무료 API 키(sk-or-v1-…)를 저장하면 0원으로 자동 실행됩니다. (Groq 키만 있어도 자동 대체)',
+        active: true,
+        accent: '#2563EB'
+      },
+      {
+        id: 'agent_qwen',
+        name: 'Qwen3',
+        shortCode: 'QW',
+        roleTitle: '코딩·웹개발·자동화 전문 팀원 (무료 API)',
         tier: 'specialist',
         reportsTo: 'agent_gemini_neon',
         provider: 'groq',
-        modelId: 'openai/gpt-oss-120b',
+        modelId: 'qwen/qwen3-32b',
         connectionMode: 'api',
         costTier: 'free',
         appUrl: 'https://console.groq.com',
         monthlyCapKRW: 0,
         spentKRW: 0,
-        domains: ['dev', 'business', 'content'],
-        strengths: '초고속 무료 API(GPT-OSS 120B / Llama / Qwen)로 정밀 코딩·아키텍처 설계·기획안 작성 자동 수행',
+        domains: ['dev', 'business'],
+        strengths: 'Groq(Qwen3 32B) 및 OpenRouter(Qwen3 Coder 무료)로 코드 작성, SEO·웹사이트 개선, 자동화 스크립트 구현',
+        bridgeGuide: 'Groq 또는 OpenRouter 무료 API 키 중 하나만 저장하면 0원으로 자동 실행됩니다.',
+        active: true,
+        accent: '#6D28D9'
+      },
+      {
+        id: 'agent_groq',
+        name: 'Llama 3.3 (Groq)',
+        shortCode: 'LL',
+        roleTitle: '초고속 기획·마케팅·문서 팀원 (무료 API)',
+        tier: 'specialist',
+        reportsTo: 'agent_gemini_neon',
+        provider: 'groq',
+        modelId: 'llama-3.3-70b-versatile',
+        connectionMode: 'api',
+        costTier: 'free',
+        appUrl: 'https://console.groq.com',
+        monthlyCapKRW: 0,
+        spentKRW: 0,
+        domains: ['business', 'content', 'dev'],
+        strengths: 'Groq 초고속 무료 API(Llama 3.3 70B)로 콘텐츠 기획, 마케팅 카피, 구조화 초안을 초단위로 작성',
         bridgeGuide: 'Groq 무료 API 키(gsk_…)를 설정에 저장하면 즉시 0원으로 자동 실행됩니다.',
         active: true,
         accent: '#C2410C'
@@ -305,6 +345,15 @@ export function loadDb() {
             reportsTo: 'ceo'
           };
         }
+        if (a.id === 'agent_groq' && a.name === 'Groq') {
+          return {
+            ...a,
+            name: 'Llama 3.3 (Groq)',
+            shortCode: 'LL',
+            roleTitle: '초고속 기획·마케팅·문서 팀원 (무료 API)',
+            modelId: 'llama-3.3-70b-versatile'
+          };
+        }
         return {
           reportsTo: a.tier === 'lead' ? 'ceo' : 'agent_gemini_neon',
           monthlyCapKRW: 0,
@@ -312,9 +361,11 @@ export function loadDb() {
           ...a
         };
       });
-    if (!rawAgents.some((a) => a.id === 'agent_groq')) {
-      const defGroq = def.agents.find((a) => a.id === 'agent_groq');
-      if (defGroq) rawAgents.splice(1, 0, defGroq);
+    for (const requiredId of ['agent_groq', 'agent_qwen', 'agent_deepseek']) {
+      if (!rawAgents.some((a) => a.id === requiredId)) {
+        const defAg = def.agents.find((a) => a.id === requiredId);
+        if (defAg) rawAgents.splice(1, 0, defAg);
+      }
     }
     parsed.agents = rawAgents;
     if (Array.isArray(parsed.tasks)) {

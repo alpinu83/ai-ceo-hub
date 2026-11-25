@@ -89,31 +89,56 @@ function resolveLanguageModel(agent, settings) {
   }
 
   if (agent.provider === 'groq') {
-    const cfg = providers.groq;
-    if (!cfg?.apiKey) return null;
-    const client = createOpenAI({
-      baseURL: cfg.baseUrl || 'https://api.groq.com/openai/v1',
-      apiKey: cfg.apiKey.trim(),
-      compatibility: 'compatible'
-    });
-    const modelName = cfg.model || agent.modelId || 'openai/gpt-oss-120b';
-    return { model: client(modelName), label: `groq:${modelName}` };
+    const groqCfg = providers.groq;
+    if (groqCfg?.apiKey) {
+      const client = createOpenAI({
+        baseURL: groqCfg.baseUrl || 'https://api.groq.com/openai/v1',
+        apiKey: groqCfg.apiKey.trim(),
+        compatibility: 'compatible'
+      });
+      const modelName = agent.modelId || groqCfg.model || 'llama-3.3-70b-versatile';
+      return { model: client(modelName), label: `groq:${modelName}` };
+    }
+    const orCfg = providers.openrouter;
+    if (orCfg?.apiKey) {
+      const client = createOpenAI({
+        baseURL: orCfg.baseUrl || 'https://openrouter.ai/api/v1',
+        apiKey: orCfg.apiKey.trim(),
+        compatibility: 'compatible',
+        headers: { 'HTTP-Referer': 'https://ai-ceo-hub.onrender.com', 'X-Title': 'CEO Office' }
+      });
+      const fbModel = agent.id === 'agent_qwen' ? 'qwen/qwen3-coder:free' : (orCfg.model || 'openrouter/free');
+      return { model: client(fbModel), label: `openrouter:${fbModel}` };
+    }
+    return null;
   }
 
   if (agent.provider === 'openrouter') {
-    const cfg = providers.openrouter;
-    if (!cfg?.apiKey) return null;
-    const client = createOpenAI({
-      baseURL: cfg.baseUrl || 'https://openrouter.ai/api/v1',
-      apiKey: cfg.apiKey.trim(),
-      compatibility: 'compatible',
-      headers: {
-        'HTTP-Referer': 'https://ai-ceo-hub.onrender.com',
-        'X-Title': 'CEO Office'
-      }
-    });
-    const modelName = cfg.model || 'openrouter/free';
-    return { model: client(modelName), label: `openrouter:${modelName}` };
+    const orCfg = providers.openrouter;
+    if (orCfg?.apiKey) {
+      const client = createOpenAI({
+        baseURL: orCfg.baseUrl || 'https://openrouter.ai/api/v1',
+        apiKey: orCfg.apiKey.trim(),
+        compatibility: 'compatible',
+        headers: {
+          'HTTP-Referer': 'https://ai-ceo-hub.onrender.com',
+          'X-Title': 'CEO Office'
+        }
+      });
+      const modelName = agent.modelId || orCfg.model || 'openrouter/free';
+      return { model: client(modelName), label: `openrouter:${modelName}` };
+    }
+    const groqCfg = providers.groq;
+    if (groqCfg?.apiKey) {
+      const client = createOpenAI({
+        baseURL: groqCfg.baseUrl || 'https://api.groq.com/openai/v1',
+        apiKey: groqCfg.apiKey.trim(),
+        compatibility: 'compatible'
+      });
+      const fbModel = groqCfg.model || 'openai/gpt-oss-120b';
+      return { model: client(fbModel), label: `groq:${fbModel}` };
+    }
+    return null;
   }
 
   if (agent.provider === 'exaone') {
@@ -1008,7 +1033,9 @@ function pickResponders(text, agents, mission, tasks) {
     { id: 'agent_muse', re: /@?뮤즈|muse/ },
     { id: 'agent_cue', re: /@?큐이|@?큐\b|cue|마누스|manus/ },
     { id: 'agent_vooy', re: /@?부이|vooy/ },
-    { id: 'agent_groq', re: /@?그록|groq/ },
+    { id: 'agent_deepseek', re: /@?딥시크|deepseek/ },
+    { id: 'agent_qwen', re: /@?큐원|qwen/ },
+    { id: 'agent_groq', re: /@?라마|llama|그록|groq/ },
     { id: 'agent_gemini_neon', re: /@?제미나이|gemini|하이드로젠|hydrogen|네온|neon/ },
     { id: 'agent_instinct', re: /@?인스팅스|인스팅트|instinct/ }
   ];
@@ -1071,7 +1098,7 @@ export async function generateTeamChatReplies({ userMessage, mission, tasks, age
   const responders = pickResponders(userMessage, agents, mission, tasks);
   const ceoName = settings?.ceoName || '대표님';
   const replies = [];
-  const hasExplicitMention = /@(?:엑사원|피클|알렉스|뮤즈|큐|큐이|부이|그록|groq|제미나이|네온|하이드로젠|인스팅스|전체)/i.test(userMessage);
+  const hasExplicitMention = /@(?:엑사원|피클|알렉스|뮤즈|큐|큐이|부이|딥시크|deepseek|큐원|qwen|라마|llama|그록|groq|제미나이|네온|하이드로젠|인스팅스|전체)/i.test(userMessage);
 
   for (const ag of responders) {
     const agTasks = tasks.filter((t) => t.assigneeId === ag.id);

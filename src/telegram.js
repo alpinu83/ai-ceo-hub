@@ -66,9 +66,50 @@ export async function sendTelegramText(token, chatId, text, replyMarkup = undefi
   return { ok: true, messageId: result?.message_id };
 }
 
+const recentTelegramAlerts = new Map();
+const TELEGRAM_DEDUP_MS = 10 * 60 * 1000;
+
+function shouldThrottleTelegram(dedupKey) {
+  const now = Date.now();
+  const prev = recentTelegramAlerts.get(dedupKey) || 0;
+  if (now - prev < TELEGRAM_DEDUP_MS) return true;
+  recentTelegramAlerts.set(dedupKey, now);
+  if (recentTelegramAlerts.size > 100) {
+    for (const [k, ts] of recentTelegramAlerts.entries()) {
+      if (now - ts > TELEGRAM_DEDUP_MS) recentTelegramAlerts.delete(k);
+    }
+  }
+  return false;
+}
+
+export async function sendTelegramAlert(settings, title, detail) {
+  const tg = settings?.telegram;
+  if (!isValidBotToken(tg?.botToken) || !isNumericChatId(tg?.chatId)) return { ok: false, skipped: true };
+  const dedupKey = `alert:${String(title || '').slice(0, 60)}`;
+  if (shouldThrottleTelegram(dedupKey)) return { ok: true, deduplicated: true };
+
+  const text = [
+    `<b>⚠️ [특이점 알림] ${escapeHtml(settings.companyName || 'CEO Office')}</b>`,
+    ``,
+    `<b>내용:</b> ${escapeHtml(title)}`,
+    detail ? `${escapeHtml(String(detail).slice(0, 320))}` : ''
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  try {
+    return await sendTelegramText(tg.botToken, tg.chatId, text);
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
 export async function sendTelegramApprovalCard(settings, approval, agentName) {
   const tg = settings?.telegram;
   if (!isValidBotToken(tg?.botToken) || !isNumericChatId(tg?.chatId)) return { ok: false, skipped: true };
+  if (approval?.id && shouldThrottleTelegram(`apr:${approval.id}`)) {
+    return { ok: true, deduplicated: true };
+  }
 
   const costText =
     (approval.estimatedCostKRW || 0) > 0

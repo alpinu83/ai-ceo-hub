@@ -32,6 +32,7 @@ import {
 } from './src/orchestrator.js';
 import { handleOfficialMcpHttp, MCP_TOOL_CATALOG } from './src/mcp.js';
 import {
+  sendTelegramAlert,
   sendTelegramApprovalCard,
   sendTelegramText,
   testTelegramBot,
@@ -288,6 +289,7 @@ async function autoStartLiveMissionTasks(missionId) {
           taskRow.updatedAt = new Date().toISOString();
         }
         appendLog(fresh, ag.name, `"${target.title}" 자동 실행 오류: ${err.message}`, 'warning');
+        notifyTelegramAnomaly(fresh.settings, `${ag.name} 업무 실행 이상`, `"${target.title}" — ${err.message}`);
         saveDb(fresh);
       }
     })
@@ -599,20 +601,25 @@ function notifyAllApprovalChannels(settings, apr, agentName) {
   }).catch(() => {});
 }
 
-function notifyTaskCompleted(settings, task, agentName) {
+function notifyTaskCompleted(_settings, task, agentName) {
+  // Routine task completion: quiet Web Push only — NEVER spam CEO's Telegram!
+  // Telegram is strictly reserved for CEO approvals and anomalies/alerts.
   sendWebPushNotification({
     title: `[업무 완료] ${task.title}`,
     body: `${agentName || 'AI 팀원'}가 작업을 완료했습니다.`,
     view: 'missions',
     tag: `tsk-${task.id}`
   }).catch(() => {});
-  if (settings?.telegram?.botToken && settings?.telegram?.chatId) {
-    sendTelegramText(
-      settings.telegram.botToken,
-      settings.telegram.chatId,
-      `<b>✅ [업무 완료]</b> ${task.title}\n담당: ${agentName || 'AI 팀원'}`
-    ).catch(() => {});
-  }
+}
+
+function notifyTelegramAnomaly(settings, title, detail) {
+  sendTelegramAlert(settings, title, detail).catch(() => {});
+  sendWebPushNotification({
+    title: `[특이점 알림] ${title}`,
+    body: String(detail || '').slice(0, 100),
+    view: 'command',
+    tag: `alert-${Date.now()}`
+  }).catch(() => {});
 }
 
 const app = new Hono();
