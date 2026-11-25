@@ -8,6 +8,17 @@ import { uid } from './store.js';
 import { buildMissionLiveContext } from './live-context.js';
 import { isProviderCooling } from './ai-guard.js';
 import { selectSkills, renderSkills, skillBlock, shouldReview, buildReviewRubric, getSkillSettings } from './skills.js';
+import { getRepoSnapshot, buildCodeEvidence, factCheckOutput } from './grounding.js';
+
+function repoTokenFrom(settings) {
+  return String(settings?.providers?.githubRepo?.apiKey || process.env.GITHUB_REPO_TOKEN || '').trim();
+}
+
+/** 미션에 연결된 저장소의 실제 코드 스냅샷(코드 근거·사실 확인용) */
+export async function missionRepoSnapshot(mission, settings) {
+  if (!mission?.githubRepo) return null;
+  return getRepoSnapshot({ repo: mission.githubRepo, branch: mission.githubBranch || 'main', token: repoTokenFrom(settings) }).catch(() => null);
+}
 
 // ---- Company context hook (CEO 전역 지침 + 회사 기억 + 업무 상태) ----
 // API로 연결된 모델은 호출마다 기억이 없으므로, 서버가 등록한 provider가 매 호출에 공통 맥락을 붙여 줍니다.
@@ -908,8 +919,15 @@ export async function executeAgentTask({ task, mission, agent, settings, priorOu
           .join('\n')}`
       : '';
 
-  const liveContext = await buildMissionLiveContext({ mission, settings }).catch(() => '');
-  const liveBlock = liveContext ? `\n\n${liveContext}` : '';
+  const [liveContext, snapshot] = await Promise.all([
+    buildMissionLiveContext({ mission, settings }).catch(() => ''),
+    missionRepoSnapshot(mission, settings)
+  ]);
+  // 실제 코드 근거: 작업 키워드로 저장소에서 찾은 줄(없는 것은 "없음"으로 명시)
+  const evidenceText = `${task?.title || ''}\n${task?.description || ''}`;
+  const evidence = snapshot ? buildCodeEvidence(snapshot, evidenceText) : '';
+  const evidenceCompact = snapshot ? buildCodeEvidence(snapshot, evidenceText, { compact: true }) : '';
+  const liveBlock = `${liveContext ? `\n\n${liveContext}` : ''}${evidence ? `\n\n${evidence}` : ''}`;
 
   // Manus API dedicated path
   if (agent.provider === 'manus' && agent.connectionMode === 'api' && settings?.providers?.manus?.apiKey) {
@@ -982,13 +1000,18 @@ CEO 원지시: ${mission.directive}
     const compactPrompt = `미션: ${mission.title}
 CEO 원지시: ${String(mission.directive || '').slice(0, 800)}
 담당 작업: ${task.title}
-상세 요구사항: ${String(task.description || '').slice(0, 1500)}${liveBlock ? `\n\n${liveBlock.slice(0, 2500)}` : ''}${contextBlock ? `\n${contextBlock.slice(0, 1200)}` : ''}`;
+상세 요구사항: ${String(task.description || '').slice(0, 1500)}${evidenceCompact ? `\n\n${evidenceCompact}` : ''}${liveContext ? `\n\n${String(liveContext).slice(0, 2200)}` : ''}${contextBlock ? `\n${contextBlock.slice(0, 1200)}` : ''}`;
     const isSizeError = (err) => /too large|413|context length|maximum context|tokens per mi|reduce the length/i.test(String(err?.message || err));
 
     // 초안 → (중요 작업이면) 다른 모델의 스킬 점검표 채점 → 기준 미달 시 수정본
     const finish = async (text, label) => {
+      const draftText = String(text || '').trim();
+      // 기계적 사실 확인: 없는 파일·PR·클래스, 지어낸 측정값, 권한 없는 "했다" 보고
+      const factIssues = factCheckOutput(draftText, snapshot, { canExecute: false });
       const refined = await refineDraft({
-        draft: String(text || '').trim(),
+        draft: draftText,
+        forcedIssues: factIssues,
+        recheck: (t) => factCheckOutput(t, snapshot, { canExecute: false }),
         authorLabel: label,
         system: systemCompact,
         taskPrompt: compactPrompt,
@@ -1678,48 +1701,80 @@ async function generateReview(model, opts) {
 }
 
 /**
- * Cross-model review + one revision pass. Never throws: on any failure the original draft is kept.
- * Returns { output, quality: { skills, reviewed, score, revised, reviewer, issues } }
+ * 품질 게이트: (1) 기계적 사실 확인 결과(forcedIssues)는 반드시 고치고, (2) 중요 작업은 다른 모델이 점검표로 채점해
+ * 기준 미달이면 고쳐 씁니다. 고친 뒤에도 사실 오류가 남으면 결과물 맨 위에 경고를 붙여 숨기지 않습니다.
+ * Never throws. Returns { output, quality }
  */
-export async function refineDraft({ draft, authorLabel = '', system = '', taskPrompt = '', skills = [], task = null, agent = null, settings = null, references = '' }) {
-  const quality = { skills: skills.map((s) => s.id), reviewed: false, score: null, revised: false, reviewer: '', issues: [] };
-  if (!draft || draft.length < 40 || !shouldReview({ skills, task, agent, settings })) return { output: draft, quality };
+export async function refineDraft({
+  draft,
+  authorLabel = '',
+  system = '',
+  taskPrompt = '',
+  skills = [],
+  task = null,
+  agent = null,
+  settings = null,
+  references = '',
+  forcedIssues = [],
+  recheck = null
+}) {
+  const quality = {
+    skills: skills.map((s) => s.id),
+    reviewed: false,
+    score: null,
+    revised: false,
+    reviewer: '',
+    issues: [],
+    factIssues: forcedIssues.map((i) => i.detail || String(i)),
+    factIssuesAfter: []
+  };
+  const mustFix = quality.factIssues.length > 0;
+  const wantReview = shouldReview({ skills, task, agent, settings });
+  if (!draft || draft.length < 40 || (!mustFix && !wantReview)) return { output: draft, quality };
   const cfg = getSkillSettings(settings);
   const minScore = Math.max(1, Math.min(10, Number(cfg.minScore) || 8));
   const rubric = buildReviewRubric(skills);
+  const warn = (issues) =>
+    issues.length
+      ? `> ⚠️ 자동 사실 확인 경고 — 아래 항목은 저장소·도구로 확인되지 않았습니다. 그대로 믿거나 실행하지 마세요.\n${issues.map((x, i) => `> ${i + 1}. ${x}`).join('\n')}\n\n`
+      : '';
 
   const candidates = reviewerCandidates(settings, authorLabel).slice(0, 3);
   if (!candidates.length) quality.reviewError = '사용 가능한 검수 모델 없음(한도 소진/키 없음)';
   for (const rv of candidates) {
-    let review = null;
-    try {
-      review = await generateReview(rv.model, {
-        system: `당신은 까다로운 수석 검수자입니다. 동료 AI의 결과물을 아래 점검표로 채점하세요.
+    let reviewIssues = [];
+    if (wantReview) {
+      try {
+        const review = await generateReview(rv.model, {
+          system: `당신은 까다로운 수석 검수자입니다. 동료 AI의 결과물을 아래 점검표로 채점하세요.
 - 점수는 버트지 말고 엄격하게: 점검표를 모두 통과하고 대표님이 바로 쓸 수 있을 때만 9점 이상.
-- 작업 지시와 제공 자료에 없는 사실·수치·파일·기능을 지어냈으면 반드시 지적하세요.
+- 작업 지시와 제공 자료(특히 [실제 코드 근거])에 없는 사실·수치·파일·기능·클래스를 지어냈으면 반드시 지적하세요.
 - issues에는 "무엇이 문제이고 어떻게 고치는지"를 구체적으로 쓰세요. 취향 문제는 쓰지 마세요.
 - [참고 자료: 회사 기억·전역 지침]에 있는 내용은 확인된 사실입니다. 그 내용을 근거로 쓴 문장은 감점하지 말고, 오히려 그것과 충돌하는 내용을 지적하세요.
 
 [점검표]
 ${rubric}${references ? `\n\n[참고 자료: 회사 기억·전역 지침]\n${String(references).slice(0, 1400)}` : ''}`,
-        prompt: `[작업 지시와 자료]\n${String(taskPrompt).slice(0, rv.compact ? 3500 : 6000)}\n\n[검수할 결과물]\n${draft.slice(0, rv.compact ? 5000 : 9000)}`
-      });
-    } catch (err) {
-      quality.reviewError = `${rv.label}: ${String(err?.message || err).replace(/\s+/g, ' ').slice(0, 160)}`;
-      continue; // try the next reviewer
+          prompt: `[작업 지시와 자료]\n${String(taskPrompt).slice(0, rv.compact ? 3500 : 6000)}\n\n[검수할 결과물]\n${draft.slice(0, rv.compact ? 5000 : 9000)}`
+        });
+        quality.reviewed = true;
+        quality.reviewer = rv.label;
+        quality.score = Number(review.score);
+        reviewIssues = (review.issues || []).slice(0, 8).map((i) => `${i.problem} → ${i.fix}`);
+        quality.issues = reviewIssues;
+      } catch (err) {
+        quality.reviewError = `${rv.label}: ${String(err?.message || err).replace(/\s+/g, ' ').slice(0, 160)}`;
+        if (!mustFix) continue; // try the next reviewer
+      }
     }
-    quality.reviewed = true;
-    quality.reviewer = rv.label;
-    quality.score = Number(review.score);
-    quality.issues = (review.issues || []).slice(0, 8).map((i) => `${i.problem} → ${i.fix}`);
-    if (!(quality.score < minScore) || !quality.issues.length) return { output: draft, quality };
+    const needRevision = mustFix || (quality.score !== null && quality.score < minScore && reviewIssues.length);
+    if (!needRevision) return { output: draft, quality };
 
-    // Revise with the reviewer model (it has the clearest view of what is wrong)
+    const allIssues = [...quality.factIssues.map((x) => `[사실 오류 — 반드시 수정] ${x}`), ...reviewIssues];
     try {
       const { text } = await generateText({
         model: rv.model,
-        system: `${system}\n\n[수정 지시] 아래 초안을 검수 의견을 모두 반영해 고친 "최종본 전체"를 다시 쓰세요. 초안의 맞는 내용은 유지하고, 검수 의견·수정 내역·사과는 출력하지 마세요.`,
-        prompt: `${String(taskPrompt).slice(0, rv.compact ? 3000 : 5000)}\n\n[초안]\n${draft.slice(0, rv.compact ? 5000 : 9000)}\n\n[검수 의견 (${quality.score}점)]\n${quality.issues.map((x, i) => `${i + 1}. ${x}`).join('\n')}`,
+        system: `${system}\n\n[수정 지시] 아래 초안을 지적사항을 모두 반영해 고친 "최종본 전체"를 다시 쓰세요. 초안의 맞는 내용은 유지하고, 확인할 수 없는 내용은 삭제하거나 "미확인"으로 바꾸세요. 지적사항·수정 내역·사과는 출력하지 마세요.`,
+        prompt: `${String(taskPrompt).slice(0, rv.compact ? 3000 : 5000)}\n\n[초안]\n${draft.slice(0, rv.compact ? 5000 : 9000)}\n\n[지적사항${quality.score !== null ? ` (${quality.score}점)` : ''}]\n${allIssues.map((x, i) => `${i + 1}. ${x}`).join('\n')}`,
         maxTokens: 3000,
         maxRetries: 0,
         abortSignal: AbortSignal.timeout(120000)
@@ -1727,14 +1782,19 @@ ${rubric}${references ? `\n\n[참고 자료: 회사 기억·전역 지침]\n${St
       const revised = String(text || '').trim();
       if (revised.length > Math.min(200, draft.length * 0.4)) {
         quality.revised = true;
-        return { output: revised, quality };
+        quality.reviewer = quality.reviewer || rv.label;
+        const remaining = typeof recheck === 'function' ? recheck(revised) : [];
+        quality.factIssuesAfter = remaining.map((i) => i.detail || String(i));
+        return { output: warn(quality.factIssuesAfter) + revised, quality };
       }
-    } catch {
-      // keep the draft
+    } catch (err) {
+      quality.reviewError = `${rv.label}(수정): ${String(err?.message || err).replace(/\s+/g, ' ').slice(0, 160)}`;
+      if (mustFix) continue;
     }
-    return { output: draft, quality };
+    return { output: warn(quality.factIssues) + draft, quality };
   }
-  return { output: draft, quality };
+  quality.factIssuesAfter = quality.factIssues;
+  return { output: warn(quality.factIssues) + draft, quality };
 }
 
 const LeadFollowUpSchema = z.object({

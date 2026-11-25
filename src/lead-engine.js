@@ -301,6 +301,17 @@ export function buildCompletionReport(db, missionId, taskIds = [], { codeResult 
     lines.push(`- 완료: ${t.title} (${agentMap[t.assigneeId]?.name || '팀원'})${first ? ` — ${first}` : ''}`);
   }
   if (doneSorted.length > 5) lines.push(`- 외 완료 ${doneSorted.length - 5}건`);
+  const warned = batch.filter((t) => (t.quality?.factIssuesAfter || []).length);
+  if (warned.length) {
+    needsCeo.push(
+      `자동 사실 확인에서 고치지 못한 오류가 남은 결과 ${warned.length}건(결과 맨 위 ⚠️ 표시): ${warned
+        .slice(0, 3)
+        .map((t) => `"${t.title}"`)
+        .join(', ')} — 그대로 실행하지 마세요.`
+    );
+  }
+  const fixedCount = batch.filter((t) => (t.quality?.factIssues || []).length && !(t.quality?.factIssuesAfter || []).length).length;
+  if (fixedCount) lines.push(`- 자동 사실 확인: ${fixedCount}건의 결과에서 없는 파일·지어낸 수치 등을 찾아 고쳤습니다.`);
   const externalTitles = done.filter((t) => EXTERNAL_ACTION_RE.test(String(t.output || ''))).map((t) => `"${t.title}"`);
   if (externalTitles.length) {
     needsCeo.push(
