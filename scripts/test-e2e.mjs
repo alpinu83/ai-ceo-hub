@@ -248,6 +248,19 @@ async function runTests() {
     ).json();
     assert.equal(goodCfg.state.settings.providers.googleData.ga4PropertyId, '565386086', 'GA4 property id must be saved');
 
+    // 8e. Mission scope (focus / excluded work) is saved and shown to every AI call for that mission
+    const scopeRes = await (
+      await fetch(`${BASE}/api/missions/${created.mission.id}`, {
+        method: 'PATCH',
+        headers: jsonHeaders,
+        body: JSON.stringify({ scope: { focus: '새 수익 파이프라인', exclude: ['korea-tax-cal', '세금계산기'] } })
+      })
+    ).json();
+    const scoped = scopeRes.state.missions.find((m) => m.id === created.mission.id);
+    assert.deepEqual(scoped.scope.exclude, ['korea-tax-cal', '세금계산기'], 'mission scope must be saved');
+    const scopedCtx = await (await fetch(`${BASE}/api/memory?missionId=${created.mission.id}`)).json();
+    assert.ok(scopedCtx.context.includes('하지 말 것'), 'mission scope must be in the AI context');
+
     const standupRes = await (
       await fetch(`${BASE}/api/missions/${created.mission.id}/standup`, { method: 'POST' })
     ).json();
