@@ -123,6 +123,7 @@ const RENDER_BACKEND_URL = 'https://ai-ceo-hub.onrender.com';
 let state = null;
 let currentView = 'command';
 let missionViewMode = 'tasks'; // 'tasks' | 'report'
+let missionKindFilter = 'all'; // 'all' | 'project' | 'one_off'
 let missionStatusFilter = 'all'; // 'all' | 'active' | 'external' | 'approval' | 'done'
 let selectedMissionId = null;
 let officeMissionFilter = 'all'; // 'all' | missionId
@@ -396,14 +397,21 @@ function renderHomeView() {
         const tasks = state.tasks.filter((t) => t.missionId === m.id);
         const done = tasks.filter((t) => t.status === 'completed').length;
         const pct = tasks.length ? Math.round((done / tasks.length) * 100) : 0;
+        const kindBadge =
+          m.mode === 'project'
+            ? `<span class="badge badge-blue">프로젝트 P${Number(m.phase) || 1}</span>`
+            : '<span class="badge badge-neutral">일반 업무</span>';
         return `<div class="home-item">
           <div class="home-item-top">
-            <div class="home-item-title">${esc(m.title)}</div>
+            <div style="display:flex;align-items:center;gap:6px;min-width:0;flex:1;">
+              ${kindBadge}
+              <div class="home-item-title">${esc(m.title)}</div>
+            </div>
             <span class="mono" style="color:var(--ink-muted);">${pct}%</span>
           </div>
           <div class="progress-track thin"><div class="progress-fill" style="width:${pct}%"></div></div>
           <div class="home-item-actions">
-            <button type="button" class="btn btn-ghost btn-sm" data-open-mission-board="${esc(m.id)}">보드</button>
+            <button type="button" class="btn btn-ghost btn-sm" data-open-mission-board="${esc(m.id)}">열기</button>
             <button type="button" class="btn btn-ghost btn-sm" data-jump-view="office">회의실</button>
           </div>
         </div>`;
@@ -426,25 +434,63 @@ function renderHomeView() {
 }
 
 function renderCommandView() {
+  const kindBar = document.getElementById('mission-kind-bar');
   const tabsBar = document.getElementById('mission-tabs-bar');
-  if (state.missions.length === 0) {
+  const allMissions = state.missions || [];
+  const projectList = allMissions.filter((m) => m.mode === 'project');
+  const oneOffList = allMissions.filter((m) => m.mode !== 'project');
+
+  if (kindBar) {
+    const kinds = [
+      { key: 'all', label: '전체', count: allMissions.length },
+      { key: 'project', label: '지속 프로젝트', count: projectList.length },
+      { key: 'one_off', label: '일반 업무', count: oneOffList.length }
+    ];
+    kindBar.innerHTML = kinds
+      .map(
+        (k) => `<button type="button" class="filter-chip ${missionKindFilter === k.key ? 'active' : ''}" data-mission-kind="${k.key}">
+          <span>${k.label}</span>
+          <span class="mono">${k.count}</span>
+        </button>`
+      )
+      .join('');
+  }
+
+  const visibleMissions =
+    missionKindFilter === 'project'
+      ? projectList
+      : missionKindFilter === 'one_off'
+        ? oneOffList
+        : allMissions;
+
+  if (visibleMissions.length === 0) {
     tabsBar.innerHTML = '';
-    document.getElementById('active-mission-container').innerHTML =
-      '<div class="empty-state">진행 중인 미션이 없습니다. CEO 홈에서 새 지시서를 하달해 보세요.</div>';
+    const emptyMsg =
+      missionKindFilter === 'project'
+        ? '지속 프로젝트가 없습니다. 홈에서 "지속 프로젝트"로 지시하거나 기존 업무에서 "프로젝트 전환"을 눌러보세요.'
+        : missionKindFilter === 'one_off'
+          ? '일반 업무가 없습니다.'
+          : '진행 중인 업무가 없습니다. 홈에서 새 지시를 내려보세요.';
+    document.getElementById('active-mission-container').innerHTML = `<div class="empty-state">${emptyMsg}</div>`;
   } else {
-    tabsBar.innerHTML = state.missions
+    if (!visibleMissions.some((m) => m.id === selectedMissionId)) {
+      selectedMissionId = visibleMissions[0].id;
+    }
+    tabsBar.innerHTML = visibleMissions
       .map((m) => {
         const tasks = state.tasks.filter((t) => t.missionId === m.id);
         const done = tasks.filter((t) => t.status === 'completed').length;
         const active = m.id === selectedMissionId ? 'active' : '';
+        const prefix = m.mode === 'project' ? `<span class="badge badge-blue" style="padding:1px 6px;font-size:10.5px;">P${Number(m.phase) || 1}</span>` : '';
         return `<button class="mission-tab ${active}" data-select-mission="${esc(m.id)}">
+          ${prefix}
           <span>${esc(m.title)}</span>
           <span class="mono">${done}/${tasks.length}</span>
         </button>`;
       })
       .join('');
 
-    const mission = state.missions.find((m) => m.id === selectedMissionId) || state.missions[0];
+    const mission = visibleMissions.find((m) => m.id === selectedMissionId) || visibleMissions[0];
     renderActiveMission(mission);
   }
 
@@ -1688,9 +1734,17 @@ function bindEvents() {
       return;
     }
 
+    if (target.dataset.missionKind) {
+      missionKindFilter = target.dataset.missionKind;
+      missionStatusFilter = 'all';
+      renderCommandView();
+      refreshIcons();
+      return;
+    }
+
     if (target.dataset.taskFilter) {
       missionStatusFilter = target.dataset.taskFilter;
-      renderMissionsView();
+      renderCommandView();
       refreshIcons();
       return;
     }
