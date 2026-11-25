@@ -93,6 +93,24 @@ import {
 } from './src/it-devops.js';
 import { getAiProviderHealth } from './src/ai-guard.js';
 import {
+  OUTSOURCE_WORKER_LABELS,
+  OUTSOURCE_KIND_LABELS,
+  setOutsourcingHandlers,
+  getOutsourcingSettings,
+  publicBaseUrl,
+  assessFeasibility,
+  extractOutsourceFlag,
+  createOutsourcingRequest,
+  findRequest,
+  listRequests,
+  summarizeRequest,
+  claimRequest,
+  submitResult,
+  cancelRequest,
+  releaseExpiredLeases,
+  buildPacket
+} from './src/outsourcing.js';
+import {
   kstParts,
   normalizeTimes,
   normalizeDays,
@@ -295,12 +313,26 @@ async function autoStartLiveMissionTasks(missionId, { proposeNext = true } = {})
   const agentMap = Object.fromEntries(db.agents.map((a) => [a.id, a]));
   // Under Team Lead authority: auto-run ALL internal AI tasks without waiting for CEO clicks
   const internalProviders = new Set(['exaone', 'gemini', 'groq', 'openrouter']);
-  const autoTargets = db.tasks.filter((t) => {
+  let autoTargets = db.tasks.filter((t) => {
     if (t.missionId !== missionId) return false;
     if (t.status !== 'queued' && t.status !== 'awaiting_bridge') return false;
     const ag = agentMap[t.assigneeId];
     return Boolean(ag && internalProviders.has(ag.provider));
   });
+
+  // 무료 API 팀원이 실제로 할 수 없는 일(로그인이 필요한 계정·콘솔 작업)은 실행하지 않고 외부 AI 외주로 넘김
+  const osCfgRun = getOutsourcingSettings(db.settings);
+  if (osCfgRun.enabled && osCfgRun.autoForBrowser) {
+    const gd = describeGoogleDataStatus(db.settings);
+    const googleDataConnected = Boolean(gd?.hasKey && (gd.gaEnabled || gd.scEnabled));
+    autoTargets = autoTargets.filter((t) => {
+      if (t.outsourceDeclined) return true;
+      const f = assessFeasibility(t, { googleDataConnected });
+      if (!f.outsource) return true;
+      outsourceTask(db, t, { kind: f.kind, worker: f.worker, reason: f.reason });
+      return false;
+    });
+  }
 
   // Ensure external bot tasks are cleanly marked as awaiting external inbox/MCP (never sitting in "실행 대기")
   const externalProviders = new Set(['pickle', 'manus', 'muse', 'vooy', 'instinct']);
@@ -339,6 +371,18 @@ async function autoStartLiveMissionTasks(missionId, { proposeNext = true } = {})
         taskRow.executionModeUsed = res.executionModeUsed;
         if (res.quality) taskRow.quality = res.quality;
         taskRow.updatedAt = doneIso;
+
+        // 팀원이 "[외주 필요: 사유]"라고 판단하면 억지 결과 대신 외부 AI에 맡김
+        const osFlag = getOutsourcingSettings(fresh.settings).enabled && !taskRow.outsourceDeclined ? extractOutsourceFlag(res.output) : '';
+        if (osFlag) {
+          const repoLinked = Boolean(getMissionRepoCfg(fresh.settings, mission));
+          const kind = repoLinked && isCodeTask(taskRow, ag) ? 'code' : 'task';
+          outsourceTask(fresh, taskRow, { kind, worker: kind === 'code' ? 'antigravity' : 'any', reason: osFlag });
+          updateMissionStatus(fresh, mission.id);
+          saveDb(fresh);
+          await flushCloudBackup(fresh);
+          return;
+        }
 
         // 빈 결재 방지: 결과물 스스로 "할 일 없음/이미 완료"라고 하면 대표님께 결재를 올리지 않고 팀장 전결 종료
         if (taskRow.requiresApproval && saysNothingToDo(res.output)) {
@@ -669,6 +713,8 @@ async function submitNextPhaseProposal(missionId, { leadAssessment = '' } = {}) 
     text: `@대표님 Phase ${currentPhase} 결과를 검토하고 다음 단계(Phase ${proposal.nextPhase}: ${proposal.nextPhaseTitle}) 추진안을 결재함에 올렸습니다. 승인해 주시면 바로 착수하겠습니다.`
   });
 
+  const osCfgP = getOutsourcingSettings(db.settings);
+  if (osCfgP.enabled && osCfgP.consultMode !== 'off') requestConsultForApproval(db, apr);
   saveDb(db);
   await flushCloudBackup(db);
   notifyAllApprovalChannels(db.settings, apr, lead?.name || 'Gemini 4 Hydrogen');
@@ -1287,6 +1333,8 @@ async function leadReportAfterRun(missionId, taskIds = [], { codeResult = null }
     source: 'lead_report'
   });
   appendLog(db, `${lead?.name || '총괄 팀장'} (총괄 팀장)`, `"${mission.title}" 완료 보고를 올렸습니다.`, 'success');
+  const osCfgR = getOutsourcingSettings(db.settings);
+  if (osCfgR.enabled && osCfgR.consultMode === 'proposals_and_reports') requestConsultForReport(db, mission, report.text);
   saveDb(db);
   await flushCloudBackup(db);
   leadTelegram(db, report.title, report.telegram, report.reportKey);
@@ -1735,10 +1783,35 @@ async function runCodeBundleInner(missionId, { retryEmpty = false } = {}) {
   if (!noChange && freshWaiting.length === 0) {
     notifyTelegramAnomaly(db.settings, 'IT팀 실코드 변경안 작성 실패', `"${mission.title}" (${cfg.repo}) — ${failure?.message}`);
   }
+  // 무료 IT팀이 못 만드는 코드 변경(큰 수정·패치 불일치 등) 또는 재시도 소진 → Antigravity 외주
+  let outsourcedCode = null;
+  const osCfgCode = getOutsourcingSettings(db.settings);
+  const maxCodeRetries = Math.max(0, ...freshWaiting.map((a) => Number(a.codeChange?.retries || 0)));
+  if (!noChange && osCfgCode.enabled && osCfgCode.autoOnFailure && (!QUOTA_ERR_RE.test(String(failure?.message || '')) || maxCodeRetries >= 3)) {
+    const made = createOutsourcingRequest(db, {
+      kind: 'code',
+      worker: 'antigravity',
+      title: `[코드] ${mission.title}: ${candidates.map((t) => t.title).slice(0, 2).join(' / ')}`.slice(0, 120),
+      missionId,
+      taskId: candidates[0]?.id || '',
+      approvalId: freshWaiting[0]?.id || '',
+      reason: `무료 IT팀이 실제 코드 변경안을 만들지 못함: ${String(failure?.message || '').slice(0, 300)}`,
+      goal: `${instruction}\n\n[팀 결정사항]\n${teamContext}`.slice(0, 3000),
+      repo: cfg.repo,
+      branch: cfg.branch,
+      siteUrl: mission.siteUrl || '',
+      context: buildOutsourceContext(db, mission, candidates[0])
+    });
+    outsourcedCode = made.request;
+    if (made.created) notifyOutsourceCreated(db, made.request);
+    for (const apr of freshWaiting) {
+      setCodeStatus(apr, 'failed', { error: `${apr.codeChange?.error || ''} → 외주 ${made.request.id}(Antigravity)로 넘김`.trim() });
+    }
+  }
   let retryNeeded = false;
   for (const apr of freshWaiting) {
     if (apr.status === 'pending') {
-      if (!noChange && Number(apr.codeChange?.retries || 0) < 3) retryNeeded = true;
+      if (!noChange && !outsourcedCode && Number(apr.codeChange?.retries || 0) < 3) retryNeeded = true;
       if (!apr.codeChange?.notified) {
         setCodeStatus(apr, apr.codeChange.status, { notified: true });
         sendApprovalNotifications(db.settings, apr, apr.codeChange?.agentName || 'IT 유지보수팀');
@@ -2433,8 +2506,16 @@ async function runWatchdog() {
       if ((t.autoRetries || 0) >= 3) {
         if (!t.autoRetryExhausted) {
           t.autoRetryExhausted = true;
-          exhausted.push(t.title);
-          actions.push(`자동 재시도 3회 소진 "${t.title}"`);
+          const osW = getOutsourcingSettings(db.settings);
+          if (osW.enabled && osW.autoOnFailure && !t.outsourceDeclined) {
+            const m = db.missions.find((x) => x.id === t.missionId);
+            const kind = m && getMissionRepoCfg(db.settings, m) && isCodeTask(t, ag) ? 'code' : 'task';
+            const req = outsourceTask(db, t, { kind, worker: kind === 'code' ? 'antigravity' : 'any', reason: 'AI 엔진으로 3번 실행했지만 결과를 만들지 못함' });
+            actions.push(`재시도 3회 소진 → 외주 ${req.id} "${t.title}"`);
+          } else {
+            exhausted.push(t.title);
+            actions.push(`자동 재시도 3회 소진 "${t.title}"`);
+          }
         }
         continue;
       }
@@ -2456,6 +2537,11 @@ async function runWatchdog() {
   if (!allAiCooling) {
     for (const m of duePhase) decomposeIntoPhaseTasks(m.id, m.pendingPhaseDirective).catch((err) => console.warn('phase retry failed:', err.message));
     for (const m of dueProposal) submitNextPhaseProposal(m.id, { leadAssessment: m.pendingProposalNote || '' }).catch((err) => console.warn('proposal retry failed:', err.message));
+  }
+  try {
+    await outsourcingWatch();
+  } catch (err) {
+    console.warn('outsourcing watch failed:', err.message);
   }
   if (exhausted.length) {
     notifyTelegramAnomaly(db.settings, '자동 재시도 한계 도달', `${exhausted.slice(0, 3).join(', ')} — AI 엔진 한도나 지시 내용을 확인해 주세요.`);
@@ -2506,6 +2592,281 @@ function sanitizeRoutineInput(body, existing = {}) {
   if (typeof body.enabled === 'boolean') out.enabled = body.enabled;
   if (['task', 'ops_check', 'briefing'].includes(body.kind) && !existing.id) out.kind = body.kind;
   return out;
+}
+
+// ================================================================
+// 외부 AI 외주 · 자문 연계 (Antigravity · Aside · 기타)
+// ================================================================
+const QUOTA_ERR_RE = /quota|cooldown|429|rate\s*limit|한도|too large|413|tokens per mi/i;
+const oneLineText = (s, n = 160) => String(s || '').replace(/\s+/g, ' ').trim().slice(0, n);
+
+function buildOutsourceContext(db, mission, task) {
+  const parts = [];
+  if (mission) parts.push(`[프로젝트 원지시]\n${String(mission.directive || mission.title).slice(0, 1200)}`);
+  if (task?.output) parts.push(`[무료 팀 초안/시도 결과 — 참고만, 사실 확인 필요]\n${String(task.output).slice(0, 2500)}`);
+  if (mission) {
+    const done = db.tasks
+      .filter((t) => t.missionId === mission.id && t.status === 'completed' && t.id !== task?.id)
+      .slice(0, 6)
+      .map((t) => `- ${t.title}: ${oneLineText(t.output, 140)}`);
+    if (done.length) parts.push(`[최근 완료 작업]\n${done.join('\n')}`);
+  }
+  return parts.join('\n\n');
+}
+
+function notifyOutsourceCreated(db, req) {
+  const mission = db.missions.find((m) => m.id === req.missionId);
+  const workerLabel = OUTSOURCE_WORKER_LABELS[req.worker];
+  if (mission) {
+    leadSay(
+      db,
+      mission,
+      req.kind === 'consult' ? '외부 자문 요청' : '외주 요청',
+      req.kind === 'consult'
+        ? `결재 전에 상위 AI의 외부 자문을 요청했습니다: ${req.id} (결재는 그대로 진행 가능, 자문이 오면 카드에 붙습니다).`
+        : `무료 팀으로는 어려운 일이라 외부 AI에 맡겼습니다: ${req.id} "${req.title}" (권장: ${workerLabel}). 사유: ${req.reason}`
+    );
+  }
+  sendTelegramReport(
+    db.settings,
+    `${req.kind === 'consult' ? '외부 자문 요청' : '외주 요청'} ${req.id}`,
+    `${OUTSOURCE_KIND_LABELS[req.kind]} · ${req.title}\n권장 작업자: ${workerLabel}\n사유: ${req.reason}\nAntigravity/Aside에서 "CEO Office 외주 처리"로 가져가세요.`,
+    `out:${req.id}`
+  ).catch(() => {});
+}
+
+function outsourceTask(db, task, { kind = 'task', worker = 'any', reason = '', createdBy = 'system' } = {}) {
+  const mission = db.missions.find((m) => m.id === task.missionId);
+  const repoCfg = mission ? getMissionRepoCfg(db.settings, mission) : null;
+  const { request, created } = createOutsourcingRequest(db, {
+    kind,
+    worker,
+    reason,
+    createdBy,
+    title: task.title,
+    missionId: task.missionId,
+    taskId: task.id,
+    goal: task.description || task.title,
+    context: buildOutsourceContext(db, mission, task),
+    repo: kind !== 'browser' && kind !== 'consult' ? repoCfg?.repo || '' : '',
+    branch: repoCfg?.branch || 'main',
+    siteUrl: mission?.siteUrl || ''
+  });
+  task.status = 'outsourced';
+  task.outsourceId = request.id;
+  task.updatedAt = new Date().toISOString();
+  if (created) notifyOutsourceCreated(db, request);
+  return request;
+}
+
+function requestConsultForApproval(db, apr, createdBy = 'system') {
+  const mission = db.missions.find((m) => m.id === apr.missionId);
+  const { request, created } = createOutsourcingRequest(db, {
+    kind: 'consult',
+    worker: 'any',
+    createdBy,
+    title: `[자문] ${apr.title}`,
+    missionId: apr.missionId,
+    approvalId: apr.id,
+    reason: '무료 AI 팀장이 만든 결재안을 상위 AI가 검토해, 대표님이 결재할 때 참고 의견으로 붙입니다.',
+    goal: `아래 결재안을 비판적으로 검토해 주세요. 이전 단계와 같은 일을 반복하는지, 근거 없는 주장이 있는지, 더 나은 다음 행동이 무엇인지 봐 주세요.\n\n### 결재안\n${apr.title}\n\n${String(apr.summary || '').slice(0, 2500)}\n\n${String(apr.proposedAction || '').slice(0, 1500)}${apr.diffSummary ? `\n\n### 코드 변경\n${String(apr.diffSummary).slice(0, 3000)}` : ''}`,
+    context: mission ? buildMissionDigest(db, mission.id, 3500) : '',
+    siteUrl: mission?.siteUrl || ''
+  });
+  apr.consultRequestId = request.id;
+  if (created) notifyOutsourceCreated(db, request);
+  return request;
+}
+
+function requestConsultForReport(db, mission, reportText) {
+  const { request, created } = createOutsourcingRequest(db, {
+    kind: 'consult',
+    worker: 'any',
+    title: `[자문] ${mission.title} 완료 보고 검토`,
+    missionId: mission.id,
+    reason: '무료 AI 팀장의 완료 보고를 상위 AI가 검토합니다.',
+    goal: `아래 팀장 완료 보고와 작업 결과가 실제로 목표에 다가갔는지 평가하고, 다음에 할 일 3가지를 우선순위로 제안해 주세요.\n\n${String(reportText || '').slice(0, 3000)}`,
+    context: buildMissionDigest(db, mission.id, 3500),
+    siteUrl: mission.siteUrl || ''
+  });
+  if (created) notifyOutsourceCreated(db, request);
+  return request;
+}
+
+/** 외부 작업자가 연 PR을 결재 카드로: 원래 결재 카드가 있으면 거기에 붙이고, 없으면 새 카드 */
+async function approvalFromExternalPr(db, req, mission) {
+  const m = String(req.result?.prUrl || '').match(/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)/);
+  if (!m) throw new Error('PR 주소를 해석할 수 없습니다.');
+  const repo = m[1];
+  const num = Number(m[2]);
+  const cfg = getGithubRepoConfig(db.settings, { repo });
+  if (!cfg.enabled) throw new Error('IT팀 GitHub 토큰이 없어 PR을 확인할 수 없습니다.');
+  if (cfg.allowedRepos.length && !cfg.allowedRepos.includes(repo)) throw new Error(`허용 목록에 없는 저장소입니다: ${repo}`);
+  const gh = async (p) => {
+    const res = await fetch(`https://api.github.com/repos/${repo}${p}`, {
+      headers: { Authorization: `Bearer ${cfg.token}`, Accept: 'application/vnd.github+json', 'User-Agent': 'ai-ceo-hub' },
+      signal: AbortSignal.timeout(20000)
+    });
+    if (!res.ok) throw new Error(`GitHub ${res.status}`);
+    return res.json();
+  };
+  const pr = await gh(`/pulls/${num}`);
+  if (pr.state !== 'open') throw new Error(`PR #${num}이 열려 있지 않습니다 (${pr.state}).`);
+  const files = await gh(`/pulls/${num}/files?per_page=60`);
+  const blocked = files.filter((f) => /^(\.github\/|data\/db\.json$|\.env)/.test(f.filename));
+  if (blocked.length) throw new Error(`보호된 파일 수정이 포함돼 자동 결재에 올리지 않았습니다: ${blocked.map((f) => f.filename).join(', ')}`);
+  const result = {
+    repo,
+    branch: pr.base?.ref || 'main',
+    branchName: pr.head?.ref || '',
+    prNumber: num,
+    prUrl: pr.html_url,
+    prTitle: String(pr.title || '').replace(/\[OUT-[^\]]+\]\s*/, '') || req.title,
+    prSummary: req.result.summary || oneLineText(pr.body, 600) || '외부 AI 작업 PR',
+    changedFiles: files.map((f) => f.filename),
+    diffSummary: files
+      .map((f) => `파일: ${f.filename} (+${f.additions}/-${f.deletions})\n${String(f.patch || '').slice(0, 1500)}`)
+      .join('\n\n')
+      .slice(0, 12000),
+    audit: { passed: true, riskLevel: 'medium', notes: `외부 작업자(${req.result.by})가 만든 PR입니다. 승인 시 CI 통과를 확인한 뒤 머지합니다.` },
+    instruction: req.goal,
+    teamContext: ''
+  };
+  const existing = req.approvalId ? db.approvals.find((a) => a.id === req.approvalId && a.status === 'pending') : null;
+  if (existing && existing.kind !== 'next_phase') {
+    applyPrFieldsToApproval(existing, result, { outsourceId: req.id });
+    setCodeStatus(existing, 'ready');
+    existing.proposedAction = `승인 시 외주 PR #${num}(${req.result.by})을 main에 머지하고 ${deployLabelFor(repo)}까지 진행합니다. (CI 실패 시 머지 보류)`;
+    sendApprovalNotifications(db.settings, existing, `외주 · ${req.result.by}`);
+    return existing;
+  }
+  const apr = createItPrApproval(db, mission || { id: req.missionId }, result, {
+    taskIds: req.taskId ? [req.taskId] : [],
+    titlePrefix: `[외주 · ${req.result.by}] `,
+    summaryLead: `외주 요청 ${req.id}: ${req.title}`
+  });
+  apr.outsourceId = req.id;
+  sendApprovalNotifications(db.settings, apr, `외주 · ${req.result.by}`);
+  return apr;
+}
+
+async function handleOutsourceSubmitted(id) {
+  const db = loadDb();
+  const req = findRequest(db, id);
+  if (!req?.result) return;
+  const r = req.result;
+  const by = r.by || '외부 AI';
+  const mission = db.missions.find((m) => m.id === req.missionId);
+  const nowIso = new Date().toISOString();
+  try {
+    if (req.kind === 'consult') {
+      const apr = req.approvalId ? db.approvals.find((a) => a.id === req.approvalId) : null;
+      const consult = { requestId: req.id, by, summary: r.summary, document: String(r.document || '').slice(0, 12000), at: r.submittedAt };
+      if (apr) apr.consult = consult;
+      if (mission) {
+        leadSay(db, mission, '외부 자문 도착', `${by}의 외부 자문이 도착했습니다${apr ? ` (결재 "${apr.title}"에 첨부)` : ''}. ${oneLineText(r.summary || r.document, 220)}`);
+      }
+      rememberFact(db, { kind: 'lesson', missionId: req.missionId, text: `[외부 자문 · ${by}] ${oneLineText(r.summary || r.document, 220)}`, source: 'outsourcing' });
+      sendTelegramReport(db.settings, `외부 자문 도착 ${req.id}`, `${apr ? `${apr.title}\n` : ''}${oneLineText(r.summary || r.document, 700)}`, `outres:${req.id}`).catch(() => {});
+      req.status = 'accepted';
+    } else {
+      const task = req.taskId ? db.tasks.find((t) => t.id === req.taskId) : null;
+      let prNote = '';
+      if (r.prUrl) {
+        try {
+          const apr = await approvalFromExternalPr(db, req, mission);
+          prNote = ` PR을 결재 카드에 붙였습니다 ("${apr.title}").`;
+        } catch (err) {
+          prNote = ` 단, PR을 결재에 올리지 못했습니다: ${err.message}`;
+          appendLog(db, '외주 창구', `${req.id} PR 처리 실패: ${err.message}`, 'warning');
+        }
+      }
+      if (task) {
+        task.output = `> 외주 결과 · ${by}${r.prUrl ? ` · PR ${r.prUrl}` : ''}\n\n${r.summary ? `**요약** ${r.summary}\n\n` : ''}${r.document || ''}`.trim();
+        task.executionModeUsed = `external:${by}`;
+        task.updatedAt = nowIso;
+        delete task.autoRetryExhausted;
+        if (task.requiresApproval && !r.prUrl) {
+          task.status = 'awaiting_approval';
+          if (!db.approvals.some((a) => a.taskId === task.id && a.status === 'pending')) {
+            const ag = db.agents.find((a) => a.id === task.assigneeId) || db.agents[0];
+            const apr = createApprovalForTask(task, ag, mission || { id: task.missionId });
+            db.approvals.unshift(apr);
+            notifyAllApprovalChannels(db.settings, apr, `외주 · ${by}`);
+          }
+        } else {
+          task.status = 'completed';
+        }
+      }
+      if (mission) {
+        leadSay(db, mission, '외주 결과 도착', `${req.id} "${req.title}" 결과가 ${by}에게서 도착했습니다.${prNote} ${oneLineText(r.summary || r.document, 180)}`);
+        updateMissionStatus(db, mission.id);
+      }
+      rememberFact(db, { kind: 'result', missionId: req.missionId, text: `[외주 결과 · ${by}] ${req.title}: ${oneLineText(r.summary || r.document, 180)}`, source: 'outsourcing' });
+      sendTelegramReport(db.settings, `외주 결과 도착 ${req.id}`, `${req.title}\n${oneLineText(r.summary || r.document, 600)}${prNote}`, `outres:${req.id}`).catch(() => {});
+      req.status = 'accepted';
+      if (task && !r.prUrl && mission) maybeScheduleCodeBundle(db, mission, task);
+    }
+  } catch (err) {
+    appendLog(db, '외주 창구', `${req.id} 결과 처리 오류: ${err.message}`, 'warning');
+  }
+  req.updatedAt = nowIso;
+  req.history.push({ at: nowIso, event: req.status, by: 'system' });
+  saveDb(db);
+  await flushCloudBackup(db);
+}
+setOutsourcingHandlers({ onSubmitted: handleOutsourceSubmitted });
+
+/** 워치독: 잡고 사라진 요청 다시 열기, 저장소에 열린 외주 PR 자동 감지, 오래 방치된 요청 알림 */
+async function outsourcingWatch() {
+  const db = loadDb();
+  const released = releaseExpiredLeases(db);
+  if (released.length) appendLog(db, '외주 창구', `작업 시간이 지난 요청 다시 열기: ${released.join(', ')}`, 'info');
+  const now = Date.now();
+  for (const r of listRequests(db, { status: 'open' })) {
+    if (!r.reminded && now - Date.parse(r.createdAt) > 8 * 3600 * 1000) {
+      r.reminded = true;
+      sendTelegramReport(db.settings, `외주 요청 대기 ${r.id}`, `"${r.title}"이(가) 8시간째 아무도 가져가지 않았습니다. 이동 중이면 Antigravity에서 "CEO Office 외주 처리"를 실행해 주세요.`, `outremind:${r.id}`).catch(() => {});
+    }
+  }
+  saveDb(db);
+  const withRepo = listRequests(db, { status: 'active' }).filter((r) => r.repo && r.kind !== 'consult');
+  const byRepo = new Map();
+  for (const r of withRepo) byRepo.set(r.repo, [...(byRepo.get(r.repo) || []), r]);
+  for (const [repo, list] of byRepo) {
+    const cfg = getGithubRepoConfig(db.settings, { repo });
+    if (!cfg.enabled) continue;
+    try {
+      const res = await fetch(`https://api.github.com/repos/${repo}/pulls?state=open&per_page=30`, {
+        headers: { Authorization: `Bearer ${cfg.token}`, Accept: 'application/vnd.github+json', 'User-Agent': 'ai-ceo-hub' },
+        signal: AbortSignal.timeout(15000)
+      });
+      if (!res.ok) continue;
+      const prs = await res.json();
+      for (const r of list) {
+        const pr = prs.find((p) => String(p.title || '').includes(r.id) || String(p.head?.ref || '').includes(r.id));
+        if (!pr) continue;
+        await submitResult(r.id, {
+          worker: r.claimedBy || 'github',
+          summary: `PR 자동 감지: ${pr.title}`,
+          document: String(pr.body || '').trim() || `외부 작업자가 PR을 열었습니다: ${pr.html_url}`,
+          prUrl: pr.html_url
+        }).catch((err) => console.warn('outsource PR submit failed:', err.message));
+      }
+    } catch {
+      // ignore network errors
+    }
+  }
+}
+
+function outsourceAuthOk(c, db, body = {}) {
+  if (CEO_ADMIN_KEY && safeEqual(c.req.header('x-ceo-key'), CEO_ADMIN_KEY)) return true;
+  if (db.settings?.mcpToken) return checkInboxToken(c, db, body);
+  return !CEO_ADMIN_KEY;
+}
+
+function isCeoRequest(c) {
+  return !CEO_ADMIN_KEY || safeEqual(c.req.header('x-ceo-key'), CEO_ADMIN_KEY);
 }
 
 function getTelegramCallbacks() {
@@ -2638,7 +2999,8 @@ const ADMIN_OPEN_PATHS = [
   /^\/api\/agent-inbox\//,
   /^\/api\/telegram\/webhook$/,
   /^\/api\/mcp(\/info)?$/,
-  /^\/api\/auth\/telegram-(request|verify)$/
+  /^\/api\/auth\/telegram-(request|verify)$/,
+  /^\/api\/outsourcing/
 ];
 function safeEqual(a, b) {
   const ab = Buffer.from(String(a || ''));
@@ -4226,6 +4588,133 @@ app.get('/api/ops/health', (c) => {
   return c.json({ ai: getAiProviderHealth(), watchdog: db.settings.opsWatchdog || null });
 });
 
+// ---- 외부 AI 외주 · 자문 창구 (Antigravity · Aside · 기타 AI) ----
+app.get('/api/outsourcing', (c) => {
+  const db = loadDb();
+  if (!outsourceAuthOk(c, db)) return c.json({ error: '인증 필요 (x-ceo-key 또는 ?token=MCP토큰)' }, 401);
+  const status = String(c.req.query('status') || 'active');
+  const worker = String(c.req.query('worker') || '');
+  const list = listRequests(db, { status, worker });
+  return c.json({
+    count: list.length,
+    requests: list.map(summarizeRequest),
+    howTo: `요청서 전문: GET ${publicBaseUrl()}/api/outsourcing/{id}/packet · 시작: POST .../{id}/claim · 제출: POST .../{id}/submit`
+  });
+});
+
+app.get('/api/outsourcing/:id', (c) => {
+  const db = loadDb();
+  if (!outsourceAuthOk(c, db)) return c.json({ error: '인증 필요' }, 401);
+  const req = findRequest(db, c.req.param('id'));
+  if (!req) return c.json({ error: '외주 요청을 찾을 수 없습니다.' }, 404);
+  return c.json({ request: req, packet: buildPacket(db, req) });
+});
+
+app.get('/api/outsourcing/:id/packet', (c) => {
+  const db = loadDb();
+  if (!outsourceAuthOk(c, db)) return c.text('인증 필요 (x-ceo-key 헤더 또는 ?token=MCP토큰)', 401);
+  const req = findRequest(db, c.req.param('id'));
+  if (!req) return c.text('외주 요청을 찾을 수 없습니다.', 404);
+  return c.body(buildPacket(db, req), 200, { 'Content-Type': 'text/markdown; charset=utf-8' });
+});
+
+app.post('/api/outsourcing', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  if (!isCeoRequest(c)) return c.json({ error: 'CEO만 외주를 요청할 수 있습니다.' }, 401);
+  const db = loadDb();
+  let req;
+  if (body.approvalId && (body.kind === 'consult' || !body.kind)) {
+    const apr = db.approvals.find((a) => a.id === body.approvalId);
+    if (!apr) return c.json({ error: '결재 안건을 찾을 수 없습니다.' }, 404);
+    req = requestConsultForApproval(db, apr, 'CEO');
+  } else if (body.taskId) {
+    const task = db.tasks.find((t) => t.id === body.taskId);
+    if (!task) return c.json({ error: '업무를 찾을 수 없습니다.' }, 404);
+    const mission = db.missions.find((m) => m.id === task.missionId);
+    const kind = ['task', 'code', 'browser', 'research'].includes(body.kind) ? body.kind : mission && getMissionRepoCfg(db.settings, mission) && isCodeTask(task, db.agents.find((a) => a.id === task.assigneeId)) ? 'code' : 'task';
+    req = outsourceTask(db, task, {
+      kind,
+      worker: ['antigravity', 'aside', 'any'].includes(body.worker) ? body.worker : kind === 'code' ? 'antigravity' : kind === 'browser' ? 'aside' : 'any',
+      reason: String(body.reason || '대표님이 외부 AI에 직접 맡김').slice(0, 400),
+      createdBy: 'CEO'
+    });
+  } else {
+    const title = String(body.title || '').trim();
+    const goal = String(body.goal || '').trim();
+    if (!title || goal.length < 10) return c.json({ error: '제목과 해야 할 일(10자 이상)을 입력해 주세요.' }, 400);
+    const mission = body.missionId ? db.missions.find((m) => m.id === body.missionId) : null;
+    const repoCfg = mission ? getMissionRepoCfg(db.settings, mission) : null;
+    const kind = ['task', 'code', 'consult', 'browser', 'research'].includes(body.kind) ? body.kind : 'task';
+    const made = createOutsourcingRequest(db, {
+      kind,
+      title,
+      goal,
+      deliverable: body.deliverable || '',
+      missionId: mission?.id || '',
+      reason: String(body.reason || '대표님 직접 요청').slice(0, 400),
+      worker: ['antigravity', 'aside', 'any'].includes(body.worker) ? body.worker : 'any',
+      repo: kind === 'code' || kind === 'task' ? repoCfg?.repo || '' : '',
+      branch: repoCfg?.branch || 'main',
+      siteUrl: mission?.siteUrl || '',
+      context: mission ? buildMissionDigest(db, mission.id, 3000) : '',
+      createdBy: 'CEO'
+    });
+    req = made.request;
+    if (made.created) notifyOutsourceCreated(db, req);
+  }
+  saveDb(db);
+  await flushCloudBackup(db);
+  return c.json({ request: req, state: sanitizeStateForClient(db) });
+});
+
+app.post('/api/outsourcing/:id/claim', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const db = loadDb();
+  if (!outsourceAuthOk(c, db, body)) return c.json({ error: '인증 필요' }, 401);
+  try {
+    const req = claimRequest(c.req.param('id'), String(body.worker || c.req.query('worker') || 'any'));
+    return c.json({ ok: true, request: summarizeRequest(req), packet: buildPacket(loadDb(), req) });
+  } catch (err) {
+    return c.json({ ok: false, error: err.message }, 409);
+  }
+});
+
+app.post('/api/outsourcing/:id/submit', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const db = loadDb();
+  if (!outsourceAuthOk(c, db, body)) return c.json({ error: '인증 필요' }, 401);
+  try {
+    const req = await submitResult(c.req.param('id'), {
+      worker: body.worker || 'manual',
+      summary: body.summary || '',
+      document: body.document || body.result || '',
+      prUrl: body.prUrl || body.pr_url || ''
+    });
+    return c.json({ ok: true, request: summarizeRequest(req), state: isCeoRequest(c) ? sanitizeStateForClient(loadDb()) : undefined });
+  } catch (err) {
+    return c.json({ ok: false, error: err.message }, 400);
+  }
+});
+
+app.post('/api/outsourcing/:id/cancel', async (c) => {
+  if (!isCeoRequest(c)) return c.json({ error: 'CEO만 취소할 수 있습니다.' }, 401);
+  try {
+    const req = cancelRequest(c.req.param('id'), 'CEO');
+    const db = loadDb();
+    const task = req.taskId ? db.tasks.find((t) => t.id === req.taskId) : null;
+    if (task && task.status === 'outsourced') {
+      task.status = 'queued';
+      task.updatedAt = new Date().toISOString();
+      task.outsourceDeclined = true;
+      delete task.outsourceId;
+    }
+    saveDb(db);
+    return c.json({ ok: true, state: sanitizeStateForClient(db) });
+  } catch (err) {
+    return c.json({ ok: false, error: err.message }, 400);
+  }
+});
+
 // Agents CRUD
 app.post('/api/agents', async (c) => {
   const body = await c.req.json();
@@ -4303,6 +4792,15 @@ app.put('/api/settings', async (c) => {
   if (typeof body.approvalThresholdKRW === 'number') s.approvalThresholdKRW = Math.max(0, body.approvalThresholdKRW);
   if (typeof body.webhookUrl === 'string') s.webhookUrl = body.webhookUrl.trim();
   if (typeof body.globalDirectives === 'string') s.globalDirectives = body.globalDirectives.slice(0, 4000);
+  if (body.outsourcing && typeof body.outsourcing === 'object') {
+    const os = { ...getOutsourcingSettings(s) };
+    for (const k of ['enabled', 'autoOnFailure', 'autoForBrowser']) {
+      if (typeof body.outsourcing[k] === 'boolean') os[k] = body.outsourcing[k];
+    }
+    if (['off', 'proposals', 'proposals_and_reports'].includes(body.outsourcing.consultMode)) os.consultMode = body.outsourcing.consultMode;
+    if (Number.isFinite(Number(body.outsourcing.leaseHours))) os.leaseHours = Math.min(24, Math.max(1, Math.round(Number(body.outsourcing.leaseHours))));
+    s.outsourcing = os;
+  }
   if (body.leadEngine && typeof body.leadEngine === 'object') {
     const le = getLeadSettings(s);
     for (const k of ['enabled', 'telegramReports', 'autoFollowUp']) {
