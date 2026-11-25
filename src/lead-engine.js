@@ -32,6 +32,35 @@ export const LEAD_ENGINE_DEFAULTS = {
   reminderHours: 6 // 결재·외부 봇 대기가 이 시간 이상 멈춰 있으면 다시 알림
 };
 
+// 대표님의 "상시 지침"(앞으로/이제부터/~하지 마/이관 등) 감지 — 회의실 발언과 결재 메모 모두에 적용 (오타 '앛으로' 포함)
+export const STANDING_ORDER_RE =
+  /(기억해|기억하고|명심해|앞으로|앛으로|이제부터|지금부터|항상|절대|매번|잊지\s*마|하지\s*마|하지\s*말|하지\s*않|금지|이관|관련\s*없는|말고\s)/;
+
+export function isStandingOrder(text = '') {
+  const t = String(text || '').trim();
+  if (t.length < 6) return false;
+  if (/[?？]\s*$/.test(t)) return false;
+  return STANDING_ORDER_RE.test(t);
+}
+
+/** 미션 범위: mission.scope = { focus: '집중할 일', exclude: ['하지 말 일 키워드', ...] } */
+export function getMissionScope(mission) {
+  const s = mission?.scope && typeof mission.scope === 'object' ? mission.scope : {};
+  const exclude = (Array.isArray(s.exclude) ? s.exclude : String(s.exclude || '').split(','))
+    .map((x) => String(x).trim())
+    .filter((x) => x.length >= 2)
+    .slice(0, 20);
+  return { focus: String(s.focus || '').trim().slice(0, 600), exclude };
+}
+
+/** 작업/제안 텍스트가 미션의 금지 범위에 걸리면 걸린 키워드를 돌려줌 */
+export function findScopeViolations(mission, text = '') {
+  const { exclude } = getMissionScope(mission);
+  if (!exclude.length) return [];
+  const hay = String(text || '').toLowerCase().replace(/\s+/g, '');
+  return exclude.filter((k) => hay.includes(k.toLowerCase().replace(/\s+/g, '')));
+}
+
 const MAX_FACTS = 150;
 const MAX_PINNED = 20;
 const EXTERNAL_ACTION_RE = /외부 권한 미연동|대표님 실행 가이드|대표님이 직접/;
@@ -191,17 +220,26 @@ export function buildCompanyContext(db, missionId = '', { compact = false } = {}
   const facts = db.memory.facts || [];
 
   // 고정 기억(대표님 지침·교훈)은 작은 모델에도 최대한 많이 전달
-  const pinned = facts.filter((f) => f.pinned).slice(0, compact ? 9 : 14);
-  const pinnedIds = new Set(pinned.map((f) => f.id));
-  const own = facts.filter((f) => !pinnedIds.has(f.id) && missionId && f.missionId === missionId).slice(0, compact ? 6 : 12);
-  const ownIds = new Set(own.map((f) => f.id));
-  const global = facts
-    .filter((f) => !pinnedIds.has(f.id) && !ownIds.has(f.id) && (!f.missionId || ['directive', 'decision', 'lesson'].includes(f.kind)))
-    .slice(0, compact ? 3 : 6);
+  // 다른 업무(미션)의 기억은 섞지 않음: 다른 프로젝트 이야기가 들어가면 그 일을 따라 하게 됨
+  const missionPinned = missionId ? facts.filter((f) => f.pinned && f.missionId === missionId).slice(0, compact ? 8 : 12) : [];
+  const globalPinned = facts.filter((f) => f.pinned && !f.missionId).slice(0, compact ? 6 : 10);
+  const usedIds = new Set([...missionPinned, ...globalPinned].map((f) => f.id));
+  const own = missionId ? facts.filter((f) => !usedIds.has(f.id) && f.missionId === missionId).slice(0, compact ? 6 : 12) : [];
+  own.forEach((f) => usedIds.add(f.id));
+  const global = facts.filter((f) => !usedIds.has(f.id) && !f.missionId).slice(0, compact ? 3 : 6);
 
   const parts = [];
   if (directives) parts.push(`[CEO 전역 지침 — 모든 AI 팀원 공통, 항상 최우선 적용]\n${directives}`);
-  const memLines = [...pinned, ...own, ...global].map((f) => formatFact(f, missionTitles));
+  const missionObj = missionId ? (db.missions || []).find((m) => m.id === missionId) : null;
+  const scope = getMissionScope(missionObj);
+  if (missionObj && (scope.focus || scope.exclude.length || missionPinned.length)) {
+    const sl = [];
+    if (scope.focus) sl.push(`- 이 업무가 집중할 일: ${scope.focus}`);
+    if (scope.exclude.length) sl.push(`- 이 업무에서 하지 말 것(다른 팀 담당): ${scope.exclude.join(', ')} — 관련 작업·제안·분석 금지`);
+    for (const f of missionPinned) sl.push(`- (${kstShort(f.createdAt)}) ${f.text}`);
+    parts.push(`["${missionObj.title}" 업무에 대한 대표님 고정 지침 — 최우선, 어기면 안 됨]\n${sl.join('\n')}`);
+  }
+  const memLines = [...globalPinned, ...own, ...global].map((f) => formatFact(f, missionTitles));
   if (memLines.length) parts.push(`[회사 기억 — 이전 지시·결정·결과 (최신순)]\n${memLines.join('\n')}`);
 
   const mission = missionId ? (db.missions || []).find((m) => m.id === missionId) : null;
