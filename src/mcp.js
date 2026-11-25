@@ -5,6 +5,7 @@ import { loadDb, saveDb, appendLog, recordAgentHeartbeat, uid } from './store.js
 import { notifyWebhook } from './orchestrator.js';
 import { sendTelegramApprovalCard } from './telegram.js';
 import { sendWebPushNotification } from './push.js';
+import { buildCompanyContext } from './lead-engine.js';
 
 export const MCP_TOOL_CATALOG = [
   {
@@ -49,6 +50,9 @@ export function createCeoMcpServer() {
         companyName: db.settings.companyName,
         ceoName: db.settings.ceoName,
         defaultCostPolicy: db.settings.defaultCostPolicy,
+        // 모든 외부 에이전트(Claude·Muse·Cue)도 내부 AI와 같은 CEO 전역 지침·회사 기억을 따르도록 공유
+        globalDirectives: db.settings.globalDirectives || '',
+        companyContext: buildCompanyContext(db, '', { compact: true }),
         pendingApprovals,
         activeMissions: activeMissions.map((m) => ({
           id: m.id,

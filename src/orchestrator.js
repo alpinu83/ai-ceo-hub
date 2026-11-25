@@ -7,6 +7,25 @@ import { z } from 'zod';
 import { uid } from './store.js';
 import { buildMissionLiveContext } from './live-context.js';
 
+// ---- Company context hook (CEO 전역 지침 + 회사 기억 + 업무 상태) ----
+// API로 연결된 모델은 호출마다 기억이 없으므로, 서버가 등록한 provider가 매 호출에 공통 맥락을 붙여 줍니다.
+let companyContextProvider = null;
+export function setCompanyContextProvider(fn) {
+  companyContextProvider = typeof fn === 'function' ? fn : null;
+}
+function companyContextFor(missionId = '', opts = {}) {
+  if (!companyContextProvider) return '';
+  try {
+    return String(companyContextProvider(missionId || '', opts) || '').trim();
+  } catch {
+    return '';
+  }
+}
+function withCompanyContext(system, missionId = '', opts = {}) {
+  const ctx = companyContextFor(missionId, opts);
+  return ctx ? `${system}\n\n${ctx}` : system;
+}
+
 /**
  * Resolve a Vercel AI SDK model instance for any configured provider:
  * - Google Gemini (Free tier & Gemini 4 Neon) via @ai-sdk/google
@@ -820,7 +839,7 @@ export async function decomposeDirective({
           }).catch(() => '')
         : '';
 
-    const system = `당신은 AI 조직의 총괄 팀장(${leadAgent.name})입니다.
+    const system = withCompanyContext(`당신은 AI 조직의 총괄 팀장(${leadAgent.name})입니다.
 CEO의 지시를 3~5개 구체적 실무 작업으로 분해하고, 아래 조직원 중 최적 담당자(assigneeId)를 배정하세요.
 부서 배정 규칙:
 - 업무 영역이 "it_ops"이거나 코드 수정·버그 해결·SEO/데이터 파일 수정·보안 점검 지시일 때는 **IT유지보수팀(agent_it_dev, agent_it_sec, agent_it_qa)** 에게 우선 배정하세요.
@@ -832,7 +851,7 @@ CEO의 지시를 3~5개 구체적 실무 작업으로 분해하고, 아래 조�
 - GA4·AdSense 등 미연동 외부 API를 "실제 조회 완료"하라는 허위 업무 대신, 실제 코드·SEO·콘텐츠·체크리스트 중심으로 분해하세요.
 
 [활성 AI 조직원]
-${rosterText}`;
+${rosterText}`, '', { compact: true });
 
     try {
       const { object } = await generateObject({
@@ -909,7 +928,12 @@ export async function executeAgentTask({ task, mission, agent, settings, priorOu
 1. 아래 [실제 시스템 권한 및 도구 현황]에 제공된 실제 사이트 점검 결과와 실제 GitHub 저장소 파일 목록·커밋을 근거로 분석하고, **존재하는 실제 파일 경로**를 정확히 인용하세요.
 2. GA4 실제 트래픽·이탈률 수치, AdSense 수익, 서치콘솔 클릭수, 유료 광고 집행, 대외 이메일 발송 등 **미연동 외부 시스템에 접속·조회·실행했다고 절대 거짓으로 쓰지 마세요.** (추정치나 가설 수치를 실제 측정값처럼 꾸며내는 것도 금지)
 3. 미연동 외부 작업이 필요하면 반드시 \`[외부 권한 미연동 — 대표님 실행 가이드/초안]\` 배지를 달아 대표님이 직접 실행할 체크리스트로 정리하세요.
-4. 연동된 GitHub 저장소의 코드·SEO·데이터 수정안은 IT 유지보수팀이 \`실코드 수정 · GitHub PR\`로 즉시 반영할 수 있게 **대상 파일 경로와 구체적 변경 내용**을 명확히 제시하세요.`;
+4. 연동된 GitHub 저장소의 코드·SEO·데이터 수정안은 IT 유지보수팀이 \`실코드 수정 · GitHub PR\`로 즉시 반영할 수 있게 **대상 파일 경로와 구체적 변경 내용**을 명확히 제시하세요.
+5. 아래 [CEO 전역 지침]과 [회사 기억]은 이전 대화·결정의 요약입니다. 이미 결정·반려된 내용을 되풀이하지 말고, 그 결정을 전제로 작업하세요.`;
+    const companyCtx = companyContextFor(mission?.id);
+    const companyCtxCompact = companyContextFor(mission?.id, { compact: true });
+    const systemFull = companyCtx ? `${system}\n\n${companyCtx}` : system;
+    const systemCompact = companyCtxCompact ? `${system}\n\n${companyCtxCompact}` : system;
 
     const prompt = `미션: ${mission.title}
 CEO 원지시: ${mission.directive}
@@ -956,7 +980,7 @@ CEO 원지시: ${String(mission.directive || '').slice(0, 800)}
     try {
       const { text } = await generateText({
         model: resolved.model,
-        system,
+        system: systemFull,
         prompt,
         maxTokens: 2800,
         maxRetries: 0, abortSignal: AbortSignal.timeout(120000)
@@ -966,7 +990,7 @@ CEO 원지시: ${String(mission.directive || '').slice(0, 800)}
       const sizeErr = isSizeError(primaryErr);
       if (sizeErr) {
         try {
-          const { text } = await generateText({ model: resolved.model, system, prompt: compactPrompt, maxTokens: 2000, maxRetries: 0, abortSignal: AbortSignal.timeout(120000) });
+          const { text } = await generateText({ model: resolved.model, system: systemCompact, prompt: compactPrompt, maxTokens: 2000, maxRetries: 0, abortSignal: AbortSignal.timeout(120000) });
           return { output: text.trim(), executionModeUsed: `live_sdk:${resolved.label}(compact)`, live: true };
         } catch {
           // fall through to backups
@@ -974,10 +998,11 @@ CEO 원지시: ${String(mission.directive || '').slice(0, 800)}
       }
       for (const backup of buildBackupModels()) {
         try {
+          const useCompact = sizeErr || /groq/.test(backup.label);
           const { text } = await generateText({
             model: backup.model,
-            system,
-            prompt: sizeErr || /groq/.test(backup.label) ? compactPrompt : prompt,
+            system: useCompact ? systemCompact : systemFull,
+            prompt: useCompact ? compactPrompt : prompt,
             maxTokens: 2800,
             maxRetries: 0, abortSignal: AbortSignal.timeout(120000)
           });
@@ -1007,7 +1032,7 @@ CEO 원지시: ${String(mission.directive || '').slice(0, 800)}
     try {
       const { text } = await generateText({
         model: helperModel.model,
-        system: `당신은 총괄 팀장 보좌 AI입니다. 외부 실행 봇(${agent.name})이 바로 처리할 수 있도록 핵심 실행 체크리스트와 조건을 간결한 한국어 마크다운으로 정리하세요. 전화 예약·결제·이메일 발송을 "이미 완료했다"고 거짓으로 쓰지 마세요.`,
+        system: withCompanyContext(`당신은 총괄 팀장 보좌 AI입니다. 외부 실행 봇(${agent.name})이 바로 처리할 수 있도록 핵심 실행 체크리스트와 조건을 간결한 한국어 마크다운으로 정리하세요. 전화 예약·결제·이메일 발송을 "이미 완료했다"고 거짓으로 쓰지 마세요.`, mission?.id, { compact: true }),
         prompt: `미션: ${mission.title}\n담당 외부 봇: ${agent.name} (${channelLabel})\n작업: ${task.title}\n상세: ${task.description}${contextBlock}`
       });
       return {
@@ -1047,7 +1072,11 @@ export async function synthesizeMissionReport({ mission, tasks, agents, settings
     try {
       const { text } = await generateText({
         model: resolved.model,
-        system: `당신은 총괄 팀장(${leadAgent.name})입니다. 팀원 결과를 취합해 CEO가 30초 안에 파악하고 의사결정할 수 있는 최종 임원 보고서(Executive Brief)를 한국어 마크다운(표·체크리스트 포함)으로 작성하세요.`,
+        system: withCompanyContext(
+          `당신은 총괄 팀장(${leadAgent.name})입니다. 팀원 결과를 취합해 CEO가 30초 안에 파악하고 의사결정할 수 있는 최종 임원 보고서(Executive Brief)를 한국어 마크다운(표·체크리스트 포함)으로 작성하세요. 첫 두 줄은 "무엇이 끝났고 무엇이 남았는지"를 한 문장씩 사실대로 쓰고, 대표님이 직접 해야 할 일이 있으면 별도 체크리스트로 분리하세요.`,
+          mission?.id,
+          { compact: true }
+        ),
         prompt: `미션: ${mission.title}\nCEO 원지시: ${mission.directive}\n\n[팀원 작업 결과]\n${digest}`
       });
       return text.trim();
@@ -1134,7 +1163,8 @@ export async function proposeNextProjectPhase({ mission, tasks, agents, settings
       const system = `당신은 AI 조직의 총괄 팀장(${leadAgent.name})입니다.
 지속 프로젝트의 Phase ${currentPhase} 결과를 분석하고, 목표를 한 단계 더 진전시킬 **Phase ${nextPhase} 후속 추진 제안서**를 작성하세요.
 - 이미 완료된 리서치/초안을 반복하지 말고, 실제 성과·전환·개선·확장으로 이어지는 구체적 다음 단계를 제안하세요.
-- nextDirective는 CEO가 승인하는 즉시 팀원들에게 분배해 자동 실행할 수 있는 명확한 한국어 지시문으로 작성하세요.`;
+- nextDirective는 CEO가 승인하는 즉시 팀원들에게 분배해 자동 실행할 수 있는 명확한 한국어 지시문으로 작성하세요.
+${companyContextFor(mission?.id, { compact: true })}`;
 
       const prompt = `프로젝트명: ${mission.title}
 원래 목표: ${mission.directive}
@@ -1380,6 +1410,7 @@ export async function generateTeamChatReplies({ userMessage, mission, tasks, age
       const taskContext = tasks.length
         ? tasks.map((t) => `- [${t.status}] ${t.title} (담당: ${agents.find((a) => a.id === t.assigneeId)?.name || t.assigneeId})`).join('\n')
         : '현재 등록된 업무 없음';
+      const chatCtx = companyContextFor(mission?.id, { compact: true });
       const system = `당신은 "${settings?.companyName || 'CEO Office'}"의 ${ag.tier === 'lead' ? '총괄 팀장' : 'AI 실무 에이전트'} "${ag.name}" (${ag.roleTitle})입니다.
 ${ceoName}의 지시나 질문에 팀 대표로 핵심만 간결하고 정확하게 한국어로 답하세요 (2~4문장).
 다른 외부 봇(피클, Cue, Muse)이 해야 할 전화 예약·결제 등을 "이미 전화했다/완료했다"고 거짓말하지 말고, 현재 실제 진행 상태와 다음 조치만 사실대로 보고하세요.
@@ -1388,7 +1419,8 @@ ${
     ? `[시스템이 실제로 수행한 조치] ${actionNote}
 이 조치만 "등록했다/시작했다"고 말할 수 있습니다. 완료되지 않은 일을 완료했다고 하지 마세요.`
     : `이번 발언으로 등록된 실제 업무는 없습니다. "즉시 반영하겠습니다/전달하겠습니다/보고드리겠습니다" 같은 약속을 하지 말고, 질문에는 아는 사실만 답하세요.`
-}`;
+}${ag.tier === 'lead' ? `
+총괄 팀장으로서 막힌 일이 있으면 원인과 대표님이 해 주셔야 할 일(권한·키·결정)을 구체적으로 요청하세요.` : ''}${chatCtx ? `\n\n${chatCtx}` : ''}`;
 
       try {
         const { text } = await generateText({
@@ -1524,3 +1556,68 @@ export async function generateStandupSession({ mission, tasks, agents, settings 
   return turns;
 }
 
+
+// ================================================================
+// \ud300\uc7a5 \ub2a5\ub3d9 \ucd94\uc9c4: \ubbf8\uc158\uc758 \uc791\uc5c5\uc774 \ubaa8\ub450 \ub05d\ub09c \ub4a4, \ub300\ud45c\ub2d8\uc774 \ubb3c\uc5b4\ubcf4\uae30 \uc804\uc5d0 \ud300\uc7a5\uc774 \uc2a4\uc2a4\ub85c \ub2e4\uc74c \ud589\ub3d9\uc744 \uc815\ud569\ub2c8\ub2e4.
+//  - \ubaa9\ud45c \ub2ec\uc131 \u2192 \uc885\ub8cc \ubcf4\uace0
+//  - \uc790\uccb4 \ucc98\ub9ac \uac00\ub2a5\ud55c \ud6c4\uc18d \uc791\uc5c5 \u2192 \ud300\uc7a5 \uc804\uacb0\ub85c \ubc30\uc815\u00b7\uc790\ub3d9 \uc2e4\ud589
+//  - \ub300\ud45c\ub2d8\ub9cc \ud560 \uc218 \uc788\ub294 \uc77c(\uad8c\ud55c\u00b7\ud0a4\u00b7\uacb0\uc815\u00b7\uc678\ubd80 \uacc4\uc815 \uc791\uc5c5) \u2192 \uad6c\uccb4\uc801\uc73c\ub85c \uc694\uccad
+// ================================================================
+const LeadFollowUpSchema = z.object({
+  goalStatus: z.enum(['done', 'continue', 'blocked']).describe('\uc6d0\ub798 \uc9c0\uc2dc\uac00 \ub05d\ub0ac\uc73c\uba74 done, \ud300\uc774 \ub354 \ud560 \uc77c\uc774 \uc788\uc73c\uba74 continue, \ub300\ud45c\ub2d8 \uc870\uce58 \uc5c6\uc774\ub294 \uc9c4\ud589 \ubd88\uac00\uba74 blocked'),
+  report: z.string().describe('\ub300\ud45c\ub2d8\uaed8 \ub4dc\ub9ac\ub294 2~4\ubb38\uc7a5 \ubcf4\uace0. \uc2e4\uc81c \ud655\uc778\ub41c \uc0ac\uc2e4\ub9cc.'),
+  nextTasks: z
+    .array(
+      z.object({
+        title: z.string(),
+        description: z.string(),
+        assigneeId: z.string().describe('\uc544\ub798 \uc870\uc9c1\uc6d0 \ubaa9\ub85d\uc758 id'),
+        isCodeChange: z.boolean().describe('\uc5f0\ub3d9 \uc800\uc7a5\uc18c \ucf54\ub4dc\u00b7\ubb38\uad6c\u00b7SEO \ud30c\uc77c\uc744 \uc2e4\uc81c\ub85c \uace0\uccd0\uc57c \ud558\ub294 \uc77c\uc774\uba74 true')
+      })
+    )
+    .max(3),
+  ceoRequests: z.array(z.string()).max(4).describe('\ub300\ud45c\ub2d8\ub9cc \ud560 \uc218 \uc788\ub294 \uc77c(\uad8c\ud55c\u00b7API \ud0a4\u00b7\uacb0\uc815\u00b7\uc678\ubd80 \uacc4\uc815 \uc791\uc5c5)\uc744 \uad6c\uccb4\uc801\uc73c\ub85c')
+});
+
+export async function planLeadFollowUp({ mission, digest, agents, settings }) {
+  const leadAgent = agents.find((a) => a.id === (mission?.leadAgentId || 'agent_gemini_neon')) || agents[0];
+  const resolved = resolveLanguageModel(leadAgent, settings) || resolveLiveBackendModel(settings);
+  if (!resolved) return null;
+  const roster = agents
+    .filter((a) => a.active && ['exaone', 'gemini', 'groq', 'openrouter'].includes(a.provider))
+    .map((a) => `- id: "${a.id}", ${a.name} (${a.roleTitle})`)
+    .join('\n');
+  const system = withCompanyContext(
+    `\ub2f9\uc2e0\uc740 \ucd1d\uad04 \ud300\uc7a5(${leadAgent.name})\uc785\ub2c8\ub2e4. \ud300\uc6d0\ub4e4\uc758 \uc791\uc5c5\uc774 \ubaa8\ub450 \ub05d\ub09c \uc0c1\ud0dc\uc785\ub2c8\ub2e4. \ub300\ud45c\ub2d8\uc774 \ubb3c\uc5b4\ubcf4\uae30 \uc804\uc5d0 \ub2e4\uc74c \ud589\ub3d9\uc744 \uc2a4\uc2a4\ub85c \uc815\ud558\uc138\uc694.
+\uaddc\uce59:
+- \uc6d0\ub798 \uc9c0\uc2dc\uac00 \uc774\ubbf8 \ub2ec\uc131\ub410\uc73c\uba74 goalStatus=done, nextTasks\ub294 \ube48 \ubc30\uc5f4.
+- \ud300\uc774 \uc9c1\uc811 \ub05d\ub0bc \uc218 \uc788\ub294 \uad6c\uccb4\uc801 \ud6c4\uc18d \uc791\uc5c5\ub9cc nextTasks\uc5d0 \ub123\uc73c\uc138\uc694(\ucd5c\ub300 3\uac1c). \uc774\ubbf8 \ud55c \uc77c\uc744 \ubc18\ubcf5\ud558\uac70\ub098 \ub9c9\uc5f0\ud55c \ub9ac\uc11c\uce58\u00b7\ubcf4\uace0\uc11c\ub9cc \ub298\ub9ac\ub294 \uc791\uc5c5\uc740 \uae08\uc9c0.
+- \uacb0\uc81c\u00b7\uad11\uace0\ube44\u00b7\uc678\ubd80 \ubc1c\uc1a1\u00b7\uc678\ubd80 \uacc4\uc815(\uc560\ub4dc\uc13c\uc2a4\u00b7GA4\u00b7\uc11c\uce58\ucf58\uc194 \ub4f1) \uc870\uc791\uc740 nextTasks\uac00 \uc544\ub2c8\ub77c ceoRequests\uc5d0 \uad6c\uccb4\uc801 \uc808\ucc28\ub85c \uc4f0\uc138\uc694.
+- \uad8c\ud55c\u00b7\ud0a4 \ubd80\uc871 \ub4f1\uc73c\ub85c \ub9c9\ud614\uc73c\uba74 goalStatus=blocked\ub85c \ud558\uace0 \ud544\uc694\ud55c \uc870\uce58\ub97c ceoRequests\uc5d0 \uc4f0\uc138\uc694.
+- report\uc5d0\ub294 \ud655\uc778\ub41c \uc0ac\uc2e4\ub9cc \uc4f0\uace0 \ucd94\uce21 \uc218\uce58\ub97c \uc2e4\uc81c\uac12\ucc98\ub7fc \uc4f0\uc9c0 \ub9c8\uc138\uc694.
+
+[\ubc30\uc815 \uac00\ub2a5\ud55c \ub0b4\ubd80 AI \uc870\uc9c1\uc6d0]
+${roster}`,
+    mission?.id,
+    { compact: true }
+  );
+  const { object } = await generateObject({
+    model: resolved.model,
+    schema: LeadFollowUpSchema,
+    system,
+    prompt: digest,
+    maxRetries: 0,
+    abortSignal: AbortSignal.timeout(120000)
+  });
+  const validIds = new Set(agents.filter((a) => a.active).map((a) => a.id));
+  return {
+    goalStatus: object.goalStatus,
+    report: String(object.report || '').trim(),
+    nextTasks: (object.nextTasks || [])
+      .filter((t) => t?.title && t?.description)
+      .map((t) => ({ ...t, assigneeId: validIds.has(t.assigneeId) ? t.assigneeId : leadAgent.id })),
+    ceoRequests: (object.ceoRequests || []).map((s) => String(s).trim()).filter(Boolean),
+    leadAgentId: leadAgent.id,
+    usedModel: resolved.label || ''
+  };
+}

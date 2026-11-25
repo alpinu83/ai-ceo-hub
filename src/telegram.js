@@ -82,6 +82,22 @@ function shouldThrottleTelegram(dedupKey) {
   return false;
 }
 
+/**
+ * 팀장 보고(완료 보고·후속 추진·배포 결과). 특이점 알림과 달리 "필요한 보고"이므로 본문을 더 길게 보냅니다.
+ * dedupKey가 같으면 10분 안에 다시 보내지 않습니다.
+ */
+export async function sendTelegramReport(settings, title, body, dedupKey = '') {
+  const tg = settings?.telegram;
+  if (!isValidBotToken(tg?.botToken) || !isNumericChatId(tg?.chatId)) return { ok: false, skipped: true };
+  if (shouldThrottleTelegram(`report:${dedupKey || String(title || '').slice(0, 60)}`)) return { ok: true, deduplicated: true };
+  const text = [`<b>📋 [팀장 보고] ${escapeHtml(title)}</b>`, '', escapeHtml(String(body || '').slice(0, 3200))].join('\n');
+  try {
+    return await sendTelegramText(tg.botToken, tg.chatId, text);
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
 export async function sendTelegramAlert(settings, title, detail) {
   const tg = settings?.telegram;
   if (!isValidBotToken(tg?.botToken) || !isNumericChatId(tg?.chatId)) return { ok: false, skipped: true };
@@ -296,6 +312,17 @@ export async function handleTelegramUpdate(update, callbacks) {
         ).catch(() => {});
         return { handled: true, command: '/order' };
       }
+    }
+
+    // 자유 대화: 명령어가 아닌 메시지는 회의실 발언과 똑같이 처리(지시면 실제 업무 등록, 질문이면 팀장이 답변)
+    if (!text.startsWith('/') && typeof callbacks.onChat === 'function') {
+      try {
+        const reply = await callbacks.onChat(text);
+        if (reply) await sendTelegramText(tg.botToken, chatId, reply).catch(() => {});
+      } catch (err) {
+        await sendTelegramText(tg.botToken, chatId, `처리 중 오류가 났습니다: ${escapeHtml(String(err.message || err).slice(0, 200))}`).catch(() => {});
+      }
+      return { handled: true, command: 'chat' };
     }
   }
 
