@@ -49,10 +49,15 @@ import {
   buildMissionDigest,
   escapeTelegramHtml
 } from './src/lead-engine.js';
+import { describeSkillsForClient, getSkillSettings, selectSkills, renderSkills } from './src/skills.js';
 import { handleOfficialMcpHttp, MCP_TOOL_CATALOG } from './src/mcp.js';
 import {
   sendTelegramAlert,
   sendTelegramReport,
+  sendTelegramGated,
+  setTelegramDeferHandler,
+  isQuietNow,
+  getTelegramNotifyPrefs,
   sendTelegramApprovalCard,
   sendTelegramText,
   testTelegramBot,
@@ -315,6 +320,7 @@ async function autoStartLiveMissionTasks(missionId, { proposeNext = true } = {})
         const doneIso = new Date().toISOString();
         taskRow.output = res.output;
         taskRow.executionModeUsed = res.executionModeUsed;
+        if (res.quality) taskRow.quality = res.quality;
         taskRow.updatedAt = doneIso;
 
         if (taskRow.requiresApproval) {
@@ -412,13 +418,16 @@ async function autoStartLiveMissionTasks(missionId, { proposeNext = true } = {})
   try {
     if (isProjectMission && proposeNext) {
       await submitNextPhaseProposal(missionId);
+    } else {
+      // 그 외(회의실 지시·단건 업무): 단계가 끝나면 팀장이 스스로 검토해 제안서를 올림
+      scheduleLeadAdvanceCheck(missionId);
     }
   } catch {
     // non-fatal
   }
 }
 
-async function submitNextPhaseProposal(missionId) {
+async function submitNextPhaseProposal(missionId, { leadAssessment = '' } = {}) {
   const db = loadDb();
   const mission = db.missions.find((m) => m.id === missionId);
   if (!mission) return { ok: false, error: '미션을 찾을 수 없습니다.' };
@@ -441,7 +450,8 @@ async function submitNextPhaseProposal(missionId) {
     mission,
     tasks: missionTasks,
     agents: db.agents,
-    settings: db.settings
+    settings: db.settings,
+    leadAssessment
   });
 
   const leadId = mission.leadAgentId || 'agent_gemini_neon';
@@ -828,6 +838,113 @@ function createItPrApproval(db, mission, result, { taskIds = [], titlePrefix = '
 // ================================================================
 // 총괄 팀장 보고 · 회사 기억 · 능동 추진
 // ================================================================
+// ================================================================
+// 텔레그램 알림 설정: 보고 켜기/끄기 · 방해금지 시간(그 사이 알림은 모아두었다가 끝나면 요약 발송)
+// ================================================================
+function sanitizeNotifyPrefs(input = {}, current = {}) {
+  const cur = getTelegramNotifyPrefs({ telegram: { notify: current } });
+  const hm = (v, d) => (/^\d{1,2}:\d{2}$/.test(String(v || '').trim()) ? String(v).trim().padStart(5, '0') : d);
+  const q = input.quiet && typeof input.quiet === 'object' ? input.quiet : {};
+  return {
+    reports: typeof input.reports === 'boolean' ? input.reports : cur.reports,
+    alerts: typeof input.alerts === 'boolean' ? input.alerts : cur.alerts,
+    approvals: typeof input.approvals === 'boolean' ? input.approvals : cur.approvals,
+    quiet: {
+      enabled: typeof q.enabled === 'boolean' ? q.enabled : cur.quiet.enabled,
+      start: hm(q.start, cur.quiet.start),
+      end: hm(q.end, cur.quiet.end),
+      allowUrgent: typeof q.allowUrgent === 'boolean' ? q.allowUrgent : cur.quiet.allowUrgent
+    }
+  };
+}
+
+function queueDeferredTelegram(item) {
+  try {
+    const db = loadDb();
+    ensureLeadDefaults(db);
+    const q = Array.isArray(db.leadState.telegramQueue) ? db.leadState.telegramQueue : [];
+    const key = `${item.kind}:${item.approvalId || item.title || ''}`;
+    if (!q.some((x) => `${x.kind}:${x.approvalId || x.title || ''}` === key)) {
+      q.push({ kind: item.kind, title: String(item.title || '').slice(0, 120), body: String(item.body || '').slice(0, 600), approvalId: item.approvalId || '', at: item.at || new Date().toISOString() });
+    }
+    db.leadState.telegramQueue = q.slice(-60);
+    saveDb(db);
+  } catch (err) {
+    console.warn('telegram defer failed:', err.message);
+  }
+}
+
+let telegramFlushRunning = false;
+async function flushTelegramQueue({ force = false } = {}) {
+  if (telegramFlushRunning) return;
+  const db = loadDb();
+  const q = db.leadState?.telegramQueue;
+  if (!Array.isArray(q) || !q.length) return;
+  if (!force && isQuietNow(db.settings)) return;
+  const tg = db.settings.telegram || {};
+  if (!tg.botToken || !tg.chatId) return;
+  telegramFlushRunning = true;
+  try {
+    db.leadState.telegramQueue = [];
+    saveDb(db);
+    const label = { report: '보고', alert: '특이점', approval: '결재 요청' };
+    const plain = (s) => String(s || '').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+    const lines = [`<b>🌅 방해금지 시간 동안 쌓인 알림 ${q.length}건</b>`, ''];
+    for (const it of q) {
+      lines.push(`• [${label[it.kind] || '알림'}] <b>${escapeTelegramHtml(plain(it.title))}</b>${it.body ? `\n  ${escapeTelegramHtml(plain(it.body).slice(0, 220))}` : ''}`);
+    }
+    let text = lines.join('\n');
+    if (text.length > 3800) text = `${text.slice(0, 3780)}\n…`;
+    await sendTelegramText(tg.botToken, tg.chatId, text).catch(() => {});
+    // 아직 대기 중인 결재는 버튼이 있는 카드로 다시 보냄
+    const fresh = loadDb();
+    const agentName = (id) => fresh.agents.find((a) => a.id === id)?.name || id;
+    for (const it of q.filter((x) => x.kind === 'approval' && x.approvalId).slice(0, 6)) {
+      const apr = fresh.approvals.find((a) => a.id === it.approvalId && a.status === 'pending');
+      if (apr) await sendTelegramApprovalCard(fresh.settings, apr, agentName(apr.agentId), '', { force: true }).catch(() => {});
+    }
+  } finally {
+    telegramFlushRunning = false;
+  }
+}
+
+async function handleNotifyCommand(cmd, arg = '') {
+  const db = loadDb();
+  db.settings.telegram = db.settings.telegram || {};
+  const cur = getTelegramNotifyPrefs(db.settings);
+  const a = String(arg || '').trim().toLowerCase();
+  let msg = '';
+  if (cmd === 'report') {
+    if (['on', '켜기', '켜', 'start'].includes(a)) cur.reports = true;
+    else if (['off', '끄기', '꺼', 'stop'].includes(a)) cur.reports = false;
+    msg = `팀장 보고 알림: <b>${cur.reports ? '켜짐' : '꺼짐'}</b>${cur.reports ? '' : ' (회의실에는 계속 기록됩니다)'}`;
+  } else if (cmd === 'quiet') {
+    const m = a.match(/(\d{1,2}:\d{2})\s*[-~]\s*(\d{1,2}:\d{2})/);
+    if (m) {
+      cur.quiet = { ...cur.quiet, enabled: true, start: m[1].padStart(5, '0'), end: m[2].padStart(5, '0') };
+    } else if (['off', '끄기', '해제'].includes(a)) {
+      cur.quiet = { ...cur.quiet, enabled: false };
+    } else if (['on', '켜기'].includes(a)) {
+      cur.quiet = { ...cur.quiet, enabled: true };
+    }
+    msg = cur.quiet.enabled
+      ? `방해금지: <b>${cur.quiet.start} ~ ${cur.quiet.end}</b> (한국 시간). 이 시간에 온 알림은 모아두었다가 끝나면 요약해서 보내드려요.${cur.quiet.allowUrgent ? ' 긴급 특이점 알림은 바로 보냅니다.' : ''}`
+      : '방해금지: <b>꺼짐</b>. 예) /quiet 23:00-08:00';
+  } else {
+    msg = [
+      `보고: <b>${cur.reports ? '켜짐' : '꺼짐'}</b> · 특이점: <b>${cur.alerts ? '켜짐' : '꺼짐'}</b> · 결재 요청: <b>${cur.approvals ? '켜짐' : '꺼짐'}</b>`,
+      `방해금지: <b>${cur.quiet.enabled ? `${cur.quiet.start} ~ ${cur.quiet.end}` : '꺼짐'}</b>${isQuietNow({ telegram: { notify: cur } }) ? ' (지금 방해금지 중)' : ''}`,
+      '변경: /report on|off · /quiet 23:00-08:00 · /quiet off'
+    ].join('\n');
+  }
+  db.settings.telegram.notify = sanitizeNotifyPrefs(cur, db.settings.telegram.notify);
+  appendLog(db, '텔레그램 봇', `알림 설정 변경/조회: /${cmd} ${arg}`.trim(), 'info');
+  saveDb(db);
+  await flushCloudBackup(db);
+  if (cmd === 'quiet' && !isQuietNow(db.settings)) flushTelegramQueue().catch(() => {});
+  return msg;
+}
+
 function leadAgentFor(db, mission) {
   return (
     db.agents.find((a) => a.id === (mission?.leadAgentId || 'agent_gemini_neon')) ||
@@ -853,14 +970,46 @@ function leadMessage(db, missionId, statusText, text, type = 'plan') {
   });
 }
 
-/** Team-lead report to Telegram. Falls back to the legacy alert when lead reports are turned off. */
-function leadTelegram(db, title, body, key = '', { fallbackAlert = false } = {}) {
+/** Team-lead report to Telegram. 보고 켜기/끄기·방해금지 시간은 telegram.js의 알림 권한(gate)에서 처리 */
+function leadTelegram(db, title, body, key = '') {
   const cfg = getLeadSettings(db.settings);
-  if (cfg.enabled && cfg.telegramReports) {
-    sendTelegramReport(db.settings, title, body, key).catch(() => {});
-  } else if (fallbackAlert) {
-    sendTelegramAlert(db.settings, title, String(body || '').slice(0, 300)).catch(() => {});
+  if (!cfg.enabled) return;
+  sendTelegramReport(db.settings, title, body, key).catch(() => {});
+}
+
+// 현 단계가 끝나면(작업 완료·배포 완료 후) 팀장이 스스로 다음 단계 제안서를 결재에 올리도록 점검 예약
+const leadAdvanceTimers = new Map();
+function scheduleLeadAdvanceCheck(missionId, delayMs = 6 * 60 * 1000) {
+  if (!missionId || process.env.CI) return;
+  clearTimeout(leadAdvanceTimers.get(missionId));
+  leadAdvanceTimers.set(
+    missionId,
+    setTimeout(async () => {
+      leadAdvanceTimers.delete(missionId);
+      try {
+        const db = loadDb();
+        if (!getLeadSettings(db.settings).enabled) return;
+        const f = collectFollowUps(db).find((x) => x.missionId === missionId);
+        if (f?.autoPlan) await leadAutoAdvance(missionId);
+      } catch (err) {
+        console.warn('lead advance check failed:', err.message);
+      }
+    }, delayMs)
+  );
+}
+
+/** next_phase 제안 결재 처리: 승인=착수, 수정 지시=메모 반영해 제안서 재작성 */
+async function handleNextPhaseDecision(apr, decision, note = '') {
+  if (!apr || apr.kind !== 'next_phase') return null;
+  if (decision === 'approved' && apr.proposedDirective) {
+    return launchNextProjectPhase(apr.missionId, apr.proposedDirective, note);
   }
+  if (decision === 'revision_requested') {
+    return submitNextPhaseProposal(apr.missionId, {
+      leadAssessment: `대표님 수정 지시(이전 제안 "${apr.title}"): ${note || '다시 검토'}`
+    });
+  }
+  return null;
 }
 
 async function leadReportAfterRun(missionId, taskIds = [], { codeResult = null } = {}) {
@@ -964,7 +1113,28 @@ async function leadAutoAdvance(missionId) {
   const st = missionLeadState(db, missionId);
   const lines = [`**[팀장 후속 추진] ${m.title}**`, plan.report || ''];
   let started = false;
-  if (plan.goalStatus === 'continue' && plan.nextTasks.length) {
+  let proposed = null;
+  // 기본(propose): 현 단계가 끝났으면 팀장이 다음 단계 제안서를 스스로 결재에 올림 (대표님이 요청하지 않아도)
+  if ((cfg.advanceMode || 'propose') === 'propose' && plan.goalStatus !== 'blocked') {
+    saveDb(db);
+    const assessment = [
+      plan.report,
+      plan.nextTasks.length ? `팀장이 본 후속 작업 후보: ${plan.nextTasks.map((t) => t.title).join(' / ')}` : '',
+      plan.ceoRequests.length ? `대표님 요청 사항(지시문에 넣지 말 것): ${plan.ceoRequests.join(' / ')}` : ''
+    ]
+      .filter(Boolean)
+      .join('\n');
+    try {
+      const res = await submitNextPhaseProposal(missionId, { leadAssessment: assessment });
+      if (res?.ok && res.approval) proposed = res.approval;
+    } catch (err) {
+      appendLog(loadDb(), '총괄 팀장', `"${m.title}" 다음 단계 제안 작성 실패: ${err.message}`, 'warning');
+    }
+    db = loadDb();
+    if (proposed) {
+      lines.push('', `현 단계를 마무리하고 다음 단계 제안서 "${proposed.title}"를 결재함에 올렸습니다. 승인하시면 바로 착수하고, 수정 지시를 주시면 반영해 다시 올리겠습니다.`);
+    }
+  } else if (plan.goalStatus === 'continue' && plan.nextTasks.length) {
     const created = createLeadTasks(db, m, plan.nextTasks);
     if (created.length) {
       st.autoRounds = Number(st.autoRounds || 0) + 1;
@@ -983,13 +1153,20 @@ async function leadAutoAdvance(missionId) {
     lines.push('', '**대표님께 요청드립니다**', ...plan.ceoRequests.map((r) => `- ${r}`));
   }
   const text = lines.filter((l, i) => l || i > 1).join('\n');
-  rememberFact(db, { kind: 'result', missionId, text: `팀장 판단(${plan.goalStatus}): ${plan.report}`, source: 'lead_followup' });
-  leadMessage(db, missionId, started ? '후속 추진' : plan.ceoRequests.length ? '대표님 조치 요청' : '업무 마무리', text, plan.ceoRequests.length ? 'approval' : 'plan');
-  st.lastReportAt = new Date().toISOString();
-  appendLog(db, '총괄 팀장', `"${m.title}" 후속 추진 검토: ${plan.goalStatus}${started ? ' → 후속 작업 배정' : ''}`, 'info');
+  const st2 = missionLeadState(db, missionId);
+  rememberFact(db, { kind: 'result', missionId, text: `팀장 판단(${plan.goalStatus}): ${plan.report}${proposed ? ` → 제안서 결재 상신: ${proposed.title}` : ''}`, source: 'lead_followup' });
+  leadMessage(
+    db,
+    missionId,
+    proposed ? '단계 마무리 · 제안서 상신' : started ? '후속 추진' : plan.ceoRequests.length ? '대표님 조치 요청' : '업무 마무리',
+    text,
+    proposed || plan.ceoRequests.length ? 'approval' : 'plan'
+  );
+  st2.lastReportAt = new Date().toISOString();
+  appendLog(db, '총괄 팀장', `"${m.title}" 후속 추진 검토: ${plan.goalStatus}${proposed ? ' → 다음 단계 제안 결재 상신' : started ? ' → 후속 작업 배정' : ''}`, 'info');
   saveDb(db);
   await flushCloudBackup(db);
-  leadTelegram(db, `${started ? '후속 추진' : '검토 결과'}: ${m.title}`, text.replace(/\*\*/g, ''), `plan:${missionId}:${st.lastPlanAt}`);
+  leadTelegram(db, `${proposed ? '단계 마무리·제안 상신' : started ? '후속 추진' : '검토 결과'}: ${m.title}`, text.replace(/\*\*/g, ''), `plan:${missionId}:${st2.lastPlanAt}`);
   if (started) autoStartLiveMissionTasks(missionId, { proposeNext: false }).catch(() => {});
   return plan;
 }
@@ -1559,7 +1736,8 @@ async function watchAndReportDeployment(aprId) {
     const doneText = `[완료] "${apr.title}"\n${apr.repo} ${prLabel}이 main에 합쳐지고 배포까지 끝났습니다 (커밋 ${sha7}).${liveUrl}\n추가로 바꿀 점이 있으면 말씀해 주세요.`;
     leadMessage(db, apr.missionId, '작업 완료 보고', doneText, 'plan');
     rememberFact(db, { kind: 'result', missionId: apr.missionId, text: `${apr.repo} ${prLabel} 머지·배포 완료: ${apr.title}`, source: 'deploy' });
-    leadTelegram(db, `작업 완료: ${apr.repo}`, doneText, `deploy:${sha7}`, { fallbackAlert: true });
+    leadTelegram(db, `작업 완료: ${apr.repo}`, doneText, `deploy:${sha7}`);
+    scheduleLeadAdvanceCheck(apr.missionId);
   } else if (res.status === 'failure') {
     const failedRun = (res.runs || []).find((r) => !['success', 'skipped', 'neutral'].includes(r.conclusion));
     setCodeStatus(apr, 'deploy_failed', { deployRuns: res.runs, error: failedRun?.name || '' });
@@ -1896,7 +2074,7 @@ async function runRoutine(routineId, { slotKeys = [], manual = false } = {}) {
 
     const tg = db.settings.telegram || {};
     if (telegramHtml && r.notify === 'always' && tg.botToken && tg.chatId) {
-      sendTelegramText(tg.botToken, tg.chatId, telegramHtml).catch(() => {});
+      sendTelegramGated(db.settings, 'report', telegramHtml, r.title).catch(() => {});
     } else if (anomalies.length && r.notify !== 'never') {
       notifyTelegramAnomaly(db.settings, `${r.title}: 이상 ${anomalies.length}건`, anomalies.slice(0, 4).join('\n'));
     }
@@ -1993,6 +2171,7 @@ async function opsTick() {
       lastWatchdogAt = Date.now();
       await runWatchdog();
     }
+    await flushTelegramQueue();
     const leadCfg = getLeadSettings(loadDb().settings);
     const followEveryMs = Math.max(10, Number(leadCfg.followUpMinutes) || 30) * 60 * 1000;
     if (leadCfg.enabled && Date.now() - lastLeadFollowUpAt > followEveryMs) {
@@ -2033,8 +2212,8 @@ function getTelegramCallbacks() {
     },
     onDecision: async (aprId, decision, note) => {
       const res = applyApprovalDecisionInDb(aprId, decision, note);
-      if (res.ok && res.approval?.kind === 'next_phase' && decision === 'approved' && res.approval.proposedDirective) {
-        await launchNextProjectPhase(res.approval.missionId, res.approval.proposedDirective, note);
+      if (res.ok && res.approval?.kind === 'next_phase') {
+        await handleNextPhaseDecision(res.approval, decision, note === 'Telegram 모바일 원터치 결재' ? '' : note);
       } else if (res.ok && isCodeApproval(res.db, res.approval)) {
         res.codeApply = decision === 'approved';
         handleCodeDecision(res.approval.id, decision).catch((err) => {
@@ -2057,10 +2236,12 @@ function getTelegramCallbacks() {
         `• CEO 결재 대기: <b>${pending}건</b>`,
         ``,
         `명령어: /approvals · /order 지시내용`,
-        `자유 대화: 그냥 메시지를 보내면 총괄 팀장이 답하고, 지시면 실제 업무로 등록합니다. (#업무명 으로 채널 지정, #전체 로 해제)`
+        `자유 대화: 그냥 메시지를 보내면 총괄 팀장이 답하고, 지시면 실제 업무로 등록합니다. (#업무명 으로 채널 지정, #전체 로 해제)`,
+        `알림: /notify 상태 · /report on|off · /quiet 23:00-08:00 · /quiet off`
       ].join('\n');
     },
     onChat: async (text) => handleTelegramChat(text),
+    onNotifyCommand: async (cmd, arg) => handleNotifyCommand(cmd, arg),
     onListPending: async () => {
       const db = loadDb();
       const map = Object.fromEntries(db.agents.map((a) => [a.id, a.name]));
@@ -2853,6 +3034,11 @@ app.get('/api/agent-inbox/:agentKey', (c) => {
     agent: { id: agent.id, name: agent.name, roleTitle: agent.roleTitle },
     globalDirectives: db.settings.globalDirectives || '',
     companyContext: buildCompanyContext(db, pendingTasks[0]?.missionId || '', { compact: true }),
+    // 외부 봇도 내부 AI와 같은 스킬(절차·점검표)을 따르도록 업무별 가이드 제공
+    skillGuides: pendingTasks.slice(0, 5).map((t) => ({
+      taskId: t.id,
+      guide: renderSkills(selectSkills({ agent, task: t, purpose: 'task', settings: db.settings }), { compact: true })
+    })),
     myPendingTasks: pendingTasks,
     recentMeetingRoom,
     howToReply: {
@@ -3124,6 +3310,7 @@ app.post('/api/missions/:id/run-all', async (c) => {
     }
     item.task.output = item.res.output;
     item.task.executionModeUsed = item.res.executionModeUsed;
+    if (item.res.quality) item.task.quality = item.res.quality;
     item.task.updatedAt = now;
 
     const overThreshold = (item.task.estimatedCostKRW || 0) >= (db.settings.approvalThresholdKRW || 30000);
@@ -3516,6 +3703,7 @@ app.post('/api/tasks/:id/run', async (c) => {
   const now = new Date().toISOString();
   task.output = result.output;
   task.executionModeUsed = result.executionModeUsed;
+  if (result.quality) task.quality = result.quality;
   task.updatedAt = now;
 
   const overThreshold = (task.estimatedCostKRW || 0) >= (db.settings.approvalThresholdKRW || 30000);
@@ -3629,13 +3817,10 @@ app.post('/api/approvals/:id/decide', async (c) => {
   if (!res.ok) return c.json({ error: res.error }, res.status || 400);
 
   let latestDb = res.db;
-  if (res.approval?.kind === 'next_phase' && body.decision === 'approved' && res.approval.proposedDirective) {
-    const launched = await launchNextProjectPhase(
-      res.approval.missionId,
-      res.approval.proposedDirective,
-      body.ceoNote
-    );
-    if (launched?.db) latestDb = launched.db;
+  if (res.approval?.kind === 'next_phase') {
+    const handled = await handleNextPhaseDecision(res.approval, body.decision, body.ceoNote);
+    if (handled?.db) latestDb = handled.db;
+    else latestDb = loadDb();
   }
   let codeApply = false;
   if (isCodeApproval(res.db, res.approval)) {
@@ -3807,6 +3992,7 @@ app.put('/api/settings', async (c) => {
       if (typeof body.leadEngine[k] === 'boolean') le[k] = body.leadEngine[k];
     }
     const clampNum = (v, lo, hi, def) => (Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Math.round(Number(v)))) : def);
+    if (['propose', 'auto'].includes(body.leadEngine.advanceMode)) le.advanceMode = body.leadEngine.advanceMode;
     le.followUpMinutes = clampNum(body.leadEngine.followUpMinutes ?? le.followUpMinutes, 10, 1440, 30);
     le.maxAutoRounds = clampNum(body.leadEngine.maxAutoRounds ?? le.maxAutoRounds, 0, 5, 2);
     le.reminderHours = clampNum(body.leadEngine.reminderHours ?? le.reminderHours, 1, 72, 6);
@@ -3824,6 +4010,19 @@ app.put('/api/settings', async (c) => {
     if (typeof body.telegram.pollingEnabled === 'boolean') {
       s.telegram.pollingEnabled = body.telegram.pollingEnabled;
     }
+    if (body.telegram.notify && typeof body.telegram.notify === 'object') {
+      s.telegram.notify = sanitizeNotifyPrefs(body.telegram.notify, s.telegram.notify);
+    }
+  }
+  if (body.skills && typeof body.skills === 'object') {
+    const cur = getSkillSettings(s);
+    const next = { ...cur };
+    if (typeof body.skills.enabled === 'boolean') next.enabled = body.skills.enabled;
+    if (['off', 'important', 'always'].includes(body.skills.reviewMode)) next.reviewMode = body.skills.reviewMode;
+    if (Number.isFinite(Number(body.skills.minScore))) next.minScore = Math.min(10, Math.max(1, Math.round(Number(body.skills.minScore))));
+    if (Number.isFinite(Number(body.skills.maxSkills))) next.maxSkills = Math.min(4, Math.max(0, Math.round(Number(body.skills.maxSkills))));
+    if (Array.isArray(body.skills.disabled)) next.disabled = body.skills.disabled.map(String).filter((x) => x !== 'core_operating').slice(0, 30);
+    s.skills = next;
   }
 
   if (body.providers) {
@@ -3849,6 +4048,50 @@ app.put('/api/settings', async (c) => {
   await flushCloudBackup(db);
   syncTelegramPolling(db.settings, getTelegramCallbacks());
   return c.json({ state: sanitizeStateForClient(db) });
+});
+
+// ---- AI 스킬 (작업 유형별 절차·출력 형식·점검표) + 교차 검수 ----
+app.get('/api/skills', (c) => c.json(describeSkillsForClient(loadDb().settings)));
+
+app.post('/api/skills/custom', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const name = String(body.name || '').trim().slice(0, 60);
+  const instructions = String(body.instructions || '').trim().slice(0, 1500);
+  if (!name || !instructions) return c.json({ error: '스킬 이름과 지침을 입력해 주세요.' }, 400);
+  const db = loadDb();
+  const cfg = getSkillSettings(db.settings);
+  const skill = {
+    id: uid('skl'),
+    name,
+    keywords: String(body.keywords || '').slice(0, 300),
+    instructions,
+    always: Boolean(body.always) || !String(body.keywords || '').trim(),
+    important: Boolean(body.important)
+  };
+  db.settings.skills = { ...cfg, custom: [...cfg.custom, skill].slice(-20) };
+  appendLog(db, 'CEO', `AI 스킬 "${name}"을 추가했습니다.`, 'info');
+  saveDb(db);
+  await flushCloudBackup(db);
+  return c.json({ ok: true, skill, skills: describeSkillsForClient(db.settings), state: sanitizeStateForClient(db) });
+});
+
+app.delete('/api/skills/custom/:id', async (c) => {
+  const db = loadDb();
+  const cfg = getSkillSettings(db.settings);
+  db.settings.skills = { ...cfg, custom: cfg.custom.filter((s) => s.id !== c.req.param('id')) };
+  saveDb(db);
+  await flushCloudBackup(db);
+  return c.json({ ok: true, skills: describeSkillsForClient(db.settings), state: sanitizeStateForClient(db) });
+});
+
+// 어떤 작업에 어떤 스킬이 붙는지 미리보기
+app.post('/api/skills/preview', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const db = loadDb();
+  const agent = db.agents.find((a) => a.id === body.agentId) || null;
+  const task = { title: String(body.title || ''), description: String(body.description || ''), domain: body.domain || '' };
+  const skills = selectSkills({ agent, task, purpose: body.purpose || 'task', settings: db.settings });
+  return c.json({ skills: skills.map((s) => ({ id: s.id, name: s.name })), prompt: renderSkills(skills) });
 });
 
 // ---- 회사 기억 (모든 AI 팀원이 공유하는 장기 기억) ----
@@ -4022,6 +4265,7 @@ initCloudPersistence()
       const db = loadDb();
       ensureVapidKeys(db);
       if (ensureLeadDefaults(db)) saveDb(db);
+      setTelegramDeferHandler(queueDeferredTelegram);
       syncTelegramPolling(db.settings, getTelegramCallbacks());
       setTimeout(() => {
         recoverCodeApprovalsOnBoot().catch((err) => console.warn('code approval recovery failed:', err.message));
