@@ -625,9 +625,17 @@ export async function initCloudPersistence() {
         restoredDb.settings.telegram.pollingEnabled = true;
       }
       let tokenRotated = false;
-      if (process.env.MCP_TOKEN || process.env.RENDER_SERVICE_ID || process.env.RENDER_EXTERNAL_HOSTNAME) {
+      const curTok = String(restoredDb.settings.mcpToken || '').trim();
+      const isStrongV2Token = /^ceo_mcp_[a-f0-9]{24,}$/.test(curTok);
+      if (process.env.MCP_TOKEN && process.env.MCP_TOKEN.trim()) {
+        const envTok = process.env.MCP_TOKEN.trim();
+        if (curTok !== envTok) {
+          restoredDb.settings.mcpToken = envTok;
+          tokenRotated = true;
+        }
+      } else if (!isStrongV2Token && (process.env.RENDER_SERVICE_ID || process.env.RENDER_EXTERNAL_HOSTNAME)) {
         const nextToken = resolveStableMcpToken();
-        if (restoredDb.settings.mcpToken !== nextToken) {
+        if (curTok !== nextToken) {
           restoredDb.settings.mcpToken = nextToken;
           tokenRotated = true;
         }

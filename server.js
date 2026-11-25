@@ -1681,7 +1681,11 @@ app.post('/api/webhook/test', async (c) => {
 });
 
 app.post('/api/reset', async (c) => {
+  const prev = loadDb();
   const fresh = createDefaultState();
+  if (prev?.settings?.mcpToken && /^ceo_mcp_[a-f0-9]{24,}$/.test(prev.settings.mcpToken)) {
+    fresh.settings.mcpToken = prev.settings.mcpToken;
+  }
   saveDb(fresh);
   await flushCloudBackup(fresh);
   syncTelegramPolling(fresh.settings, getTelegramCallbacks());
