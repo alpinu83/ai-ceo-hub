@@ -2846,6 +2846,7 @@ function bindEvents() {
         });
         const withCeo = res.ceoMessage ? [...baseMsgs, res.ceoMessage] : baseMsgs;
         await playLiveMessages(withCeo, res.replies || [], res.state);
+        if (res.intake?.note) toast(`업무로 반영됨: ${res.intake.note}`);
       } catch (err) {
         toast(err.message, true);
       } finally {
