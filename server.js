@@ -620,8 +620,14 @@ const codeBundleTimers = new Map();
 const failedRetryTimers = new Map();
 
 // AI quota / provider hiccups are usually temporary: retry failed PR preparation in the background (max 3 times)
-function scheduleFailedCodeRetry(missionId, delayMs = 8 * 60 * 1000) {
+function scheduleFailedCodeRetry(missionId, delayMs) {
   if (!missionId || failedRetryTimers.has(missionId)) return;
+  if (delayMs === undefined) {
+    // back off: free AI quotas usually reset within the hour
+    const db0 = loadDb();
+    const maxRetries = Math.max(0, ...db0.approvals.filter((a) => a.missionId === missionId && a.codeChange?.status === 'failed').map((a) => Number(a.codeChange.retries || 0)));
+    delayMs = [8, 20, 45][Math.min(maxRetries, 2)] * 60 * 1000;
+  }
   failedRetryTimers.set(
     missionId,
     setTimeout(() => {
@@ -689,18 +695,18 @@ function buildTeamDecisionContext(db, mission, tasks, ceoNote = '') {
     const body = String(t.output || t.description || '')
       .replace(/\n{3,}/g, '\n\n')
       .trim()
-      .slice(0, 1800);
+      .slice(0, 700);
     return `${i + 1}. [${t.title}] (${ag?.name || '팀원'})\n${body}`;
   });
   return [
     `[프로젝트] ${mission.title}${mission.mode === 'project' ? ` (Phase ${Number(mission.phase) || 1})` : ''}`,
     lines.join('\n\n'),
-    mission.finalReport ? `[팀장 종합 보고 요약]\n${String(mission.finalReport).slice(0, 1500)}` : '',
+    mission.finalReport ? `[팀장 종합 보고 요약]\n${String(mission.finalReport).slice(0, 800)}` : '',
     ceoNote ? `[CEO 결재 메모]\n${ceoNote}` : ''
   ]
     .filter(Boolean)
     .join('\n\n')
-    .slice(0, 9000);
+    .slice(0, 3500);
 }
 
 function buildCodeInstruction(mission, tasks, extraNote = '') {
