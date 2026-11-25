@@ -229,6 +229,25 @@ async function runTests() {
     assert.equal(skillSet.state.settings.telegram.notify.quiet.end, '07:30', 'quiet hours must be saved');
     await fetch(`${BASE}/api/skills/custom/${customRes.skill.id}`, { method: 'DELETE' });
 
+    // 8d. GA4 · Search Console read-only integration: not configured by default, rejects malformed keys
+    const analyticsRes = await (await fetch(`${BASE}/api/analytics`)).json();
+    assert.equal(analyticsRes.status.hasKey, false, 'analytics must be unconfigured by default');
+    assert.equal(analyticsRes.text, '', 'no analytics context without a key');
+    const badKey = await fetch(`${BASE}/api/settings`, {
+      method: 'PUT',
+      headers: jsonHeaders,
+      body: JSON.stringify({ providers: { googleData: { apiKey: 'not-json', ga4PropertyId: '123' } } })
+    });
+    assert.equal(badKey.status, 400, 'malformed service account key must be rejected');
+    const goodCfg = await (
+      await fetch(`${BASE}/api/settings`, {
+        method: 'PUT',
+        headers: jsonHeaders,
+        body: JSON.stringify({ providers: { googleData: { ga4PropertyId: '565386086', searchConsoleSite: 'https://korea-tax-cal.com/' } } })
+      })
+    ).json();
+    assert.equal(goodCfg.state.settings.providers.googleData.ga4PropertyId, '565386086', 'GA4 property id must be saved');
+
     const standupRes = await (
       await fetch(`${BASE}/api/missions/${created.mission.id}/standup`, { method: 'POST' })
     ).json();
