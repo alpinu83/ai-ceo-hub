@@ -142,9 +142,19 @@ export async function readRepoFile(cfg, filePath) {
 }
 
 const FileSelectSchema = z.object({
-  files: z.array(z.string()).min(1).max(3).describe('수정 또는 점검할 저장소 내 파일 경로 (최대 3개)'),
-  analysisPlan: z.string().describe('수정 계획 1~2문장 요약')
+  needsCodeChange: z
+    .boolean()
+    .describe('지시·협업 결과 중 이 저장소의 실제 파일을 수정해야 하는 항목이 있으면 true, 리서치·전략·외부 작업뿐이면 false'),
+  files: z.array(z.string()).max(3).describe('수정 또는 점검할 저장소 내 파일 경로 (최대 3개, 변경 불필요 시 빈 배열)'),
+  analysisPlan: z.string().describe('수정 계획 1~2문장 요약 (변경 불필요 시 그 이유)')
 });
+
+function codedError(message, code, extra = {}) {
+  const err = new Error(message);
+  err.code = code;
+  Object.assign(err, extra);
+  return err;
+}
 
 const PatchPlanSchema = z.object({
   prTitle: z.string().describe('간결한 PR 제목 (한국어 또는 영문)'),
@@ -201,9 +211,16 @@ export async function runItMaintenancePipeline({
   branchOverride,
   siteUrl,
   agents,
-  settings
+  settings,
+  teamContext = ''
 }) {
   const cfg = getGithubRepoConfig(settings, { repo: repoOverride, branch: branchOverride });
+  if (cfg.allowedRepos.length && !cfg.allowedRepos.includes(cfg.repo)) {
+    throw new Error(`허용 목록에 없는 저장소입니다: ${cfg.repo}`);
+  }
+  const teamBlock = String(teamContext || '').trim()
+    ? `\n\n[AI 팀 협업 결정사항 (참고용 — 실제 저장소에 존재하지 않는 서버·DB·파일 언급은 무시하고, 실제 파일에 적용 가능한 변경만 반영)]\n${String(teamContext).slice(0, 9000)}`
+    : '';
   if (!cfg.enabled) {
     throw new Error('IT팀 GitHub 토큰이 설정되지 않았습니다. 설정 → 연결 설정 → IT팀 GitHub에서 토큰을 등록해 주세요.');
   }
@@ -233,10 +250,18 @@ export async function runItMaintenancePipeline({
   const { object: selection } = await generateObjectResilient(devModels, {
     schema: FileSelectSchema,
     system: `당신은 GM Corporation IT 개발팀 수석 엔지니어입니다.
-대상 저장소(${cfg.repo}${siteUrl ? ` / 라이브 사이트 ${siteUrl}` : ''})의 실제 파일 목록에서 CEO의 지시를 해결하기 위해 읽고 수정해야 할 가장 핵심 파일 1~3개만 정확히 고르세요.
-반드시 목록에 있는 정확한 파일 경로만 선택하세요.`,
-    prompt: `[저장소: ${cfg.repo} (${cfg.branch})]\n[파일 목록]\n${allFiles.join('\n')}\n\n[CEO 지시]\n제목: ${missionTitle || ''}\n내용: ${instruction}`
+대상 저장소(${cfg.repo}${siteUrl ? ` / 라이브 사이트 ${siteUrl}` : ''})의 실제 파일 목록에서 CEO의 지시와 팀 결정사항을 반영하기 위해 읽고 수정해야 할 가장 핵심 파일 1~3개만 정확히 고르세요.
+반드시 목록에 있는 정확한 파일 경로만 선택하세요.
+지시·결정사항이 리서치·전략·외부 계정 작업(광고비 집행, 콘솔 설정 등)뿐이라 이 저장소 코드를 바꿀 필요가 없으면 needsCodeChange=false, files=[]로 답하세요.`,
+    prompt: `[저장소: ${cfg.repo} (${cfg.branch})]\n[파일 목록]\n${allFiles.join('\n')}\n\n[CEO 지시]\n제목: ${missionTitle || ''}\n내용: ${instruction}${teamBlock}`
   });
+
+  if (!selection.needsCodeChange || !Array.isArray(selection.files) || selection.files.length === 0) {
+    throw codedError(
+      `IT팀 검토 결과 ${cfg.repo} 저장소 코드 변경이 필요하지 않습니다.${selection.analysisPlan ? ` (${selection.analysisPlan})` : ''}`,
+      'NO_CODE_CHANGE'
+    );
+  }
 
   const targetPaths = [...new Set(selection.files)]
     .filter((p) => allFiles.includes(p) && !PROTECTED_PATH_RE.test(p))
@@ -260,8 +285,9 @@ export async function runItMaintenancePipeline({
 - search 문자열은 반드시 제공된 파일 내용에 100% 정확히(공백·들여쓰기 포함) 존재해야 합니다.
 - 불필요한 대규모 리팩토링 금지. 필요한 부분만 정확히 수정하세요.
 - HTML/CSS/JS/JSON 파일 수정 시 문법 오류나 기존 기능 깨짐이 없도록 하세요.
-- 보안을 약화시키거나 비밀키를 코드에 하드코딩하지 마세요.`,
-    prompt: `[대상 저장소: ${cfg.repo}]\n[CEO 지시]\n${instruction}\n\n[실제 저장소 소스 코드]\n${fileContext}`
+- 보안을 약화시키거나 비밀키를 코드에 하드코딩하지 마세요.
+- 팀 결정사항에 실제 파일에 없는 구조가 언급되어 있으면 지어내지 말고, 실제 코드에 맞는 부분만 구현하세요.`,
+    prompt: `[대상 저장소: ${cfg.repo}]\n[CEO 지시]\n${instruction}${teamBlock}\n\n[실제 저장소 소스 코드]\n${fileContext}`
   });
 
   // 5. Apply and verify every edit in memory before touching GitHub
@@ -384,15 +410,87 @@ export async function runItMaintenancePipeline({
     changedFiles: changedFiles.map((f) => f.path),
     diffSummary,
     audit,
-    qaChecklist: patchPlan.qaChecklist
+    qaChecklist: patchPlan.qaChecklist,
+    instruction,
+    teamContext: String(teamContext || '')
   };
 }
 
-export async function mergeMaintenancePr({ prNumber, repo, branch, settings }) {
+/**
+ * Summarize GitHub check-runs for a commit: 'success' | 'failure' | 'pending' | 'none'
+ */
+export async function getCommitCheckState(cfg, sha) {
+  try {
+    const data = await ghFetch(
+      cfg.token,
+      `https://api.github.com/repos/${cfg.repo}/commits/${encodeURIComponent(sha)}/check-runs?per_page=50`
+    );
+    const runs = Array.isArray(data.check_runs) ? data.check_runs : [];
+    if (runs.length === 0) return { state: 'none', runs: [] };
+    const failed = runs.filter((r) => r.status === 'completed' && ['failure', 'timed_out', 'cancelled', 'action_required'].includes(r.conclusion));
+    const pending = runs.filter((r) => r.status !== 'completed');
+    const summary = runs.map((r) => ({ name: r.name, status: r.status, conclusion: r.conclusion, url: r.html_url }));
+    if (failed.length) return { state: 'failure', runs: summary };
+    if (pending.length) return { state: 'pending', runs: summary };
+    return { state: 'success', runs: summary };
+  } catch (err) {
+    return { state: 'unknown', runs: [], error: err.message };
+  }
+}
+
+const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+
+export async function mergeMaintenancePr({ prNumber, repo, branch, settings, waitForChecksMs = 300000 }) {
   const cfg = getGithubRepoConfig(settings, { repo, branch });
   if (!cfg.enabled) {
     throw new Error('IT팀 GitHub 토큰이 설정되지 않아 자동 머지할 수 없습니다.');
   }
+  if (cfg.allowedRepos.length && !cfg.allowedRepos.includes(cfg.repo)) {
+    throw new Error(`허용 목록에 없는 저장소입니다: ${cfg.repo}`);
+  }
+
+  // 1. PR state guard (already merged / closed / conflict)
+  let pr = await ghFetch(cfg.token, `https://api.github.com/repos/${cfg.repo}/pulls/${Number(prNumber)}`);
+  if (pr.merged) {
+    return {
+      ok: true,
+      alreadyMerged: true,
+      repo: cfg.repo,
+      sha: pr.merge_commit_sha || '',
+      message: `${cfg.repo} PR #${Number(prNumber)}은 이미 머지되어 있습니다.`
+    };
+  }
+  if (pr.state === 'closed') {
+    throw codedError(`${cfg.repo} PR #${Number(prNumber)}이 이미 닫혀 있습니다.`, 'PR_CLOSED');
+  }
+  // GitHub computes mergeability lazily; poll briefly
+  for (let i = 0; i < 4 && pr.mergeable === null; i++) {
+    await sleepMs(2500);
+    pr = await ghFetch(cfg.token, `https://api.github.com/repos/${cfg.repo}/pulls/${Number(prNumber)}`);
+  }
+  if (pr.mergeable === false) {
+    throw codedError(`${cfg.repo} PR #${Number(prNumber)}이 최신 main과 충돌합니다.`, 'PR_CONFLICT');
+  }
+
+  // 2. CI guard: never merge over a failing check; wait a little for pending checks
+  const headSha = pr.head?.sha;
+  if (headSha) {
+    const deadline = Date.now() + Math.max(0, waitForChecksMs);
+    let checks = await getCommitCheckState(cfg, headSha);
+    while (checks.state === 'pending' && Date.now() < deadline) {
+      await sleepMs(15000);
+      checks = await getCommitCheckState(cfg, headSha);
+    }
+    if (checks.state === 'failure') {
+      const failedNames = checks.runs.filter((r) => r.conclusion && r.conclusion !== 'success' && r.conclusion !== 'skipped' && r.conclusion !== 'neutral').map((r) => r.name);
+      throw codedError(
+        `${cfg.repo} PR #${Number(prNumber)} CI 검사 실패(${failedNames.join(', ') || 'check'})로 머지를 보류했습니다.`,
+        'CI_FAILED',
+        { checks: checks.runs }
+      );
+    }
+  }
+
   const mergeRes = await ghFetch(
     cfg.token,
     `https://api.github.com/repos/${cfg.repo}/pulls/${Number(prNumber)}/merge`,
@@ -410,6 +508,42 @@ export async function mergeMaintenancePr({ prNumber, repo, branch, settings }) {
     sha: mergeRes.sha || '',
     message: mergeRes.message || `${cfg.repo} PR #${Number(prNumber)} 머지 완료 → 자동 배포 시작됨`
   };
+}
+
+/**
+ * After merge: follow the GitHub Actions runs triggered by the merge commit and report the real outcome.
+ * Returns { status: 'success' | 'failure' | 'unknown', runs }
+ */
+export async function watchDeployment({ repo, sha, settings, timeoutMs = 600000, intervalMs = 20000 }) {
+  const cfg = getGithubRepoConfig(settings, { repo });
+  if (!cfg.enabled || !sha) return { status: 'unknown', runs: [], reason: '토큰 또는 커밋 SHA 없음' };
+  const deadline = Date.now() + timeoutMs;
+  let lastRuns = [];
+  let sawAny = false;
+  while (Date.now() < deadline) {
+    try {
+      const data = await ghFetch(
+        cfg.token,
+        `https://api.github.com/repos/${cfg.repo}/actions/runs?head_sha=${encodeURIComponent(sha)}&per_page=20`
+      );
+      const runs = (data.workflow_runs || []).map((r) => ({
+        name: r.name,
+        status: r.status,
+        conclusion: r.conclusion,
+        url: r.html_url
+      }));
+      lastRuns = runs;
+      if (runs.length) sawAny = true;
+      if (runs.length && runs.every((r) => r.status === 'completed')) {
+        const failed = runs.filter((r) => !['success', 'skipped', 'neutral'].includes(r.conclusion));
+        return { status: failed.length ? 'failure' : 'success', runs };
+      }
+    } catch (err) {
+      return { status: 'unknown', runs: lastRuns, reason: err.message };
+    }
+    await sleepMs(intervalMs);
+  }
+  return { status: 'unknown', runs: lastRuns, reason: sawAny ? '배포 워크플로가 제한 시간 내 끝나지 않음' : '연결된 배포 워크플로를 찾지 못함' };
 }
 
 export async function closeMaintenancePr({ prNumber, repo, settings }) {

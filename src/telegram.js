@@ -237,7 +237,9 @@ export async function handleTelegramUpdate(update, callbacks) {
         await sendTelegramText(
           tg.botToken,
           cq.message.chat.id,
-          `${label}\n안건: <b>${escapeHtml(result.title || aprId)}</b>`
+          `${label}\n안건: <b>${escapeHtml(result.title || aprId)}</b>${
+            result.codeApply ? '\n실코드 머지·배포를 바로 진행합니다. 배포 결과는 확인되는 대로 다시 알려드릴게요.' : ''
+          }`
         ).catch(() => {});
       }
       return { handled: true, decision, aprId };
