@@ -2109,3 +2109,15 @@ button.simple-row.clickable:hover { background: var(--bg-subtle); }
 .routine-result { margin-top: 10px; border-top: 1px solid var(--border-hairline); padding-top: 8px; }
 .routine-result summary { cursor: pointer; font-size: 12.5px; color: var(--ink-secondary); }
 .routine-result .markdown-body { margin-top: 8px; max-height: 420px; overflow: auto; }
+
+/* ===== 외부 협업 ===== */
+.out-guide { padding: 14px 16px; margin-bottom: 14px; }
+.out-guide h4 { margin: 0 0 6px; font-size: 13.5px; }
+.out-guide-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+@media (max-width: 900px) { .out-guide-grid { grid-template-columns: 1fr; } }
+.out-settings { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border-hairline); font-size: 13px; }
+.out-check { display: inline-flex; gap: 6px; align-items: center; }
+.out-new { padding: 12px 16px; margin-bottom: 14px; }
+.out-new summary { cursor: pointer; font-weight: 600; font-size: 13.5px; }
+.out-card { padding: 14px 16px; }
+.out-submit { display: grid; gap: 10px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border-hairline); }
