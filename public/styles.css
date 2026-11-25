@@ -2090,3 +2090,22 @@ button.simple-row.clickable:hover { background: var(--bg-subtle); }
 
   .mobile-nav-badge.show { display: inline-flex; }
 }
+
+/* ===== 루틴 업무 ===== */
+.routine-form-sheet { padding: 16px 18px; margin-bottom: 14px; }
+.routine-form-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+.routine-ops { padding: 12px 16px; margin-bottom: 14px; display: grid; gap: 8px; font-size: 13px; }
+.routine-ops-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.routine-ops-row strong { min-width: 64px; }
+.routine-list { display: grid; gap: 12px; }
+.routine-card { padding: 14px 16px; }
+.routine-card.is-off { opacity: 0.55; }
+.routine-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
+.routine-meta { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+.routine-title { margin: 0; font-size: 15px; font-weight: 700; letter-spacing: -0.01em; }
+.routine-sub { font-size: 12.5px; color: var(--ink-secondary); margin-top: 4px; }
+.routine-desc { margin: 10px 0 0; font-size: 13px; color: var(--ink-secondary); white-space: pre-wrap; }
+.routine-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.routine-result { margin-top: 10px; border-top: 1px solid var(--border-hairline); padding-top: 8px; }
+.routine-result summary { cursor: pointer; font-size: 12.5px; color: var(--ink-secondary); }
+.routine-result .markdown-body { margin-top: 8px; max-height: 420px; overflow: auto; }
