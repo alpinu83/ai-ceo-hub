@@ -95,6 +95,9 @@ export function createDefaultState() {
         githubRepo: {
           apiKey: process.env.GITHUB_REPO_TOKEN || '',
           repo: process.env.GITHUB_REPO || 'alpinu83/ai-ceo-hub',
+          allowedRepos:
+            process.env.GITHUB_ALLOWED_REPOS ||
+            'alpinu83/ai-ceo-hub, alpinu83/kr-calc-hub, alpinu83/alpinu83.github.io',
           branch: process.env.GITHUB_BRANCH || 'main',
           enabled: Boolean(process.env.GITHUB_REPO_TOKEN)
         }
@@ -503,7 +506,13 @@ export function loadDb() {
         if (!m.leadAgentId || m.leadAgentId === 'agent_exaone' || m.leadAgentId === 'agent_gemini_free') {
           m.leadAgentId = 'agent_gemini_neon';
         }
+        applyInferredMissionBindings(m);
       });
+    }
+    if (parsed.settings?.providers?.githubRepo && !parsed.settings.providers.githubRepo.allowedRepos) {
+      parsed.settings.providers.githubRepo.allowedRepos =
+        process.env.GITHUB_ALLOWED_REPOS ||
+        'alpinu83/ai-ceo-hub, alpinu83/kr-calc-hub, alpinu83/alpinu83.github.io';
     }
     if (!Array.isArray(parsed.messages)) {
       parsed.messages = def.messages;
@@ -525,6 +534,27 @@ export function loadDb() {
     saveDb(initial);
     return initial;
   }
+}
+
+export function applyInferredMissionBindings(mission) {
+  if (!mission || typeof mission !== 'object') return mission;
+  const text = `${mission.title || ''} ${mission.directive || ''}`;
+  if (!mission.githubRepo && /korea-tax-cal|kr-calc-hub|세금계산기|셈노트/i.test(text)) {
+    mission.githubRepo = 'alpinu83/kr-calc-hub';
+    mission.githubBranch = mission.githubBranch || 'main';
+    mission.siteUrl = mission.siteUrl || 'https://korea-tax-cal.com';
+    if (!Array.isArray(mission.extraRepos) || mission.extraRepos.length === 0) {
+      mission.extraRepos = ['alpinu83/alpinu83.github.io'];
+    }
+  } else if (
+    !mission.githubRepo &&
+    (mission.domain === 'it_ops' || /CEO Office|ai-ceo-hub|협업\s*시스템/i.test(text))
+  ) {
+    mission.githubRepo = 'alpinu83/ai-ceo-hub';
+    mission.githubBranch = mission.githubBranch || 'main';
+    mission.siteUrl = mission.siteUrl || 'https://ai-ceo-hub.onrender.com';
+  }
+  return mission;
 }
 
 let gistSyncTimer = null;

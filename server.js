@@ -16,8 +16,10 @@ import {
   getCloudPersistenceStatus,
   sanitizeStateForClient,
   createDefaultState,
+  applyInferredMissionBindings,
   uid
 } from './src/store.js';
+import { buildMissionLiveContext } from './src/live-context.js';
 import {
   decomposeDirective,
   executeAgentTask,
@@ -81,9 +83,19 @@ function updateMissionStatus(db, missionId) {
   }
 }
 
-async function createMissionInDb({ title = '', directive, domain = 'business', costPolicy, mode = 'one_off' }) {
+async function createMissionInDb({
+  title = '',
+  directive,
+  domain = 'business',
+  costPolicy,
+  mode = 'one_off',
+  githubRepo = '',
+  githubBranch = 'main',
+  siteUrl = '',
+  extraRepos = []
+}) {
   const db = loadDb();
-  const safeDomain = ['business', 'life', 'content', 'dev'].includes(domain) ? domain : 'business';
+  const safeDomain = ['business', 'life', 'content', 'dev', 'it_ops'].includes(domain) ? domain : 'business';
   const safePolicy = ['free_first', 'balanced', 'max_quality'].includes(costPolicy)
     ? costPolicy
     : db.settings.defaultCostPolicy;
@@ -93,13 +105,27 @@ async function createMissionInDb({ title = '', directive, domain = 'business', c
     String(title || '').trim() ||
     directive.split('\n')[0].slice(0, 40) + (directive.length > 40 ? '…' : '');
 
+  const draftBindings = applyInferredMissionBindings({
+    title: autoTitle,
+    directive,
+    domain: safeDomain,
+    githubRepo: String(githubRepo || '').trim(),
+    githubBranch: String(githubBranch || 'main').trim() || 'main',
+    siteUrl: String(siteUrl || '').trim(),
+    extraRepos: Array.isArray(extraRepos) ? extraRepos : []
+  });
+
   const plan = await decomposeDirective({
     directive,
     title: autoTitle,
     domain: safeDomain,
     costPolicy: safePolicy,
     agents: db.agents,
-    settings: db.settings
+    settings: db.settings,
+    githubRepo: draftBindings.githubRepo,
+    githubBranch: draftBindings.githubBranch,
+    siteUrl: draftBindings.siteUrl,
+    extraRepos: draftBindings.extraRepos
   });
 
   const now = new Date().toISOString();
@@ -110,6 +136,10 @@ async function createMissionInDb({ title = '', directive, domain = 'business', c
     domain: safeDomain,
     costPolicy: safePolicy,
     mode: safeMode,
+    githubRepo: draftBindings.githubRepo || '',
+    githubBranch: draftBindings.githubBranch || 'main',
+    siteUrl: draftBindings.siteUrl || '',
+    extraRepos: draftBindings.extraRepos || [],
     phase: 1,
     phaseHistory: [],
     leadAgentId: plan.leadAgentId,
@@ -558,31 +588,51 @@ function applyApprovalDecisionInDb(aprId, decision, ceoNote = '') {
   return { ok: true, approval: apr, title: apr.title, db };
 }
 
-async function triggerItPrForMission(missionId) {
+async function triggerItPrForMission(missionId, customInstruction = '') {
   const db = loadDb();
   const mission = db.missions.find((m) => m.id === missionId);
   if (!mission) throw new Error('미션을 찾을 수 없습니다.');
 
-  appendLog(db, 'IT 유지보수팀', `"${mission.title}" GitHub 저장소 실제 소스코드 분석 및 PR 생성 시작…`, 'info');
+  const targetRepo = mission.githubRepo || getGithubRepoConfig(db.settings).repo;
+  const targetBranch = mission.githubBranch || 'main';
+  const effectiveInstruction = String(customInstruction || '').trim() || mission.directive || mission.title;
+
+  appendLog(
+    db,
+    'IT 유지보수팀',
+    `"${mission.title}" → [${targetRepo}] 실제 소스코드 분석 및 PR 생성 시작…`,
+    'info'
+  );
   saveDb(db);
 
   try {
     const result = await runItMaintenancePipeline({
-      instruction: mission.directive || mission.title,
+      instruction: effectiveInstruction,
       missionTitle: mission.title,
+      repoOverride: targetRepo,
+      branchOverride: targetBranch,
+      siteUrl: mission.siteUrl || '',
       agents: db.agents,
       settings: db.settings
     });
 
     const fresh = loadDb();
     const now = new Date().toISOString();
+    const deployTargetLabel = result.repo.includes('kr-calc-hub')
+      ? 'korea-tax-cal.com (GitHub Actions 자동 배포)'
+      : result.repo.includes('ai-ceo-hub')
+        ? 'Render · GitHub Pages 라이브 배포'
+        : `${result.repo} 자동 배포`;
+
     const apr = {
       id: uid('apr'),
       kind: 'it_pr_merge',
       missionId: mission.id,
       taskId: '',
       agentId: 'agent_it_dev',
-      title: `[IT 보수 PR #${result.prNumber}] ${result.prTitle}`,
+      repo: result.repo,
+      branch: result.branch || targetBranch,
+      title: `[${result.repo} PR #${result.prNumber}] ${result.prTitle}`,
       category: 'IT 코드 수정 · 실배포 승인',
       riskLevel: result.audit?.riskLevel || 'medium',
       estimatedCostKRW: 0,
@@ -592,8 +642,8 @@ async function triggerItPrForMission(missionId) {
       branchName: result.branchName,
       changedFiles: result.changedFiles,
       diffSummary: result.diffSummary,
-      summary: `${result.prSummary}\n\n[수정 파일] ${result.changedFiles.join(', ')}\n[IT 보안 감사: ${result.audit?.passed ? 'PASS' : '주의'}] ${result.audit?.notes || ''}\n[GitHub PR] ${result.prUrl}`,
-      proposedAction: `승인 시 GitHub PR #${result.prNumber} (${result.branchName} → main) 을 자동 머지하고 Render · GitHub Pages에 라이브 배포합니다.`,
+      summary: `${result.prSummary}\n\n[대상 저장소] ${result.repo} (${result.branch || targetBranch})\n[수정 파일] ${result.changedFiles.join(', ')}\n[IT 보안 감사: ${result.audit?.passed ? 'PASS' : '주의'}] ${result.audit?.notes || ''}\n[GitHub PR] ${result.prUrl}`,
+      proposedAction: `승인 시 ${result.repo} PR #${result.prNumber} (${result.branchName} → ${result.branch || targetBranch})을 자동 머지하고 ${deployTargetLabel}를 시작합니다.`,
       status: 'pending',
       ceoNote: '',
       createdAt: now,
@@ -604,7 +654,7 @@ async function triggerItPrForMission(missionId) {
     appendLog(
       fresh,
       'IT 유지보수팀',
-      `실제 GitHub PR #${result.prNumber} 생성 완료 (${result.changedFiles.join(', ')}) → CEO 배포 결재 상신.`,
+      `[${result.repo}] 실제 GitHub PR #${result.prNumber} 생성 완료 (${result.changedFiles.join(', ')}) → CEO 배포 결재 상신.`,
       'approval'
     );
     appendMessage(fresh, {
@@ -617,7 +667,7 @@ async function triggerItPrForMission(missionId) {
       targetAgentId: 'ceo',
       statusText: `PR #${result.prNumber} 상신`,
       type: 'approval',
-      text: `실제 소스코드(${result.changedFiles.join(', ')})를 수정하고 IT 보안 감사를 마쳐 GitHub PR #${result.prNumber}을 열었습니다.\nPR 주소: ${result.prUrl}\n결재함에서 승인하시면 자동으로 머지 및 Render 라이브 배포됩니다.`
+      text: `[${result.repo}] 실제 소스코드(${result.changedFiles.join(', ')})를 수정하고 IT 보안 감사를 마쳐 GitHub PR #${result.prNumber}을 열었습니다.\nPR 주소: ${result.prUrl}\n결재함에서 승인하시면 자동으로 머지 및 ${deployTargetLabel}가 시작됩니다.`
     });
     saveDb(fresh);
     await flushCloudBackup(fresh);
@@ -625,8 +675,8 @@ async function triggerItPrForMission(missionId) {
     return { ok: true, result, approval: apr, db: fresh };
   } catch (err) {
     const fresh = loadDb();
-    appendLog(fresh, 'IT 유지보수팀', `"${mission.title}" GitHub PR 자동 생성 실패: ${err.message}`, 'warning');
-    notifyTelegramAnomaly(fresh.settings, 'IT팀 GitHub PR 생성 오류', `"${mission.title}" — ${err.message}`);
+    appendLog(fresh, 'IT 유지보수팀', `"${mission.title}" [${targetRepo}] GitHub PR 자동 생성 실패: ${err.message}`, 'warning');
+    notifyTelegramAnomaly(fresh.settings, 'IT팀 GitHub PR 생성 오류', `"${mission.title}" (${targetRepo}) — ${err.message}`);
     saveDb(fresh);
     await flushCloudBackup(fresh);
     throw err;
@@ -636,12 +686,21 @@ async function triggerItPrForMission(missionId) {
 async function handleItPrDecision(apr, decision) {
   if (!apr || apr.kind !== 'it_pr_merge' || !apr.prNumber) return null;
   const db = loadDb();
+  const repoLabel = apr.repo || getGithubRepoConfig(db.settings).repo;
   if (decision === 'approved') {
-    const merged = await mergeMaintenancePr({ prNumber: apr.prNumber, settings: db.settings });
+    const merged = await mergeMaintenancePr({
+      prNumber: apr.prNumber,
+      repo: apr.repo,
+      branch: apr.branch,
+      settings: db.settings
+    });
+    const liveLabel = repoLabel.includes('kr-calc-hub')
+      ? 'korea-tax-cal.com 라이브 빌드·배포'
+      : 'Render · GitHub Pages 라이브 배포';
     appendLog(
       db,
       'IT 유지보수팀',
-      `CEO 승인 완료 → GitHub PR #${apr.prNumber} 자동 머지 성공! Render · GitHub Pages 라이브 배포가 시작되었습니다.`,
+      `CEO 승인 완료 → [${repoLabel}] GitHub PR #${apr.prNumber} 자동 머지 성공! ${liveLabel}가 시작되었습니다.`,
       'success'
     );
     appendMessage(db, {
@@ -654,15 +713,15 @@ async function handleItPrDecision(apr, decision) {
       targetAgentId: 'ceo',
       statusText: '자동 배포 시작',
       type: 'work',
-      text: `PR #${apr.prNumber} 머지가 완료되었습니다 (${merged.sha ? merged.sha.slice(0, 7) : 'merged'}). 약 30초 후 Render 라이브 서버에 자동 반영됩니다.`
+      text: `[${repoLabel}] PR #${apr.prNumber} 머지가 완료되었습니다 (${merged.sha ? merged.sha.slice(0, 7) : 'merged'}). ${liveLabel}가 자동으로 진행됩니다.`
     });
     saveDb(db);
     await flushCloudBackup(db);
     return { ok: true, merged, db };
   }
   if (decision === 'rejected') {
-    await closeMaintenancePr({ prNumber: apr.prNumber, settings: db.settings });
-    appendLog(db, 'IT 유지보수팀', `CEO 반려에 따라 GitHub PR #${apr.prNumber}을 안전하게 닫았습니다.`, 'info');
+    await closeMaintenancePr({ prNumber: apr.prNumber, repo: apr.repo, settings: db.settings });
+    appendLog(db, 'IT 유지보수팀', `CEO 반려에 따라 [${repoLabel}] GitHub PR #${apr.prNumber}을 안전하게 닫았습니다.`, 'info');
     saveDb(db);
     await flushCloudBackup(db);
     return { ok: true, closed: true, db };
@@ -1367,7 +1426,10 @@ app.post('/api/missions', async (c) => {
     directive,
     domain: body.domain,
     costPolicy: body.costPolicy,
-    mode: body.mode
+    mode: body.mode,
+    githubRepo: body.githubRepo,
+    githubBranch: body.githubBranch,
+    siteUrl: body.siteUrl
   });
 
   return c.json({ mission, tasks, state: sanitizeStateForClient(db) }, 201);
@@ -1521,11 +1583,21 @@ app.patch('/api/missions/:id', async (c) => {
   const mission = db.missions.find((m) => m.id === missionId);
   if (!mission) return c.json({ error: '미션을 찾을 수 없습니다.' }, 404);
 
-  const nextTitle = typeof body.title === 'string' ? body.title.trim() : '';
-  if (!nextTitle) return c.json({ error: '새 이름을 입력해 주세요.' }, 400);
+  const hasTitle = typeof body.title === 'string' && body.title.trim().length > 0;
+  const hasBindingUpdate =
+    typeof body.githubRepo === 'string' ||
+    typeof body.githubBranch === 'string' ||
+    typeof body.siteUrl === 'string' ||
+    Array.isArray(body.extraRepos);
+
+  if (!hasTitle && !hasBindingUpdate && typeof body.directive !== 'string') {
+    return c.json({ error: '수정할 내용을 입력해 주세요.' }, 400);
+  }
 
   const oldTitle = mission.title;
-  mission.title = nextTitle.slice(0, 120);
+  if (hasTitle) {
+    mission.title = body.title.trim().slice(0, 120);
+  }
   const replaceOld = (txt) => {
     if (typeof txt !== 'string' || !oldTitle || oldTitle === mission.title) return txt;
     return txt.split(oldTitle).join(mission.title);
@@ -1537,38 +1609,82 @@ app.patch('/api/missions/:id', async (c) => {
     mission.directive = replaceOld(mission.directive);
   }
 
-  // Cascade rename to all tasks, dispatch prompts, approvals, and messages of this mission
-  const agentMap = Object.fromEntries(db.agents.map((a) => [a.id, a]));
-  for (const t of db.tasks) {
-    if (t.missionId !== mission.id) continue;
-    t.title = replaceOld(t.title);
-    t.description = replaceOld(t.description);
-    const ag = agentMap[t.assigneeId];
-    if (ag) t.dispatchPrompt = buildDispatchPrompt(t, mission, ag);
+  if (typeof body.githubRepo === 'string') {
+    mission.githubRepo = body.githubRepo
+      .trim()
+      .replace(/^https?:\/\/github\.com\//i, '')
+      .replace(/\.git$/i, '')
+      .replace(/^\/+|\/+$/g, '');
   }
-  for (const apr of db.approvals) {
-    if (apr.missionId !== mission.id) continue;
-    apr.title = replaceOld(apr.title);
-    apr.summary = replaceOld(apr.summary);
-    apr.proposedAction = replaceOld(apr.proposedAction);
+  if (typeof body.githubBranch === 'string' && body.githubBranch.trim()) {
+    mission.githubBranch = body.githubBranch.trim();
   }
-  for (const msg of db.messages || []) {
-    if (msg.missionId !== mission.id) continue;
-    msg.text = replaceOld(msg.text);
+  if (typeof body.siteUrl === 'string') {
+    mission.siteUrl = body.siteUrl.trim();
+  }
+  if (Array.isArray(body.extraRepos)) {
+    mission.extraRepos = body.extraRepos.map((r) => String(r || '').trim()).filter(Boolean);
   }
 
-  appendLog(db, 'CEO', `이름 변경: "${oldTitle}" → "${mission.title}" (관련 업무·결재·지시서 일괄 동기화)`, 'info');
+  // Cascade rename to all tasks, dispatch prompts, approvals, and messages of this mission
+  if (oldTitle !== mission.title) {
+    const agentMap = Object.fromEntries(db.agents.map((a) => [a.id, a]));
+    for (const t of db.tasks) {
+      if (t.missionId !== mission.id) continue;
+      t.title = replaceOld(t.title);
+      t.description = replaceOld(t.description);
+      const ag = agentMap[t.assigneeId];
+      if (ag) t.dispatchPrompt = buildDispatchPrompt(t, mission, ag);
+    }
+    for (const apr of db.approvals) {
+      if (apr.missionId !== mission.id) continue;
+      apr.title = replaceOld(apr.title);
+      apr.summary = replaceOld(apr.summary);
+      apr.proposedAction = replaceOld(apr.proposedAction);
+    }
+    for (const msg of db.messages || []) {
+      if (msg.missionId !== mission.id) continue;
+      msg.text = replaceOld(msg.text);
+    }
+    appendLog(db, 'CEO', `이름 변경: "${oldTitle}" → "${mission.title}" (관련 업무·결재·지시서 일괄 동기화)`, 'info');
+  } else if (hasBindingUpdate) {
+    appendLog(
+      db,
+      'CEO',
+      `"${mission.title}" 실연동 설정 변경 — GitHub: ${mission.githubRepo || '없음'}, 사이트: ${mission.siteUrl || '없음'}`,
+      'info'
+    );
+  }
+
   saveDb(db);
   await flushCloudBackup(db);
   return c.json({ mission, state: sanitizeStateForClient(db) });
 });
 
+app.get('/api/missions/:id/live-context', async (c) => {
+  const missionId = c.req.param('id');
+  const db = loadDb();
+  const mission = db.missions.find((m) => m.id === missionId);
+  if (!mission) return c.json({ error: '미션을 찾을 수 없습니다.' }, 404);
+  const context = await buildMissionLiveContext({ mission, settings: db.settings });
+  const ghCfg = getGithubRepoConfig(db.settings, { repo: mission.githubRepo, branch: mission.githubBranch });
+  return c.json({
+    ok: true,
+    githubRepo: mission.githubRepo || '',
+    siteUrl: mission.siteUrl || '',
+    canEditRepo: Boolean(ghCfg.enabled && mission.githubRepo),
+    context
+  });
+});
+
 app.post('/api/missions/:id/it-pr', async (c) => {
   const missionId = c.req.param('id');
+  const body = await c.req.json().catch(() => ({}));
   try {
-    const res = await triggerItPrForMission(missionId);
+    const res = await triggerItPrForMission(missionId, body?.instruction || '');
     return c.json({
       ok: true,
+      repo: res.result.repo,
       prNumber: res.result.prNumber,
       prUrl: res.result.prUrl,
       changedFiles: res.result.changedFiles,
@@ -2022,7 +2138,7 @@ app.put('/api/settings', async (c) => {
         target.apiKey = incoming.apiKey.trim();
         target.enabled = true;
       }
-      for (const field of ['freeModel', 'paidModel', 'model', 'baseUrl', 'cueEmail', 'repo', 'branch']) {
+      for (const field of ['freeModel', 'paidModel', 'model', 'baseUrl', 'cueEmail', 'repo', 'allowedRepos', 'branch']) {
         if (typeof incoming[field] === 'string') target[field] = incoming[field].trim();
       }
     }

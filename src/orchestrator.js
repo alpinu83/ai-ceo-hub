@@ -4,6 +4,7 @@ import { createAnthropic } from '@ai-sdk/anthropic';
 import { createOpenAI } from '@ai-sdk/openai';
 import { z } from 'zod';
 import { uid } from './store.js';
+import { buildMissionLiveContext } from './live-context.js';
 
 /**
  * Resolve a Vercel AI SDK model instance for any configured provider:
@@ -786,7 +787,18 @@ export function resolveLiveBackendModel(settings) {
   return null;
 }
 
-export async function decomposeDirective({ directive, title, domain, costPolicy, agents, settings }) {
+export async function decomposeDirective({
+  directive,
+  title,
+  domain,
+  costPolicy,
+  agents,
+  settings,
+  githubRepo = '',
+  githubBranch = 'main',
+  siteUrl = '',
+  extraRepos = []
+}) {
   const leadAgent = selectLeadAgent(agents, costPolicy, settings);
   const activeAgents = agents.filter((a) => a.active);
   const resolved = resolveLanguageModel(leadAgent, settings) || resolveLiveBackendModel(settings);
@@ -799,14 +811,24 @@ export async function decomposeDirective({ directive, title, domain, costPolicy,
       )
       .join('\n');
 
+    const liveContext =
+      githubRepo || siteUrl
+        ? await buildMissionLiveContext({
+            mission: { title, directive, domain, githubRepo, githubBranch, siteUrl, extraRepos },
+            settings
+          }).catch(() => '')
+        : '';
+
     const system = `당신은 AI 조직의 총괄 팀장(${leadAgent.name})입니다.
 CEO의 지시를 3~5개 구체적 실무 작업으로 분해하고, 아래 조직원 중 최적 담당자(assigneeId)를 배정하세요.
 부서 배정 규칙:
-- 업무 영역이 "it_ops"이거나 CEO Office 앱 자체 수정·기능 보수·버그 해결·보안 점검 지시일 때는 **IT유지보수팀(agent_it_dev, agent_it_sec, agent_it_qa)** 에게 우선 배정하세요.
+- 업무 영역이 "it_ops"이거나 코드 수정·버그 해결·SEO/데이터 파일 수정·보안 점검 지시일 때는 **IT유지보수팀(agent_it_dev, agent_it_sec, agent_it_qa)** 에게 우선 배정하세요.
 - 일반 비즈니스·콘텐츠·생활 프로젝트는 **전략실행본부** 팀원에게 우선 배정하세요.
-권한 위임 규칙 (매우 중요):
+권한 위임 및 정직성 규칙 (매우 중요):
 - 리서치, 시장 조사, 전략/로드맵 수립, MVP 기획, SEO·콘텐츠·문서 초안, 코드 패치 초안·보안 감사·QA 시나리오 등 일반 실무는 모두 **팀장 전결(requiresApproval=false)**로 자동 진행합니다.
 - CEO 결재(requiresApproval=true)는 오직 **실제 금전 결제/송금/광고비 집행, 외부 식당·병원 예약 최종 확정, 대외 공식 발송·프로덕션 코드 실배포**처럼 되돌리기 어렵고 영향이 큰 의사결정에만 지정하세요.
+- GitHub 저장소나 라이브 사이트 현황이 제공된 경우, 추상적 작업 대신 **실제 저장소 파일과 라이브 페이지 점검 결과에 기반한 구체적 개선 작업**을 배정하세요.
+- GA4·AdSense 등 미연동 외부 API를 "실제 조회 완료"하라는 허위 업무 대신, 실제 코드·SEO·콘텐츠·체크리스트 중심으로 분해하세요.
 
 [활성 AI 조직원]
 ${rosterText}`;
@@ -816,7 +838,10 @@ ${rosterText}`;
         model: resolved.model,
         schema: PlanSchema,
         system,
-        prompt: `미션 제목: ${title || '(자동)'}\n업무 영역: ${domain}\nCEO 지시:\n${directive}`
+        maxRetries: 0,
+        prompt: `미션 제목: ${title || '(자동)'}\n업무 영역: ${domain}\nCEO 지시:\n${directive}${
+          liveContext ? `\n\n${liveContext}` : ''
+        }`
       });
 
       const validIds = new Set(activeAgents.map((a) => a.id));
@@ -859,28 +884,36 @@ export async function executeAgentTask({ task, mission, agent, settings, priorOu
           .join('\n')}`
       : '';
 
+  const liveContext = await buildMissionLiveContext({ mission, settings }).catch(() => '');
+  const liveBlock = liveContext ? `\n\n${liveContext}` : '';
+
   // Manus API dedicated path
   if (agent.provider === 'manus' && agent.connectionMode === 'api' && settings?.providers?.manus?.apiKey) {
     const output = await callManusApi({
       apiKey: settings.providers.manus.apiKey,
       baseUrl: settings.providers.manus.baseUrl,
-      prompt: `미션: ${mission.title}\n작업: ${task.title}\n상세: ${task.description}${contextBlock}`
+      prompt: `미션: ${mission.title}\n작업: ${task.title}\n상세: ${task.description}${liveBlock}${contextBlock}`
     });
     return { output, executionModeUsed: 'live_api:manus', live: true };
   }
 
-  // Internal AI agents (EXAONE, Gemini 4 Neon, Claude) run autonomously under Team Lead authority using direct API or live EXAONE engine
+  // Internal AI agents run autonomously under Team Lead authority using direct API or live backend engine
   const isInternalAi = ['exaone', 'gemini', 'groq', 'openrouter'].includes(agent.provider);
   const resolved = resolveLanguageModel(agent, settings) || (isInternalAi ? resolveLiveBackendModel(settings) : null);
   if (resolved) {
     const system = `당신은 "${agent.name}" (${agent.roleTitle})입니다. 강점: ${agent.strengths}.
-총괄 팀장(${mission?.leadAgentId === 'agent_gemini_neon' ? 'Gemini 4 Hydrogen' : '팀장'})의 위임을 받아 CEO 지시를 완수할 수 있도록 바로 실행 가능한 한국어 마크다운 결과물(표·체크리스트·실행안 포함)을 작성하세요.
-실제 금전 결제·예약 확정·외부 발송·실배포가 필요한 경우에만 실제 실행했다고 쓰지 말고 "팀장 검토 → CEO 결재 상신안"으로 정리하세요.`;
+총괄 팀장(${mission?.leadAgentId === 'agent_gemini_neon' ? 'Gemini 4 Hydrogen' : '팀장'})의 위임을 받아 CEO 지시를 완수할 수 있도록 바로 실행 가능한 한국어 마크다운 결과물(표·체크리스트·실제 파일 기반 패치안 포함)을 작성하세요.
+
+[사실 기반 실행 & 거짓 보고 금지 규칙 — 엄수]
+1. 아래 [실제 시스템 권한 및 도구 현황]에 제공된 실제 사이트 점검 결과와 실제 GitHub 저장소 파일 목록·커밋을 근거로 분석하고, **존재하는 실제 파일 경로**를 정확히 인용하세요.
+2. GA4 실제 트래픽·이탈률 수치, AdSense 수익, 서치콘솔 클릭수, 유료 광고 집행, 대외 이메일 발송 등 **미연동 외부 시스템에 접속·조회·실행했다고 절대 거짓으로 쓰지 마세요.** (추정치나 가설 수치를 실제 측정값처럼 꾸며내는 것도 금지)
+3. 미연동 외부 작업이 필요하면 반드시 \`[외부 권한 미연동 — 대표님 실행 가이드/초안]\` 배지를 달아 대표님이 직접 실행할 체크리스트로 정리하세요.
+4. 연동된 GitHub 저장소의 코드·SEO·데이터 수정안은 IT 유지보수팀이 \`실코드 수정 · GitHub PR\`로 즉시 반영할 수 있게 **대상 파일 경로와 구체적 변경 내용**을 명확히 제시하세요.`;
 
     const prompt = `미션: ${mission.title}
 CEO 원지시: ${mission.directive}
 담당 작업: ${task.title}
-상세 요구사항: ${task.description}${contextBlock}`;
+상세 요구사항: ${task.description}${liveBlock}${contextBlock}`;
 
     const buildBackupModels = () => {
       const backups = [];

@@ -2,15 +2,48 @@ import { generateObject, generateText } from 'ai';
 import { z } from 'zod';
 import { resolveLanguageModel, resolveLiveBackendModel } from './orchestrator.js';
 
-const PROTECTED_PATH_RE = /^(\.github\/|data\/|node_modules\/|\.env|package-lock\.json|public\/icons\/|public\/vendor\/)/i;
-const ALLOWED_EXT_RE = /\.(js|mjs|cjs|html|css|json|md|yml|yaml|txt)$/i;
+const PROTECTED_PATH_RE = /^(\.github\/|data\/db\.json$|data\/state\.json$|node_modules\/|\.env|package-lock\.json|public\/icons\/|public\/vendor\/)/i;
+const ALLOWED_EXT_RE = /\.(js|mjs|cjs|ts|tsx|jsx|html|css|json|md|yml|yaml|txt|xml|svg)$/i;
+export const DEFAULT_ALLOWED_REPOS = [
+  'alpinu83/ai-ceo-hub',
+  'alpinu83/kr-calc-hub',
+  'alpinu83/alpinu83.github.io'
+];
 
-export function getGithubRepoConfig(settings) {
+function normalizeRepoSlug(raw = '') {
+  return String(raw || '')
+    .trim()
+    .replace(/^https?:\/\/github\.com\//i, '')
+    .replace(/\.git$/i, '')
+    .replace(/^\/+|\/+$/g, '');
+}
+
+export function parseAllowedRepos(rawList = '', primaryRepo = '') {
+  const parts = Array.isArray(rawList)
+    ? rawList
+    : String(rawList || '')
+        .split(/[\n,;]+/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+  const base = parts.length ? parts : DEFAULT_ALLOWED_REPOS;
+  const set = new Set();
+  const primary = normalizeRepoSlug(primaryRepo);
+  if (primary && primary.includes('/')) set.add(primary);
+  for (const item of base) {
+    const slug = normalizeRepoSlug(item);
+    if (slug && slug.includes('/')) set.add(slug);
+  }
+  return [...set];
+}
+
+export function getGithubRepoConfig(settings, override = {}) {
   const cfg = settings?.providers?.githubRepo || {};
   const token = String(cfg.apiKey || process.env.GITHUB_REPO_TOKEN || '').trim();
-  const repo = String(cfg.repo || process.env.GITHUB_REPO || 'alpinu83/ai-ceo-hub').trim().replace(/^https?:\/\/github\.com\//i, '').replace(/\.git$/i, '').replace(/^\/+|\/+$/g, '');
-  const branch = String(cfg.branch || process.env.GITHUB_BRANCH || 'main').trim() || 'main';
-  return { token, repo, branch, enabled: Boolean(token && repo.includes('/')) };
+  const defaultRepo = normalizeRepoSlug(cfg.repo || process.env.GITHUB_REPO || 'alpinu83/ai-ceo-hub');
+  const repo = normalizeRepoSlug(override?.repo || defaultRepo);
+  const branch = String(override?.branch || cfg.branch || process.env.GITHUB_BRANCH || 'main').trim() || 'main';
+  const allowedRepos = parseAllowedRepos(cfg.allowedRepos || process.env.GITHUB_ALLOWED_REPOS || '', defaultRepo);
+  return { token, repo, branch, allowedRepos, enabled: Boolean(token && repo.includes('/')) };
 }
 
 function ghHeaders(token) {
@@ -47,18 +80,40 @@ export async function testGithubRepoConnection(settings) {
   if (!cfg.token) {
     throw new Error('IT팀 GitHub 토큰(repo / Contents+Pull requests 권한)을 먼저 저장해 주세요.');
   }
-  if (!cfg.repo.includes('/')) {
-    throw new Error('저장소 형식이 올바르지 않습니다. 예: alpinu83/ai-ceo-hub');
+  const reposToCheck = cfg.allowedRepos.length ? cfg.allowedRepos : [cfg.repo];
+  const results = [];
+  for (const slug of reposToCheck) {
+    if (!slug.includes('/')) continue;
+    try {
+      const repoInfo = await ghFetch(cfg.token, `https://api.github.com/repos/${slug}`);
+      const canPush = Boolean(repoInfo?.permissions?.push || repoInfo?.permissions?.admin);
+      results.push({
+        repo: repoInfo.full_name || slug,
+        ok: true,
+        canPush,
+        defaultBranch: repoInfo.default_branch || 'main'
+      });
+    } catch (err) {
+      results.push({ repo: slug, ok: false, canPush: false, error: err.message });
+    }
   }
-  const repoInfo = await ghFetch(cfg.token, `https://api.github.com/repos/${cfg.repo}`);
-  const canPush = Boolean(repoInfo?.permissions?.push || repoInfo?.permissions?.admin);
+  const writable = results.filter((r) => r.ok && r.canPush);
+  const readableOnly = results.filter((r) => r.ok && !r.canPush);
+  const failed = results.filter((r) => !r.ok);
+  if (writable.length === 0 && readableOnly.length === 0) {
+    throw new Error(`저장소 접근 실패: ${failed.map((f) => `${f.repo} (${f.error})`).join(', ')}`);
+  }
+  const summaryParts = [];
+  if (writable.length) summaryParts.push(`쓰기·PR·배포 가능(${writable.map((r) => r.repo).join(', ')})`);
+  if (readableOnly.length) summaryParts.push(`읽기 전용(${readableOnly.map((r) => r.repo).join(', ')})`);
+  if (failed.length) summaryParts.push(`권한 없음(${failed.map((r) => r.repo).join(', ')})`);
+
   return {
     ok: true,
-    repo: repoInfo.full_name || cfg.repo,
-    defaultBranch: repoInfo.default_branch || cfg.branch,
-    private: Boolean(repoInfo.private),
-    canPush,
-    reply: `${repoInfo.full_name} 연결됨 (${canPush ? '쓰기·PR·배포 권한 확인' : '읽기 전용 — Contents/PR 쓰기 권한 필요'})`
+    repo: writable[0]?.repo || results[0]?.repo || cfg.repo,
+    canPush: writable.length > 0,
+    repos: results,
+    reply: summaryParts.join(' · ')
   };
 }
 
@@ -123,36 +178,64 @@ function pickItModel(agents, settings, preferredId) {
   return resolveLiveBackendModel(settings);
 }
 
+async function generateObjectResilient(models, opts) {
+  let lastErr = null;
+  for (const m of models.filter(Boolean)) {
+    try {
+      return await generateObject({ ...opts, model: m.model, maxRetries: 0 });
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr || new Error('사용 가능한 AI 모델이 없습니다.');
+}
+
 /**
  * Full Autonomous IT Maintenance Pipeline (Code Read -> Patch -> Security Audit -> GitHub Branch + Commit + PR)
  * Never pushes directly to `main`; always opens a PR and awaits CEO Approval before merging & auto-deploying!
  */
-export async function runItMaintenancePipeline({ instruction, missionTitle, agents, settings }) {
-  const cfg = getGithubRepoConfig(settings);
+export async function runItMaintenancePipeline({
+  instruction,
+  missionTitle,
+  repoOverride,
+  branchOverride,
+  siteUrl,
+  agents,
+  settings
+}) {
+  const cfg = getGithubRepoConfig(settings, { repo: repoOverride, branch: branchOverride });
   if (!cfg.enabled) {
     throw new Error('IT팀 GitHub 토큰이 설정되지 않았습니다. 설정 → 연결 설정 → IT팀 GitHub에서 토큰을 등록해 주세요.');
   }
 
-  const devModel = pickItModel(agents, settings, 'agent_it_dev') || pickItModel(agents, settings, 'agent_qwen');
-  const secModel = pickItModel(agents, settings, 'agent_it_sec') || devModel;
-  if (!devModel) {
+  const devModels = [
+    pickItModel(agents, settings, 'agent_it_dev'),
+    pickItModel(agents, settings, 'agent_it_qa'),
+    pickItModel(agents, settings, 'agent_qwen'),
+    resolveLiveBackendModel(settings)
+  ].filter(Boolean);
+  const secModels = [
+    pickItModel(agents, settings, 'agent_it_sec'),
+    pickItModel(agents, settings, 'agent_it_qa'),
+    devModels[0]
+  ].filter(Boolean);
+  if (devModels.length === 0) {
     throw new Error('IT 개발용 AI API 키(Groq / OpenRouter / Gemini / EXAONE)가 최소 1개 필요합니다.');
   }
 
   // 1. List live files in GitHub repository
   const allFiles = await listRepoFiles(cfg);
   if (allFiles.length === 0) {
-    throw new Error('저장소에서 수정 가능한 소스 파일을 찾지 못했습니다.');
+    throw new Error(`저장소(${cfg.repo})에서 수정 가능한 소스 파일을 찾지 못했습니다.`);
   }
 
   // 2. IT Dev selects the 1~3 exact files to inspect
-  const { object: selection } = await generateObject({
-    model: devModel.model,
+  const { object: selection } = await generateObjectResilient(devModels, {
     schema: FileSelectSchema,
     system: `당신은 GM Corporation IT 개발팀 수석 엔지니어입니다.
-아래 저장소 파일 목록에서 CEO의 유지보수 지시를 해결하기 위해 읽고 수정해야 할 가장 핵심 파일 1~3개만 정확히 고르세요.
+대상 저장소(${cfg.repo}${siteUrl ? ` / 라이브 사이트 ${siteUrl}` : ''})의 실제 파일 목록에서 CEO의 지시를 해결하기 위해 읽고 수정해야 할 가장 핵심 파일 1~3개만 정확히 고르세요.
 반드시 목록에 있는 정확한 파일 경로만 선택하세요.`,
-    prompt: `[저장소 파일 목록]\n${allFiles.join('\n')}\n\n[CEO 보수 지시]\n제목: ${missionTitle || ''}\n내용: ${instruction}`
+    prompt: `[저장소: ${cfg.repo} (${cfg.branch})]\n[파일 목록]\n${allFiles.join('\n')}\n\n[CEO 지시]\n제목: ${missionTitle || ''}\n내용: ${instruction}`
   });
 
   const targetPaths = [...new Set(selection.files)]
@@ -169,17 +252,16 @@ export async function runItMaintenancePipeline({ instruction, missionTitle, agen
     .join('\n\n');
 
   // 4. IT Dev generates exact search/replace patches
-  const { object: patchPlan } = await generateObject({
-    model: devModel.model,
+  const { object: patchPlan } = await generateObjectResilient(devModels, {
     schema: PatchPlanSchema,
     system: `당신은 GM Corporation IT 개발팀 수석 엔지니어입니다.
-제공된 실제 소스 코드를 바탕으로 CEO의 보수 지시를 안전하고 정확하게 구현하는 최소 범위 search/replace 패치를 작성하세요.
+대상 저장소(${cfg.repo})의 실제 소스 코드를 바탕으로 CEO의 보수·개선 지시를 안전하고 정확하게 구현하는 최소 범위 search/replace 패치를 작성하세요.
 규칙:
 - search 문자열은 반드시 제공된 파일 내용에 100% 정확히(공백·들여쓰기 포함) 존재해야 합니다.
 - 불필요한 대규모 리팩토링 금지. 필요한 부분만 정확히 수정하세요.
-- HTML/CSS/JS 파일 수정 시 문법 오류나 기존 기능 깨짐이 없도록 하세요.
+- HTML/CSS/JS/JSON 파일 수정 시 문법 오류나 기존 기능 깨짐이 없도록 하세요.
 - 보안을 약화시키거나 비밀키를 코드에 하드코딩하지 마세요.`,
-    prompt: `[CEO 보수 지시]\n${instruction}\n\n[실제 저장소 소스 코드]\n${fileContext}`
+    prompt: `[대상 저장소: ${cfg.repo}]\n[CEO 지시]\n${instruction}\n\n[실제 저장소 소스 코드]\n${fileContext}`
   });
 
   // 5. Apply and verify every edit in memory before touching GitHub
@@ -211,11 +293,10 @@ export async function runItMaintenancePipeline({ instruction, missionTitle, agen
 
   let audit = { passed: true, riskLevel: 'low', notes: 'IT 보안 자동 검토 완료: 민감 정보 노출 및 보호 경로 변경 없음.' };
   try {
-    const { object: secObj } = await generateObject({
-      model: secModel.model,
+    const { object: secObj } = await generateObjectResilient(secModels, {
       schema: SecurityAuditSchema,
       system: `당신은 GM Corporation IT 보안 감사관입니다. 아래 코드 수정(diff)이 보안 취약점(비밀키 노출, XSS/인젝션, 인증 우회, 치명적 문법 오류)을 유발하지 않는지 엄격히 검토하세요.`,
-      prompt: `[보수 지시]\n${instruction}\n\n[코드 변경 내역]\n${diffSummary}`
+      prompt: `[대상 저장소: ${cfg.repo}]\n[보수 지시]\n${instruction}\n\n[코드 변경 내역]\n${diffSummary}`
     });
     audit = secObj;
   } catch {
@@ -254,8 +335,17 @@ export async function runItMaintenancePipeline({ instruction, missionTitle, agen
   }
 
   // 9. Open Pull Request for CEO approval & automatic CI verification
+  const deployLabel = cfg.repo.includes('kr-calc-hub')
+    ? 'korea-tax-cal.com (GitHub Actions 자동 빌드·배포)'
+    : cfg.repo.includes('ai-ceo-hub')
+      ? 'Render · GitHub Pages 라이브 배포'
+      : `${cfg.repo} 자동 배포`;
+
   const prBody = [
     `## GM Corp IT 유지보수팀 자동 보수 PR`,
+    ``,
+    `- **대상 저장소**: \`${cfg.repo}\` (\`${cfg.branch}\`)`,
+    ...(siteUrl ? [`- **라이브 사이트**: ${siteUrl}`] : []),
     ``,
     `### 요약`,
     patchPlan.prSummary,
@@ -269,7 +359,7 @@ export async function runItMaintenancePipeline({ instruction, missionTitle, agen
     `### QA 체크리스트`,
     ...patchPlan.qaChecklist.map((q) => `- [ ] ${q}`),
     ``,
-    `> CEO Office 결재함 또는 텔레그램에서 **승인**하시면 자동으로 \`${cfg.branch}\` 브랜치에 머지되고 Render·GitHub Pages에 라이브 배포됩니다.`
+    `> CEO Office 결재함 또는 텔레그램에서 **승인**하시면 자동으로 \`${cfg.branch}\` 브랜치에 머지되고 ${deployLabel}가 시작됩니다.`
   ].join('\n');
 
   const pr = await ghFetch(cfg.token, `https://api.github.com/repos/${cfg.repo}/pulls`, {
@@ -285,6 +375,7 @@ export async function runItMaintenancePipeline({ instruction, missionTitle, agen
   return {
     ok: true,
     repo: cfg.repo,
+    branch: cfg.branch,
     branchName,
     prNumber: pr.number,
     prUrl: pr.html_url,
@@ -297,8 +388,8 @@ export async function runItMaintenancePipeline({ instruction, missionTitle, agen
   };
 }
 
-export async function mergeMaintenancePr({ prNumber, settings }) {
-  const cfg = getGithubRepoConfig(settings);
+export async function mergeMaintenancePr({ prNumber, repo, branch, settings }) {
+  const cfg = getGithubRepoConfig(settings, { repo, branch });
   if (!cfg.enabled) {
     throw new Error('IT팀 GitHub 토큰이 설정되지 않아 자동 머지할 수 없습니다.');
   }
@@ -315,20 +406,21 @@ export async function mergeMaintenancePr({ prNumber, settings }) {
   );
   return {
     ok: Boolean(mergeRes.merged),
+    repo: cfg.repo,
     sha: mergeRes.sha || '',
-    message: mergeRes.message || 'PR 머지 완료 → Render 자동 배포 시작됨'
+    message: mergeRes.message || `${cfg.repo} PR #${Number(prNumber)} 머지 완료 → 자동 배포 시작됨`
   };
 }
 
-export async function closeMaintenancePr({ prNumber, settings }) {
-  const cfg = getGithubRepoConfig(settings);
+export async function closeMaintenancePr({ prNumber, repo, settings }) {
+  const cfg = getGithubRepoConfig(settings, { repo });
   if (!cfg.enabled || !prNumber) return { ok: false };
   try {
     await ghFetch(cfg.token, `https://api.github.com/repos/${cfg.repo}/pulls/${Number(prNumber)}`, {
       method: 'PATCH',
       body: JSON.stringify({ state: 'closed' })
     });
-    return { ok: true };
+    return { ok: true, repo: cfg.repo };
   } catch {
     return { ok: false };
   }

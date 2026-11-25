@@ -14,7 +14,7 @@
   <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png" />
   <link rel="apple-touch-icon" href="./icons/icon-192.png" />
   <link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" />
-  <link rel="stylesheet" href="./styles.css?v=20261124z" />
+  <link rel="stylesheet" href="./styles.css?v=20261125a" />
   <script src="./vendor/marked.umd.js" defer></script>
   <script src="./vendor/lucide.min.js" defer></script>
 </head>
@@ -557,20 +557,26 @@
 
               <div class="card agent-config-panel" id="agent-panel-github">
                 <div class="provider-head">
-                  <h3>IT 유지보수팀 — GitHub 소스 · 자동 배포 연동</h3>
+                  <h3>IT 유지보수팀 — GitHub 멀티 저장소 · 자동 배포 연동</h3>
                   <div class="provider-right">
                     <span class="key-status" id="status-github">미연결</span>
                     <button type="button" class="btn btn-ghost btn-sm" data-ping-provider="githubRepo">테스트</button>
                   </div>
                 </div>
                 <p class="form-hint" style="margin-top:8px;">
-                  GitHub Fine-grained 토큰(<code>Contents: Read &amp; write</code>, <code>Pull requests: Read &amp; write</code>)을 등록하면,
-                  IT팀이 직접 소스코드를 읽고 수정해 PR을 올리며 <strong>CEO 결재 승인 시 자동 머지 → Render 라이브 배포</strong>까지 완료합니다.
+                  GitHub Fine-grained 토큰 발급 시 <strong>Repository access → Only select repositories</strong>에서
+                  <code>ai-ceo-hub</code>, <code>kr-calc-hub</code>, <code>alpinu83.github.io</code>를 선택하고
+                  <code>Contents: Read &amp; write</code>, <code>Pull requests: Read &amp; write</code> 권한을 주면
+                  <strong>CEO Office와 세금계산기(korea-tax-cal.com) 모두</strong> 실제 코드 수정 → PR → 결재 승인 시 자동 배포됩니다.
                 </p>
                 <div class="form-row-two" style="margin-top:12px;">
                   <label class="field"><span class="field-label">GitHub Repo Token</span><input type="password" id="key-github" placeholder="github_pat_… 또는 ghp_…" autocomplete="off" /></label>
-                  <label class="field"><span class="field-label">대상 저장소 (owner/repo)</span><input type="text" id="repo-github" placeholder="alpinu83/ai-ceo-hub" /></label>
+                  <label class="field"><span class="field-label">기본 저장소 (owner/repo)</span><input type="text" id="repo-github" placeholder="alpinu83/ai-ceo-hub" /></label>
                 </div>
+                <label class="field" style="margin-top:10px;">
+                  <span class="field-label">권한 부여된 저장소 목록 (쉼표로 구분)</span>
+                  <input type="text" id="allowed-repos-github" placeholder="alpinu83/ai-ceo-hub, alpinu83/kr-calc-hub, alpinu83/alpinu83.github.io" />
+                </label>
                 <div class="form-actions">
                   <a class="text-link" href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noreferrer">GitHub 토큰 발급 페이지 열기 ↗</a>
                   <button type="submit" class="btn btn-primary">저장</button>
@@ -790,6 +796,6 @@
   </nav>
 
   <div class="toast-region" id="toast-region" aria-live="polite"></div>
-  <script type="module" src="./app.js?v=20261124z"></script>
+  <script type="module" src="./app.js?v=20261125a"></script>
 </body>
 </html>

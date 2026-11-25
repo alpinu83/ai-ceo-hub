@@ -679,6 +679,10 @@ function renderActiveMission(mission) {
   const busyAgentIds = new Set(tasks.filter((t) => openStatuses.has(t.status)).map((t) => t.assigneeId));
   const idleCount = state.agents.filter((a) => a.active && a.tier !== 'lead' && !busyAgentIds.has(a.id)).length;
 
+  const ghHasToken = Boolean(state.settings?.providers?.githubRepo?.hasApiKey);
+  const linkedRepo = mission.githubRepo || (mission.domain === 'it_ops' ? state.settings?.providers?.githubRepo?.repo || 'alpinu83/ai-ceo-hub' : '');
+  const linkedSite = mission.siteUrl || '';
+
   const missionHeader = `
     <div class="sheet mission-header-sheet">
       <div class="sheet-header compact">
@@ -690,10 +694,21 @@ function renderActiveMission(mission) {
                 : `<span class="badge badge-neutral">${esc(DOMAIN_LABELS[mission.domain] || mission.domain)}</span>`
             }
             <span class="badge badge-green">총괄 팀장: ${esc(lead?.name || '팀장')}</span>
+            ${
+              linkedRepo
+                ? `<span class="badge ${ghHasToken ? 'badge-green' : 'badge-amber'}" title="${ghHasToken ? '실코드 수정 · PR 생성 · 결재 시 자동 배포 가능' : '실제 소스 읽기 가능 · 설정에서 IT팀 GitHub 토큰 등록 시 PR 자동 수정 활성화'}">GitHub: ${esc(linkedRepo)} · ${ghHasToken ? '실수정 가능' : '읽기 전용'}</span>`
+                : ''
+            }
+            ${
+              linkedSite
+                ? `<a class="badge badge-neutral" href="${esc(linkedSite)}" target="_blank" rel="noreferrer" style="text-decoration:none;">${esc(linkedSite.replace(/^https?:\/\//, ''))} ↗</a>`
+                : ''
+            }
           </div>
           <div class="sheet-title-row">
             <h2 class="sheet-title">${esc(mission.title)}</h2>
             <button type="button" class="btn-inline-edit" id="btn-rename-mission" data-mission-id="${esc(mission.id)}" title="이름 수정">이름 수정</button>
+            <button type="button" class="btn-inline-edit" id="btn-bind-mission-repo" data-mission-id="${esc(mission.id)}" title="GitHub 저장소 · 라이브 사이트 연결">연동 설정</button>
           </div>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;">
@@ -705,8 +720,8 @@ function renderActiveMission(mission) {
                 : ''
           }
           ${
-            mission.domain === 'it_ops'
-              ? `<button type="button" class="btn btn-primary btn-sm" id="btn-trigger-it-pr" data-mission-id="${esc(mission.id)}">GitHub PR 자동 보수</button>`
+            linkedRepo
+              ? `<button type="button" class="btn btn-primary btn-sm" id="btn-trigger-it-pr" data-mission-id="${esc(mission.id)}">실코드 수정 · PR 생성</button>`
               : ''
           }
           ${
@@ -1383,6 +1398,11 @@ function renderIntegrationsView() {
   document.getElementById('model-exaone').value = p.exaone?.model || 'k-exaone_v2.5';
   const repoGhEl = document.getElementById('repo-github');
   if (repoGhEl) repoGhEl.value = p.githubRepo?.repo || 'alpinu83/ai-ceo-hub';
+  const allowedGhEl = document.getElementById('allowed-repos-github');
+  if (allowedGhEl) {
+    allowedGhEl.value =
+      p.githubRepo?.allowedRepos || 'alpinu83/ai-ceo-hub, alpinu83/kr-calc-hub, alpinu83/alpinu83.github.io';
+  }
 
   setKeyStatus('status-gemini', p.gemini);
   setKeyStatus('status-gemini-quick', p.gemini);
@@ -2025,23 +2045,62 @@ function bindEvents() {
       return;
     }
 
+    if (target.id === 'btn-bind-mission-repo') {
+      const missionId = target.dataset.missionId;
+      const m = state.missions.find((x) => x.id === missionId);
+      if (!m) return;
+      const nextRepo = window.prompt(
+        '연결할 GitHub 저장소(owner/repo)를 입력하세요 (예: alpinu83/kr-calc-hub 또는 alpinu83/ai-ceo-hub):',
+        m.githubRepo || ''
+      );
+      if (nextRepo === null) return;
+      const nextSite = window.prompt(
+        '연결할 라이브 웹사이트 URL을 입력하세요 (예: https://korea-tax-cal.com):',
+        m.siteUrl || ''
+      );
+      if (nextSite === null) return;
+      try {
+        const res = await api(`/api/missions/${missionId}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ githubRepo: nextRepo.trim(), siteUrl: nextSite.trim() })
+        });
+        state = res.state;
+        renderAll();
+        toast(`실연동 저장 완료: ${nextRepo.trim() || '저장소 해제'}`);
+      } catch (err) {
+        toast(err.message, true);
+      }
+      return;
+    }
+
     if (target.id === 'btn-trigger-it-pr') {
       const missionId = target.dataset.missionId;
+      const m = state.missions.find((x) => x.id === missionId);
+      const repoLabel = m?.githubRepo || state.settings?.providers?.githubRepo?.repo || 'alpinu83/ai-ceo-hub';
+      const customInstruction = window.prompt(
+        `[${repoLabel}] 저장소에 실제 코드 수정 PR을 생성합니다.\n구체적인 수정 지시를 입력하거나 그대로 확인을 누르면 프로젝트 지시대로 진행합니다:`,
+        m?.directive || m?.title || ''
+      );
+      if (customInstruction === null) return;
+
       target.disabled = true;
-      target.textContent = '소스 분석 · PR 생성 중…';
+      target.textContent = '실소스 분석 · PR 생성 중…';
       try {
-        const res = await api(`/api/missions/${missionId}/it-pr`, { method: 'POST' });
+        const res = await api(`/api/missions/${missionId}/it-pr`, {
+          method: 'POST',
+          body: JSON.stringify({ instruction: customInstruction.trim() })
+        });
         state = res.state;
         if (res.approval?.id) selectedApprovalId = res.approval.id;
         renderAll();
         switchView('approvals');
         renderApprovalsView();
         refreshIcons();
-        toast(`GitHub PR #${res.prNumber} 생성 완료! 결재함에서 승인하면 자동 머지·배포됩니다.`);
+        toast(`[${res.repo || repoLabel}] PR #${res.prNumber} 생성 완료! 결재함에서 승인하면 자동 머지·배포됩니다.`);
       } catch (err) {
         toast(err.message, true);
         target.disabled = false;
-        target.textContent = 'GitHub PR 자동 보수';
+        target.textContent = '실코드 수정 · PR 생성';
       }
       return;
     }
@@ -2630,7 +2689,10 @@ function bindEvents() {
         },
         githubRepo: {
           apiKey: document.getElementById('key-github')?.value.trim() || '',
-          repo: document.getElementById('repo-github')?.value.trim() || 'alpinu83/ai-ceo-hub'
+          repo: document.getElementById('repo-github')?.value.trim() || 'alpinu83/ai-ceo-hub',
+          allowedRepos:
+            document.getElementById('allowed-repos-github')?.value.trim() ||
+            'alpinu83/ai-ceo-hub, alpinu83/kr-calc-hub, alpinu83/alpinu83.github.io'
         }
       }
     };
