@@ -195,6 +195,7 @@ const VIEW_META = {
   office: { title: '회의실', subtitle: '' },
   approvals: { title: '결재함', subtitle: '' },
   roster: { title: 'AI 팀', subtitle: '' },
+  routines: { title: '루틴 업무', subtitle: '' },
   integrations: { title: '설정', subtitle: '' }
 };
 
