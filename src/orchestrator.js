@@ -995,7 +995,8 @@ CEO 원지시: ${String(mission.directive || '').slice(0, 800)}
         skills,
         task,
         agent,
-        settings
+        settings,
+        references: companyCtxCompact
       });
       return {
         output: refined.output,
@@ -1678,14 +1679,14 @@ async function generateReview(model, opts) {
  * Cross-model review + one revision pass. Never throws: on any failure the original draft is kept.
  * Returns { output, quality: { skills, reviewed, score, revised, reviewer, issues } }
  */
-export async function refineDraft({ draft, authorLabel = '', system = '', taskPrompt = '', skills = [], task = null, agent = null, settings = null }) {
+export async function refineDraft({ draft, authorLabel = '', system = '', taskPrompt = '', skills = [], task = null, agent = null, settings = null, references = '' }) {
   const quality = { skills: skills.map((s) => s.id), reviewed: false, score: null, revised: false, reviewer: '', issues: [] };
   if (!draft || draft.length < 40 || !shouldReview({ skills, task, agent, settings })) return { output: draft, quality };
   const cfg = getSkillSettings(settings);
   const minScore = Math.max(1, Math.min(10, Number(cfg.minScore) || 8));
   const rubric = buildReviewRubric(skills);
 
-  for (const rv of reviewerCandidates(settings, authorLabel).slice(0, 2)) {
+  for (const rv of reviewerCandidates(settings, authorLabel).slice(0, 3)) {
     let review = null;
     try {
       review = await generateReview(rv.model, {
@@ -1693,9 +1694,10 @@ export async function refineDraft({ draft, authorLabel = '', system = '', taskPr
 - 점수는 버트지 말고 엄격하게: 점검표를 모두 통과하고 대표님이 바로 쓸 수 있을 때만 9점 이상.
 - 작업 지시와 제공 자료에 없는 사실·수치·파일·기능을 지어냈으면 반드시 지적하세요.
 - issues에는 "무엇이 문제이고 어떻게 고치는지"를 구체적으로 쓰세요. 취향 문제는 쓰지 마세요.
+- [참고 자료: 회사 기억·전역 지침]에 있는 내용은 확인된 사실입니다. 그 내용을 근거로 쓴 문장은 감점하지 말고, 오히려 그것과 충돌하는 내용을 지적하세요.
 
 [점검표]
-${rubric}`,
+${rubric}${references ? `\n\n[참고 자료: 회사 기억·전역 지침]\n${String(references).slice(0, 1400)}` : ''}`,
         prompt: `[작업 지시와 자료]\n${String(taskPrompt).slice(0, rv.compact ? 3500 : 6000)}\n\n[검수할 결과물]\n${draft.slice(0, rv.compact ? 5000 : 9000)}`
       });
     } catch {
