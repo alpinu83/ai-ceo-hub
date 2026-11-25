@@ -705,6 +705,11 @@ function renderActiveMission(mission) {
                 : ''
           }
           ${
+            mission.domain === 'it_ops'
+              ? `<button type="button" class="btn btn-primary btn-sm" id="btn-trigger-it-pr" data-mission-id="${esc(mission.id)}">GitHub PR 자동 보수</button>`
+              : ''
+          }
+          ${
             idleCount > 0
               ? `<button type="button" class="btn btn-ghost btn-sm" id="btn-deploy-idle" data-mission-id="${esc(mission.id)}">대기 팀원 투입 (${idleCount})</button>`
               : ''
@@ -1208,6 +1213,19 @@ function renderApprovalsView() {
     </div>
 
     ${
+      apr.prUrl
+        ? `<div class="memo-section">
+            <h4>GitHub Pull Request · 코드 변경 내역</h4>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
+              <a class="btn btn-primary btn-sm" href="${esc(apr.prUrl)}" target="_blank" rel="noreferrer">GitHub PR #${Number(apr.prNumber) || ''} 코드 확인 ↗</a>
+              ${apr.branchName ? `<span class="mono" style="color:var(--ink-muted);">${esc(apr.branchName)} → main</span>` : ''}
+            </div>
+            ${apr.diffSummary ? `<pre class="code-block tall">${esc(apr.diffSummary)}</pre>` : ''}
+          </div>`
+        : ''
+    }
+
+    ${
       task?.output
         ? `<div class="memo-section">
             <h4>팀원 제출 산출물 미리보기</h4>
@@ -1363,6 +1381,8 @@ function renderIntegrationsView() {
     modelOrEl.value = hasOrOpt ? savedOr : 'openrouter/free';
   }
   document.getElementById('model-exaone').value = p.exaone?.model || 'k-exaone_v2.5';
+  const repoGhEl = document.getElementById('repo-github');
+  if (repoGhEl) repoGhEl.value = p.githubRepo?.repo || 'alpinu83/ai-ceo-hub';
 
   setKeyStatus('status-gemini', p.gemini);
   setKeyStatus('status-gemini-quick', p.gemini);
@@ -1372,6 +1392,8 @@ function renderIntegrationsView() {
   setKeyStatus('status-openrouter-quick', p.openrouter);
   setKeyStatus('status-exaone', p.exaone);
   setKeyStatus('status-exaone-quick', p.exaone);
+  setKeyStatus('status-github', p.githubRepo);
+  setKeyStatus('status-github-quick', p.githubRepo);
 
   // Live server + Gist cloud sync status
   const syncEl = document.getElementById('status-sync-live');
@@ -1443,7 +1465,7 @@ function selectConfigAgent(agentKey = 'gemini') {
     btn.classList.toggle('active', btn.dataset.configAgent === agentKey);
   });
 
-  const formPanels = ['gemini', 'groq', 'openrouter', 'exaone', 'telegram', 'general'];
+  const formPanels = ['gemini', 'groq', 'openrouter', 'exaone', 'github', 'telegram', 'general'];
   const isFormPanel = formPanels.includes(agentKey);
   formPanels.forEach((key) => {
     document.getElementById(`agent-panel-${key}`)?.classList.toggle('active', agentKey === key);
@@ -1999,6 +2021,27 @@ function bindEvents() {
         toast('이름을 수정했습니다.');
       } catch (err) {
         toast(err.message, true);
+      }
+      return;
+    }
+
+    if (target.id === 'btn-trigger-it-pr') {
+      const missionId = target.dataset.missionId;
+      target.disabled = true;
+      target.textContent = '소스 분석 · PR 생성 중…';
+      try {
+        const res = await api(`/api/missions/${missionId}/it-pr`, { method: 'POST' });
+        state = res.state;
+        if (res.approval?.id) selectedApprovalId = res.approval.id;
+        renderAll();
+        switchView('approvals');
+        renderApprovalsView();
+        refreshIcons();
+        toast(`GitHub PR #${res.prNumber} 생성 완료! 결재함에서 승인하면 자동 머지·배포됩니다.`);
+      } catch (err) {
+        toast(err.message, true);
+        target.disabled = false;
+        target.textContent = 'GitHub PR 자동 보수';
       }
       return;
     }
@@ -2584,13 +2627,17 @@ function bindEvents() {
         exaone: {
           apiKey: document.getElementById('key-exaone').value.trim(),
           model: document.getElementById('model-exaone').value.trim()
+        },
+        githubRepo: {
+          apiKey: document.getElementById('key-github')?.value.trim() || '',
+          repo: document.getElementById('repo-github')?.value.trim() || 'alpinu83/ai-ceo-hub'
         }
       }
     };
     try {
       const res = await api('/api/settings', { method: 'PUT', body: JSON.stringify(payload) });
       state = res.state;
-      ['key-gemini', 'key-groq', 'key-openrouter', 'key-exaone', 'tg-bot-token'].forEach((id) => {
+      ['key-gemini', 'key-groq', 'key-openrouter', 'key-exaone', 'key-github', 'tg-bot-token'].forEach((id) => {
         const el = document.getElementById(id);
         if (el) el.value = '';
       });

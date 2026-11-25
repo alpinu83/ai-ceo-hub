@@ -91,6 +91,12 @@ export function createDefaultState() {
           baseUrl: 'http://localhost:11434/v1',
           model: 'qwen2.5:14b',
           enabled: false
+        },
+        githubRepo: {
+          apiKey: process.env.GITHUB_REPO_TOKEN || '',
+          repo: process.env.GITHUB_REPO || 'alpinu83/ai-ceo-hub',
+          branch: process.env.GITHUB_BRANCH || 'main',
+          enabled: Boolean(process.env.GITHUB_REPO_TOKEN)
         }
       }
     },
@@ -716,6 +722,13 @@ export async function initCloudPersistence() {
       if (!restoredDb.settings.providers?.openrouter?.apiKey && process.env.OPENROUTER_API_KEY) {
         restoredDb.settings.providers.openrouter = restoredDb.settings.providers.openrouter || { baseUrl: 'https://openrouter.ai/api/v1', model: 'openrouter/free' };
         restoredDb.settings.providers.openrouter.apiKey = process.env.OPENROUTER_API_KEY;
+      }
+      if (!restoredDb.settings.providers?.githubRepo?.apiKey && process.env.GITHUB_REPO_TOKEN) {
+        restoredDb.settings.providers.githubRepo = restoredDb.settings.providers.githubRepo || {
+          repo: process.env.GITHUB_REPO || 'alpinu83/ai-ceo-hub',
+          branch: process.env.GITHUB_BRANCH || 'main'
+        };
+        restoredDb.settings.providers.githubRepo.apiKey = process.env.GITHUB_REPO_TOKEN;
       }
       if (restoredDb.settings.providers?.claude) {
         delete restoredDb.settings.providers.claude;

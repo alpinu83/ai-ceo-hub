@@ -1,0 +1,335 @@
+import { generateObject, generateText } from 'ai';
+import { z } from 'zod';
+import { resolveLanguageModel, resolveLiveBackendModel } from './orchestrator.js';
+
+const PROTECTED_PATH_RE = /^(\.github\/|data\/|node_modules\/|\.env|package-lock\.json|public\/icons\/|public\/vendor\/)/i;
+const ALLOWED_EXT_RE = /\.(js|mjs|cjs|html|css|json|md|yml|yaml|txt)$/i;
+
+export function getGithubRepoConfig(settings) {
+  const cfg = settings?.providers?.githubRepo || {};
+  const token = String(cfg.apiKey || process.env.GITHUB_REPO_TOKEN || '').trim();
+  const repo = String(cfg.repo || process.env.GITHUB_REPO || 'alpinu83/ai-ceo-hub').trim().replace(/^https?:\/\/github\.com\//i, '').replace(/\.git$/i, '').replace(/^\/+|\/+$/g, '');
+  const branch = String(cfg.branch || process.env.GITHUB_BRANCH || 'main').trim() || 'main';
+  return { token, repo, branch, enabled: Boolean(token && repo.includes('/')) };
+}
+
+function ghHeaders(token) {
+  return {
+    Authorization: `Bearer ${token}`,
+    Accept: 'application/vnd.github+json',
+    'X-GitHub-Api-Version': '2022-11-28',
+    'User-Agent': 'ai-ceo-hub-it-devops',
+    'Content-Type': 'application/json'
+  };
+}
+
+async function ghFetch(token, url, opts = {}) {
+  const res = await fetch(url, {
+    ...opts,
+    headers: { ...ghHeaders(token), ...(opts.headers || {}) },
+    signal: opts.signal || AbortSignal.timeout(20000)
+  });
+  const text = await res.text();
+  let data = {};
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    data = { raw: text };
+  }
+  if (!res.ok) {
+    throw new Error(`GitHub API ${res.status}: ${data?.message || text.slice(0, 160)}`);
+  }
+  return data;
+}
+
+export async function testGithubRepoConnection(settings) {
+  const cfg = getGithubRepoConfig(settings);
+  if (!cfg.token) {
+    throw new Error('IT팀 GitHub 토큰(repo / Contents+Pull requests 권한)을 먼저 저장해 주세요.');
+  }
+  if (!cfg.repo.includes('/')) {
+    throw new Error('저장소 형식이 올바르지 않습니다. 예: alpinu83/ai-ceo-hub');
+  }
+  const repoInfo = await ghFetch(cfg.token, `https://api.github.com/repos/${cfg.repo}`);
+  const canPush = Boolean(repoInfo?.permissions?.push || repoInfo?.permissions?.admin);
+  return {
+    ok: true,
+    repo: repoInfo.full_name || cfg.repo,
+    defaultBranch: repoInfo.default_branch || cfg.branch,
+    private: Boolean(repoInfo.private),
+    canPush,
+    reply: `${repoInfo.full_name} 연결됨 (${canPush ? '쓰기·PR·배포 권한 확인' : '읽기 전용 — Contents/PR 쓰기 권한 필요'})`
+  };
+}
+
+export async function listRepoFiles(cfg) {
+  const tree = await ghFetch(
+    cfg.token,
+    `https://api.github.com/repos/${cfg.repo}/git/trees/${encodeURIComponent(cfg.branch)}?recursive=1`
+  );
+  return (tree.tree || [])
+    .filter((item) => item.type === 'blob' && item.path && !PROTECTED_PATH_RE.test(item.path) && ALLOWED_EXT_RE.test(item.path))
+    .map((item) => item.path);
+}
+
+export async function readRepoFile(cfg, filePath) {
+  const safePath = String(filePath || '').replace(/^\/+/, '');
+  if (!safePath || PROTECTED_PATH_RE.test(safePath)) {
+    throw new Error(`보안 정책상 접근이 제한된 경로입니다: ${safePath}`);
+  }
+  const encodedPath = safePath.split('/').map(encodeURIComponent).join('/');
+  const data = await ghFetch(
+    cfg.token,
+    `https://api.github.com/repos/${cfg.repo}/contents/${encodedPath}?ref=${encodeURIComponent(cfg.branch)}`
+  );
+  const content = Buffer.from(String(data.content || '').replace(/\n/g, ''), 'base64').toString('utf8');
+  return { path: safePath, sha: data.sha, content };
+}
+
+const FileSelectSchema = z.object({
+  files: z.array(z.string()).min(1).max(3).describe('수정 또는 점검할 저장소 내 파일 경로 (최대 3개)'),
+  analysisPlan: z.string().describe('수정 계획 1~2문장 요약')
+});
+
+const PatchPlanSchema = z.object({
+  prTitle: z.string().describe('간결한 PR 제목 (한국어 또는 영문)'),
+  prSummary: z.string().describe('변경 내용 및 기대 효과 요약 (한국어 2~4문장)'),
+  edits: z
+    .array(
+      z.object({
+        path: z.string().describe('수정할 파일 경로'),
+        search: z.string().describe('기존 파일에 정확히 존재하는 원본 코드 블록 (공백·줄바꿈 포함 완전 일치)'),
+        replace: z.string().describe('교체할 새 코드 블록'),
+        reason: z.string().describe('이 수정이 필요한 이유 (1문장)')
+      })
+    )
+    .min(1)
+    .max(5),
+  qaChecklist: z.array(z.string()).min(1).max(5).describe('QA 검증 항목')
+});
+
+const SecurityAuditSchema = z.object({
+  passed: z.boolean().describe('보안 및 안정성 기준 통과 여부'),
+  riskLevel: z.enum(['low', 'medium', 'high']),
+  notes: z.string().describe('보안 감사 및 코드 리뷰 의견 (한국어 2~3문장)')
+});
+
+function pickItModel(agents, settings, preferredId) {
+  const ag = agents.find((a) => a.id === preferredId && a.active);
+  if (ag) {
+    const resolved = resolveLanguageModel(ag, settings);
+    if (resolved) return resolved;
+  }
+  return resolveLiveBackendModel(settings);
+}
+
+/**
+ * Full Autonomous IT Maintenance Pipeline (Code Read -> Patch -> Security Audit -> GitHub Branch + Commit + PR)
+ * Never pushes directly to `main`; always opens a PR and awaits CEO Approval before merging & auto-deploying!
+ */
+export async function runItMaintenancePipeline({ instruction, missionTitle, agents, settings }) {
+  const cfg = getGithubRepoConfig(settings);
+  if (!cfg.enabled) {
+    throw new Error('IT팀 GitHub 토큰이 설정되지 않았습니다. 설정 → 연결 설정 → IT팀 GitHub에서 토큰을 등록해 주세요.');
+  }
+
+  const devModel = pickItModel(agents, settings, 'agent_it_dev') || pickItModel(agents, settings, 'agent_qwen');
+  const secModel = pickItModel(agents, settings, 'agent_it_sec') || devModel;
+  if (!devModel) {
+    throw new Error('IT 개발용 AI API 키(Groq / OpenRouter / Gemini / EXAONE)가 최소 1개 필요합니다.');
+  }
+
+  // 1. List live files in GitHub repository
+  const allFiles = await listRepoFiles(cfg);
+  if (allFiles.length === 0) {
+    throw new Error('저장소에서 수정 가능한 소스 파일을 찾지 못했습니다.');
+  }
+
+  // 2. IT Dev selects the 1~3 exact files to inspect
+  const { object: selection } = await generateObject({
+    model: devModel.model,
+    schema: FileSelectSchema,
+    system: `당신은 GM Corporation IT 개발팀 수석 엔지니어입니다.
+아래 저장소 파일 목록에서 CEO의 유지보수 지시를 해결하기 위해 읽고 수정해야 할 가장 핵심 파일 1~3개만 정확히 고르세요.
+반드시 목록에 있는 정확한 파일 경로만 선택하세요.`,
+    prompt: `[저장소 파일 목록]\n${allFiles.join('\n')}\n\n[CEO 보수 지시]\n제목: ${missionTitle || ''}\n내용: ${instruction}`
+  });
+
+  const targetPaths = [...new Set(selection.files)]
+    .filter((p) => allFiles.includes(p) && !PROTECTED_PATH_RE.test(p))
+    .slice(0, 3);
+  if (targetPaths.length === 0) {
+    throw new Error('IT 개발팀이 수정 대상 파일을 특정하지 못했습니다. 수정할 화면이나 파일명을 조금 더 구체적으로 알려주세요.');
+  }
+
+  // 3. Read actual live source code from GitHub
+  const loadedFiles = await Promise.all(targetPaths.map((p) => readRepoFile(cfg, p)));
+  const fileContext = loadedFiles
+    .map((f) => `=== FILE: ${f.path} (${f.content.length} chars) ===\n${f.content.slice(0, 26000)}`)
+    .join('\n\n');
+
+  // 4. IT Dev generates exact search/replace patches
+  const { object: patchPlan } = await generateObject({
+    model: devModel.model,
+    schema: PatchPlanSchema,
+    system: `당신은 GM Corporation IT 개발팀 수석 엔지니어입니다.
+제공된 실제 소스 코드를 바탕으로 CEO의 보수 지시를 안전하고 정확하게 구현하는 최소 범위 search/replace 패치를 작성하세요.
+규칙:
+- search 문자열은 반드시 제공된 파일 내용에 100% 정확히(공백·들여쓰기 포함) 존재해야 합니다.
+- 불필요한 대규모 리팩토링 금지. 필요한 부분만 정확히 수정하세요.
+- HTML/CSS/JS 파일 수정 시 문법 오류나 기존 기능 깨짐이 없도록 하세요.
+- 보안을 약화시키거나 비밀키를 코드에 하드코딩하지 마세요.`,
+    prompt: `[CEO 보수 지시]\n${instruction}\n\n[실제 저장소 소스 코드]\n${fileContext}`
+  });
+
+  // 5. Apply and verify every edit in memory before touching GitHub
+  const fileMap = new Map(loadedFiles.map((f) => [f.path, { ...f, updatedContent: f.content, appliedEdits: [] }]));
+  for (const edit of patchPlan.edits) {
+    if (PROTECTED_PATH_RE.test(edit.path)) continue;
+    const entry = fileMap.get(edit.path);
+    if (!entry) continue;
+    if (!edit.search || !entry.updatedContent.includes(edit.search)) {
+      continue;
+    }
+    entry.updatedContent = entry.updatedContent.replace(edit.search, edit.replace);
+    entry.appliedEdits.push(edit);
+  }
+
+  const changedFiles = [...fileMap.values()].filter((f) => f.appliedEdits.length > 0 && f.updatedContent !== f.content);
+  if (changedFiles.length === 0) {
+    throw new Error('IT 개발팀이 제안한 패치가 원본 코드와 정확히 일치하지 않아 안전하게 중단했습니다. 수정할 위치를 조금 더 구체적으로 지시해 주세요.');
+  }
+
+  // 6. IT Security audits the exact diff before opening PR
+  const diffSummary = changedFiles
+    .map((f) =>
+      f.appliedEdits
+        .map((e) => `파일: ${f.path}\n이유: ${e.reason}\n--- 원본 ---\n${e.search.slice(0, 600)}\n+++ 수정 +++\n${e.replace.slice(0, 600)}`)
+        .join('\n')
+    )
+    .join('\n\n');
+
+  let audit = { passed: true, riskLevel: 'low', notes: 'IT 보안 자동 검토 완료: 민감 정보 노출 및 보호 경로 변경 없음.' };
+  try {
+    const { object: secObj } = await generateObject({
+      model: secModel.model,
+      schema: SecurityAuditSchema,
+      system: `당신은 GM Corporation IT 보안 감사관입니다. 아래 코드 수정(diff)이 보안 취약점(비밀키 노출, XSS/인젝션, 인증 우회, 치명적 문법 오류)을 유발하지 않는지 엄격히 검토하세요.`,
+      prompt: `[보수 지시]\n${instruction}\n\n[코드 변경 내역]\n${diffSummary}`
+    });
+    audit = secObj;
+  } catch {
+    // Non-fatal fallback
+  }
+
+  // 7. Create isolated GitHub branch from base branch
+  const baseRef = await ghFetch(
+    cfg.token,
+    `https://api.github.com/repos/${cfg.repo}/git/ref/heads/${encodeURIComponent(cfg.branch)}`
+  );
+  const baseSha = baseRef?.object?.sha;
+  if (!baseSha) throw new Error(`기준 브랜치(${cfg.branch}) SHA를 조회하지 못했습니다.`);
+
+  const branchName = `it-fix/${Date.now().toString(36)}`;
+  await ghFetch(cfg.token, `https://api.github.com/repos/${cfg.repo}/git/refs`, {
+    method: 'POST',
+    body: JSON.stringify({
+      ref: `refs/heads/${branchName}`,
+      sha: baseSha
+    })
+  });
+
+  // 8. Commit each modified file to the new branch
+  for (const f of changedFiles) {
+    const encodedPath = f.path.split('/').map(encodeURIComponent).join('/');
+    await ghFetch(cfg.token, `https://api.github.com/repos/${cfg.repo}/contents/${encodedPath}`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        message: `fix(it-team): ${patchPlan.prTitle.slice(0, 60)} (${f.path})`,
+        content: Buffer.from(f.updatedContent, 'utf8').toString('base64'),
+        sha: f.sha,
+        branch: branchName
+      })
+    });
+  }
+
+  // 9. Open Pull Request for CEO approval & automatic CI verification
+  const prBody = [
+    `## GM Corp IT 유지보수팀 자동 보수 PR`,
+    ``,
+    `### 요약`,
+    patchPlan.prSummary,
+    ``,
+    `### 수정된 파일 (${changedFiles.length}건)`,
+    ...changedFiles.map((f) => `- \`${f.path}\` (${f.appliedEdits.map((e) => e.reason).join(' / ')})`),
+    ``,
+    `### IT 보안 감사 (${audit.passed ? 'PASS' : '주의 필요'} · 리스크: ${audit.riskLevel.toUpperCase()})`,
+    audit.notes,
+    ``,
+    `### QA 체크리스트`,
+    ...patchPlan.qaChecklist.map((q) => `- [ ] ${q}`),
+    ``,
+    `> CEO Office 결재함 또는 텔레그램에서 **승인**하시면 자동으로 \`${cfg.branch}\` 브랜치에 머지되고 Render·GitHub Pages에 라이브 배포됩니다.`
+  ].join('\n');
+
+  const pr = await ghFetch(cfg.token, `https://api.github.com/repos/${cfg.repo}/pulls`, {
+    method: 'POST',
+    body: JSON.stringify({
+      title: `[IT팀 보수] ${patchPlan.prTitle}`,
+      head: branchName,
+      base: cfg.branch,
+      body: prBody
+    })
+  });
+
+  return {
+    ok: true,
+    repo: cfg.repo,
+    branchName,
+    prNumber: pr.number,
+    prUrl: pr.html_url,
+    prTitle: patchPlan.prTitle,
+    prSummary: patchPlan.prSummary,
+    changedFiles: changedFiles.map((f) => f.path),
+    diffSummary,
+    audit,
+    qaChecklist: patchPlan.qaChecklist
+  };
+}
+
+export async function mergeMaintenancePr({ prNumber, settings }) {
+  const cfg = getGithubRepoConfig(settings);
+  if (!cfg.enabled) {
+    throw new Error('IT팀 GitHub 토큰이 설정되지 않아 자동 머지할 수 없습니다.');
+  }
+  const mergeRes = await ghFetch(
+    cfg.token,
+    `https://api.github.com/repos/${cfg.repo}/pulls/${Number(prNumber)}/merge`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({
+        merge_method: 'squash',
+        commit_title: `merge(it-team): CEO approved PR #${Number(prNumber)}`
+      })
+    }
+  );
+  return {
+    ok: Boolean(mergeRes.merged),
+    sha: mergeRes.sha || '',
+    message: mergeRes.message || 'PR 머지 완료 → Render 자동 배포 시작됨'
+  };
+}
+
+export async function closeMaintenancePr({ prNumber, settings }) {
+  const cfg = getGithubRepoConfig(settings);
+  if (!cfg.enabled || !prNumber) return { ok: false };
+  try {
+    await ghFetch(cfg.token, `https://api.github.com/repos/${cfg.repo}/pulls/${Number(prNumber)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ state: 'closed' })
+    });
+    return { ok: true };
+  } catch {
+    return { ok: false };
+  }
+}

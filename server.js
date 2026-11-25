@@ -41,6 +41,13 @@ import {
   isTelegramPollingActive
 } from './src/telegram.js';
 import { ensureVapidKeys, sendWebPushNotification } from './src/push.js';
+import {
+  getGithubRepoConfig,
+  testGithubRepoConnection,
+  runItMaintenancePipeline,
+  mergeMaintenancePr,
+  closeMaintenancePr
+} from './src/it-devops.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -179,8 +186,15 @@ async function createMissionInDb({ title = '', directive, domain = 'business', c
   saveDb(db);
   flushCloudBackup(db).catch(() => {});
 
-  // Auto-start live API workers (e.g. LG K-EXAONE 2.5) immediately without requiring CEO to click "실행"
+  // Auto-start live API workers immediately without requiring CEO to click "실행"
   autoStartLiveMissionTasks(mission.id).catch(() => {});
+
+  // If IT Maintenance mission & GitHub Repo Token is connected, run real code-edit -> security audit -> PR pipeline!
+  if (mission.domain === 'it_ops' && getGithubRepoConfig(db.settings).enabled) {
+    triggerItPrForMission(mission.id).catch((err) => {
+      console.warn('IT Maintenance PR pipeline error:', err.message);
+    });
+  }
 
   return { mission, tasks: createdTasks, db };
 }
@@ -544,6 +558,118 @@ function applyApprovalDecisionInDb(aprId, decision, ceoNote = '') {
   return { ok: true, approval: apr, title: apr.title, db };
 }
 
+async function triggerItPrForMission(missionId) {
+  const db = loadDb();
+  const mission = db.missions.find((m) => m.id === missionId);
+  if (!mission) throw new Error('미션을 찾을 수 없습니다.');
+
+  appendLog(db, 'IT 유지보수팀', `"${mission.title}" GitHub 저장소 실제 소스코드 분석 및 PR 생성 시작…`, 'info');
+  saveDb(db);
+
+  try {
+    const result = await runItMaintenancePipeline({
+      instruction: mission.directive || mission.title,
+      missionTitle: mission.title,
+      agents: db.agents,
+      settings: db.settings
+    });
+
+    const fresh = loadDb();
+    const now = new Date().toISOString();
+    const apr = {
+      id: uid('apr'),
+      kind: 'it_pr_merge',
+      missionId: mission.id,
+      taskId: '',
+      agentId: 'agent_it_dev',
+      title: `[IT 보수 PR #${result.prNumber}] ${result.prTitle}`,
+      category: 'IT 코드 수정 · 실배포 승인',
+      riskLevel: result.audit?.riskLevel || 'medium',
+      estimatedCostKRW: 0,
+      depositKRW: 0,
+      prNumber: result.prNumber,
+      prUrl: result.prUrl,
+      branchName: result.branchName,
+      changedFiles: result.changedFiles,
+      diffSummary: result.diffSummary,
+      summary: `${result.prSummary}\n\n[수정 파일] ${result.changedFiles.join(', ')}\n[IT 보안 감사: ${result.audit?.passed ? 'PASS' : '주의'}] ${result.audit?.notes || ''}\n[GitHub PR] ${result.prUrl}`,
+      proposedAction: `승인 시 GitHub PR #${result.prNumber} (${result.branchName} → main) 을 자동 머지하고 Render · GitHub Pages에 라이브 배포합니다.`,
+      status: 'pending',
+      ceoNote: '',
+      createdAt: now,
+      decidedAt: null
+    };
+
+    fresh.approvals.unshift(apr);
+    appendLog(
+      fresh,
+      'IT 유지보수팀',
+      `실제 GitHub PR #${result.prNumber} 생성 완료 (${result.changedFiles.join(', ')}) → CEO 배포 결재 상신.`,
+      'approval'
+    );
+    appendMessage(fresh, {
+      missionId: mission.id,
+      senderId: 'agent_it_dev',
+      senderName: 'IT 개발 · Qwen 3.8',
+      senderRole: 'IT팀 풀스택 개발·버그 보수',
+      senderShortCode: 'ID',
+      senderAccent: '#0F766E',
+      targetAgentId: 'ceo',
+      statusText: `PR #${result.prNumber} 상신`,
+      type: 'approval',
+      text: `실제 소스코드(${result.changedFiles.join(', ')})를 수정하고 IT 보안 감사를 마쳐 GitHub PR #${result.prNumber}을 열었습니다.\nPR 주소: ${result.prUrl}\n결재함에서 승인하시면 자동으로 머지 및 Render 라이브 배포됩니다.`
+    });
+    saveDb(fresh);
+    await flushCloudBackup(fresh);
+    notifyAllApprovalChannels(fresh.settings, apr, 'IT 유지보수팀');
+    return { ok: true, result, approval: apr, db: fresh };
+  } catch (err) {
+    const fresh = loadDb();
+    appendLog(fresh, 'IT 유지보수팀', `"${mission.title}" GitHub PR 자동 생성 실패: ${err.message}`, 'warning');
+    notifyTelegramAnomaly(fresh.settings, 'IT팀 GitHub PR 생성 오류', `"${mission.title}" — ${err.message}`);
+    saveDb(fresh);
+    await flushCloudBackup(fresh);
+    throw err;
+  }
+}
+
+async function handleItPrDecision(apr, decision) {
+  if (!apr || apr.kind !== 'it_pr_merge' || !apr.prNumber) return null;
+  const db = loadDb();
+  if (decision === 'approved') {
+    const merged = await mergeMaintenancePr({ prNumber: apr.prNumber, settings: db.settings });
+    appendLog(
+      db,
+      'IT 유지보수팀',
+      `CEO 승인 완료 → GitHub PR #${apr.prNumber} 자동 머지 성공! Render · GitHub Pages 라이브 배포가 시작되었습니다.`,
+      'success'
+    );
+    appendMessage(db, {
+      missionId: apr.missionId || '',
+      senderId: 'agent_it_qa',
+      senderName: 'IT QA · GPT-OSS',
+      senderRole: 'IT팀 테스트·QA·릴리스 검증',
+      senderShortCode: 'IQ',
+      senderAccent: '#9A3412',
+      targetAgentId: 'ceo',
+      statusText: '자동 배포 시작',
+      type: 'work',
+      text: `PR #${apr.prNumber} 머지가 완료되었습니다 (${merged.sha ? merged.sha.slice(0, 7) : 'merged'}). 약 30초 후 Render 라이브 서버에 자동 반영됩니다.`
+    });
+    saveDb(db);
+    await flushCloudBackup(db);
+    return { ok: true, merged, db };
+  }
+  if (decision === 'rejected') {
+    await closeMaintenancePr({ prNumber: apr.prNumber, settings: db.settings });
+    appendLog(db, 'IT 유지보수팀', `CEO 반려에 따라 GitHub PR #${apr.prNumber}을 안전하게 닫았습니다.`, 'info');
+    saveDb(db);
+    await flushCloudBackup(db);
+    return { ok: true, closed: true, db };
+  }
+  return null;
+}
+
 function getTelegramCallbacks() {
   return {
     getSettings: () => loadDb().settings,
@@ -559,6 +685,12 @@ function getTelegramCallbacks() {
       const res = applyApprovalDecisionInDb(aprId, decision, note);
       if (res.ok && res.approval?.kind === 'next_phase' && decision === 'approved' && res.approval.proposedDirective) {
         await launchNextProjectPhase(res.approval.missionId, res.approval.proposedDirective, note);
+      } else if (res.ok && res.approval?.kind === 'it_pr_merge') {
+        await handleItPrDecision(res.approval, decision).catch((err) => {
+          const fresh = loadDb();
+          appendLog(fresh, 'IT 유지보수팀', `PR #${res.approval.prNumber} 처리 오류: ${err.message}`, 'warning');
+          saveDb(fresh);
+        });
       }
       return res;
     },
@@ -1394,13 +1526,58 @@ app.patch('/api/missions/:id', async (c) => {
 
   const oldTitle = mission.title;
   mission.title = nextTitle.slice(0, 120);
+  const replaceOld = (txt) => {
+    if (typeof txt !== 'string' || !oldTitle || oldTitle === mission.title) return txt;
+    return txt.split(oldTitle).join(mission.title);
+  };
+
   if (typeof body.directive === 'string' && body.directive.trim()) {
     mission.directive = body.directive.trim();
+  } else if (mission.directive) {
+    mission.directive = replaceOld(mission.directive);
   }
-  appendLog(db, 'CEO', `이름 변경: "${oldTitle}" → "${mission.title}"`, 'info');
+
+  // Cascade rename to all tasks, dispatch prompts, approvals, and messages of this mission
+  const agentMap = Object.fromEntries(db.agents.map((a) => [a.id, a]));
+  for (const t of db.tasks) {
+    if (t.missionId !== mission.id) continue;
+    t.title = replaceOld(t.title);
+    t.description = replaceOld(t.description);
+    const ag = agentMap[t.assigneeId];
+    if (ag) t.dispatchPrompt = buildDispatchPrompt(t, mission, ag);
+  }
+  for (const apr of db.approvals) {
+    if (apr.missionId !== mission.id) continue;
+    apr.title = replaceOld(apr.title);
+    apr.summary = replaceOld(apr.summary);
+    apr.proposedAction = replaceOld(apr.proposedAction);
+  }
+  for (const msg of db.messages || []) {
+    if (msg.missionId !== mission.id) continue;
+    msg.text = replaceOld(msg.text);
+  }
+
+  appendLog(db, 'CEO', `이름 변경: "${oldTitle}" → "${mission.title}" (관련 업무·결재·지시서 일괄 동기화)`, 'info');
   saveDb(db);
   await flushCloudBackup(db);
   return c.json({ mission, state: sanitizeStateForClient(db) });
+});
+
+app.post('/api/missions/:id/it-pr', async (c) => {
+  const missionId = c.req.param('id');
+  try {
+    const res = await triggerItPrForMission(missionId);
+    return c.json({
+      ok: true,
+      prNumber: res.result.prNumber,
+      prUrl: res.result.prUrl,
+      changedFiles: res.result.changedFiles,
+      approval: res.approval,
+      state: sanitizeStateForClient(res.db)
+    });
+  } catch (err) {
+    return c.json({ ok: false, error: err.message }, 400);
+  }
 });
 
 app.post('/api/missions/:id/deploy-idle', async (c) => {
@@ -1730,6 +1907,13 @@ app.post('/api/approvals/:id/decide', async (c) => {
       body.ceoNote
     );
     if (launched?.db) latestDb = launched.db;
+  } else if (res.approval?.kind === 'it_pr_merge') {
+    try {
+      const prRes = await handleItPrDecision(res.approval, body.decision);
+      if (prRes?.db) latestDb = prRes.db;
+    } catch (err) {
+      return c.json({ error: `PR #${res.approval.prNumber} 자동 처리 실패: ${err.message}` }, 400);
+    }
   } else {
     await flushCloudBackup(latestDb);
   }
@@ -1827,7 +2011,7 @@ app.put('/api/settings', async (c) => {
   }
 
   if (body.providers) {
-    for (const pKey of ['gemini', 'groq', 'openrouter', 'exaone', 'manus', 'litellm', 'ollama']) {
+    for (const pKey of ['gemini', 'groq', 'openrouter', 'exaone', 'manus', 'litellm', 'ollama', 'githubRepo']) {
       const incoming = body.providers[pKey];
       if (!incoming) continue;
       const target = s.providers[pKey] || (s.providers[pKey] = {});
@@ -1838,7 +2022,7 @@ app.put('/api/settings', async (c) => {
         target.apiKey = incoming.apiKey.trim();
         target.enabled = true;
       }
-      for (const field of ['freeModel', 'paidModel', 'model', 'baseUrl', 'cueEmail']) {
+      for (const field of ['freeModel', 'paidModel', 'model', 'baseUrl', 'cueEmail', 'repo', 'branch']) {
         if (typeof incoming[field] === 'string') target[field] = incoming[field].trim();
       }
     }
@@ -1855,6 +2039,10 @@ app.post('/api/providers/test', async (c) => {
   const { provider } = await c.req.json();
   const db = loadDb();
   try {
+    if (provider === 'githubRepo') {
+      const result = await testGithubRepoConnection(db.settings);
+      return c.json({ ...result, model: result.repo });
+    }
     const result = await testProviderConnection(provider, db.settings);
     if (result?.transport && db.settings?.providers?.[provider]) {
       db.settings.providers[provider].transport = result.transport;

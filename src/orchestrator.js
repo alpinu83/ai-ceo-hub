@@ -35,7 +35,7 @@ function createGeminiResilientFetch(primaryModel) {
   };
 }
 
-function resolveLanguageModel(agent, settings) {
+export function resolveLanguageModel(agent, settings) {
   const providers = settings?.providers || {};
 
   // LiteLLM routing mode overrides direct provider when configured
@@ -724,7 +724,7 @@ function heuristicDecompose({ directive, domain, costPolicy, agents, leadAgent }
   };
 }
 
-function resolveLiveBackendModel(settings) {
+export function resolveLiveBackendModel(settings) {
   const gem = settings?.providers?.gemini;
   if (gem?.apiKey) {
     const rawModel = String(gem.freeModel || '').trim();
