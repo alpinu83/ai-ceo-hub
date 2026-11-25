@@ -35,6 +35,8 @@ export const LEAD_ENGINE_DEFAULTS = {
 const MAX_FACTS = 150;
 const MAX_PINNED = 20;
 const EXTERNAL_ACTION_RE = /외부 권한 미연동|대표님 실행 가이드|대표님이 직접/;
+// 보고서 머리말(수신·발신·담당·인사말 등)은 요약에서 제외
+const BOILERPLATE_RE = /^(\(?\s*)?(수신|발신|담당|작성자?|위임자|날짜|일시|주제|목표|미션|대상 저장소|참고|to|from)\s*[:：–-]|^안녕하세요|^대표님,?\s*$|^총괄 팀장\(?.*\)?입니다|^모든 내용은 실제|기준\s*[–-]\s*실제/i;
 
 function nowIso() {
   return new Date().toISOString();
@@ -67,7 +69,7 @@ export function leadLines(markdown, count = 2, max = 160) {
     .map((l) => l.trim())
     .filter((l) => l && !/^(#|\||>|---|```)/.test(l))
     .map((l) => oneLine(l.replace(/^[-*\d.)\s]+/, ''), max))
-    .filter((l) => l.length > 3)
+    .filter((l) => l.length > 3 && !BOILERPLATE_RE.test(l.replace(/^\*+|\*+$/g, '').trim()))
     .slice(0, count);
 }
 
@@ -253,10 +255,18 @@ export function buildCompletionReport(db, missionId, taskIds = [], { codeResult 
   lines.push(`**[팀장 완료 보고] ${mission.title}**`);
   lines.push(`이번 작업 ${batch.length}건: 완료 ${done.length} · 결재 대기 ${waitingApproval.length} · 미완료 ${notDone.length}`);
 
-  for (const t of done.slice(0, 6)) {
+  // 최신 작업부터 보여 주고, 나머지는 개수만
+  const doneSorted = [...done].sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+  for (const t of doneSorted.slice(0, 5)) {
     const first = leadLines(t.output, 1, 120)[0];
     lines.push(`- 완료: ${t.title} (${agentMap[t.assigneeId]?.name || '팀원'})${first ? ` — ${first}` : ''}`);
-    if (EXTERNAL_ACTION_RE.test(String(t.output || ''))) needsCeo.push(`"${t.title}" 결과에 대표님이 직접 하셔야 할 외부 작업 체크리스트가 있습니다.`);
+  }
+  if (doneSorted.length > 5) lines.push(`- 외 완료 ${doneSorted.length - 5}건`);
+  const externalTitles = done.filter((t) => EXTERNAL_ACTION_RE.test(String(t.output || ''))).map((t) => `"${t.title}"`);
+  if (externalTitles.length) {
+    needsCeo.push(
+      `대표님이 직접 하셔야 할 외부 작업 체크리스트가 있는 결과 ${externalTitles.length}건: ${externalTitles.slice(0, 3).join(', ')}${externalTitles.length > 3 ? ' 등' : ''}`
+    );
   }
   for (const t of waitingApproval.slice(0, 4)) {
     lines.push(`- 결재 대기: ${t.title}`);
