@@ -1243,7 +1243,101 @@ function buildHonestDispatchNotice(agent, userMessage, agentTasks) {
  * - Explicit @mention of API agent (EXAONE): answers LIVE.
  * - Explicit @mention of external bot (Pickle / Cue / Muse / Vooy): honestly confirms inbox/MCP handoff.
  */
-export async function generateTeamChatReplies({ userMessage, mission, tasks, agents, recentMessages, settings }) {
+/**
+ * Meeting-room command intake: decide whether the CEO's chat line is an actual work order,
+ * and if so turn it into concrete tasks (or a re-open of a rejected task).
+ */
+const ChatDirectiveSchema = z.object({
+  kind: z.enum(['directive', 'question', 'chat']).describe('실제로 무언가를 하라는 지시면 directive, 질문이면 question, 잡담·의견이면 chat'),
+  reopenRejected: z.boolean().describe('"반려했던 거 다시 진행"처럼 최근 반려 건을 다시 하라는 뜻이면 true'),
+  tasks: z
+    .array(
+      z.object({
+        title: z.string().describe('짧은 업무 제목'),
+        description: z.string().describe('담당자가 바로 실행할 수 있는 구체적 지시 (CEO 원문의 수치·문구는 그대로 유지)'),
+        assigneeId: z.string().describe('조직원 id'),
+        isCodeChange: z.boolean().describe('사이트·앱 코드/문구/화면 수정이면 true')
+      })
+    )
+    .max(3)
+});
+
+const STATUS_QUESTION_RE = /(진행\s*상황|현황|알려\s*줘|공유해\s*줘|어때|뭐야|왜\s)/;
+const DIRECTIVE_HINT_RE = /(해줘|해주세요|해라|하자|해봐|진행해|진행하자|진행시켜|넣어|넣는|추가|수정|바꿔|변경|만들어|삭제|제거|빼|확인해|고쳐|반영|적용|올려|다시|착수|시작해|정리해|알아봐|조사해|진행해야지|해야지)/;
+
+export async function classifyChatDirective({ text, mission, tasks = [], agents, settings, rejectedTitles = [], repoLinked = false }) {
+  const active = agents.filter((a) => a.active);
+  const roster = active
+    .filter((a) => ['exaone', 'gemini', 'groq', 'openrouter'].includes(a.provider))
+    .map((a) => `- ${a.id}: ${a.name} (${a.team === 'it' ? 'IT유지보수팀' : '전략실행본부'} · ${a.roleTitle})`)
+    .join('\n');
+  const lead = active.find((a) => a.tier === 'lead') || active[0];
+  const candidates = [
+    resolveLanguageModel(lead, settings),
+    ...['agent_it_dev', 'agent_qwen', 'agent_groq', 'agent_exaone', 'agent_gemma'].map((id) => {
+      const ag = active.find((a) => a.id === id);
+      return ag ? resolveLanguageModel(ag, settings) : null;
+    }),
+    resolveLiveBackendModel(settings)
+  ].filter(Boolean);
+
+  const system = `당신은 AI 조직의 총괄 팀장입니다. 회의실에서 CEO가 한 말이 실제 업무 지시인지 판단하고, 지시라면 1~3개의 구체적 업무로 바꾸세요.
+규칙:
+- 단순 질문·의견·칭찬은 directive가 아닙니다. tasks는 빈 배열.
+- 최근 대화에서 이미 등록된 업무와 같은 내용이면 중복 업무를 만들지 마세요.
+- 사이트·앱 코드/문구/화면 수정은 isCodeChange=true 이고 IT유지보수팀(agent_it_dev)에 배정하세요.
+- 외부 계정(애드센스·GA4·서치콘솔 등) 확인은 팀이 직접 조회할 수 없으므로 "확인 방법 가이드와 후속 작업 준비"로 업무를 만드세요.
+- assigneeId는 아래 목록의 id만 사용하세요.
+[조직원]
+${roster}`;
+  const prompt = `[채널] ${mission ? `${mission.title}${repoLinked ? ' (GitHub 저장소 연동됨 — 코드 수정 가능)' : ''}` : '전체 채널(특정 프로젝트 없음)'}
+[현재 업무]\n${
+    tasks
+      .slice(0, 12)
+      .map((t) => `- [${t.status}] ${t.title}`)
+      .join('\n') || '(없음)'
+  }
+[최근 반려 건]\n${rejectedTitles.join('\n') || '(없음)'}
+
+[CEO 발언]\n${text}`;
+
+  for (const m of candidates) {
+    try {
+      const { object } = await generateObject({ model: m.model, schema: ChatDirectiveSchema, system, prompt, maxRetries: 0 });
+      const validIds = new Set(active.map((a) => a.id));
+      object.tasks = (object.tasks || []).map((t) => ({
+        ...t,
+        assigneeId: validIds.has(t.assigneeId) ? t.assigneeId : t.isCodeChange ? 'agent_it_dev' : lead.id
+      }));
+      return { ...object, usedModel: m.label || '' };
+    } catch {
+      // try next model
+    }
+  }
+
+  // No AI available: conservative keyword fallback so a clear order is never silently dropped
+  const looksDirective = DIRECTIVE_HINT_RE.test(text) && !STATUS_QUESTION_RE.test(text) && !/[?？]\s*$/.test(text.trim());
+  if (!looksDirective) return { kind: 'chat', reopenRejected: false, tasks: [], usedModel: 'fallback' };
+  const reopen = /반려.*(다시|재진행|진행)/.test(text);
+  const isCode = repoLinked && /(사이트|페이지|하단|푸터|문구|버튼|메뉴|화면|코드|디자인|copyright|저작권|배너|광고 ?위치)/i.test(text);
+  return {
+    kind: 'directive',
+    reopenRejected: reopen,
+    tasks: reopen
+      ? []
+      : [
+          {
+            title: text.replace(/\s+/g, ' ').slice(0, 40),
+            description: text,
+            assigneeId: isCode ? 'agent_it_dev' : lead.id,
+            isCodeChange: isCode
+          }
+        ],
+    usedModel: 'fallback'
+  };
+}
+
+export async function generateTeamChatReplies({ userMessage, mission, tasks, agents, recentMessages, settings, actionNote = '' }) {
   const responders = pickResponders(userMessage, agents, mission, tasks);
   const ceoName = settings?.ceoName || '대표님';
   const replies = [];
@@ -1271,7 +1365,13 @@ export async function generateTeamChatReplies({ userMessage, mission, tasks, age
         : '현재 등록된 업무 없음';
       const system = `당신은 "${settings?.companyName || 'CEO Office'}"의 ${ag.tier === 'lead' ? '총괄 팀장' : 'AI 실무 에이전트'} "${ag.name}" (${ag.roleTitle})입니다.
 ${ceoName}의 지시나 질문에 팀 대표로 핵심만 간결하고 정확하게 한국어로 답하세요 (2~4문장).
-다른 외부 봇(피클, Cue, Muse)이 해야 할 전화 예약·결제 등을 "이미 전화했다/완료했다"고 거짓말하지 말고, 현재 실제 진행 상태와 다음 조치만 사실대로 보고하세요.`;
+다른 외부 봇(피클, Cue, Muse)이 해야 할 전화 예약·결제 등을 "이미 전화했다/완료했다"고 거짓말하지 말고, 현재 실제 진행 상태와 다음 조치만 사실대로 보고하세요.
+${
+  actionNote
+    ? `[시스템이 실제로 수행한 조치] ${actionNote}
+이 조치만 "등록했다/시작했다"고 말할 수 있습니다. 완료되지 않은 일을 완료했다고 하지 마세요.`
+    : `이번 발언으로 등록된 실제 업무는 없습니다. "즉시 반영하겠습니다/전달하겠습니다/보고드리겠습니다" 같은 약속을 하지 말고, 질문에는 아는 사실만 답하세요.`
+}`;
 
       try {
         const { text } = await generateText({
