@@ -51,10 +51,17 @@ export function createDefaultState() {
           paidModel: 'gemini-4-neon',
           enabled: Boolean(process.env.GEMINI_API_KEY)
         },
-        claude: {
-          apiKey: process.env.ANTHROPIC_API_KEY || '',
-          model: 'claude-sonnet-4-5',
-          enabled: Boolean(process.env.ANTHROPIC_API_KEY)
+        groq: {
+          apiKey: process.env.GROQ_API_KEY || '',
+          baseUrl: 'https://api.groq.com/openai/v1',
+          model: 'openai/gpt-oss-120b',
+          enabled: Boolean(process.env.GROQ_API_KEY)
+        },
+        openrouter: {
+          apiKey: process.env.OPENROUTER_API_KEY || '',
+          baseUrl: 'https://openrouter.ai/api/v1',
+          model: 'openrouter/free',
+          enabled: Boolean(process.env.OPENROUTER_API_KEY)
         },
         manus: {
           apiKey: process.env.MANUS_API_KEY || '',
@@ -85,43 +92,43 @@ export function createDefaultState() {
     agents: [
       {
         id: 'agent_gemini_neon',
-        name: 'Gemini 4 Neon',
-        shortCode: 'GN',
-        roleTitle: '전략·총괄 팀장 (AI Pro 구독)',
+        name: 'Gemini 4 Hydrogen',
+        shortCode: 'GM',
+        roleTitle: '전략·총괄 팀장',
         tier: 'lead',
         reportsTo: 'ceo',
         provider: 'gemini',
-        modelId: 'gemini-4-neon',
-        connectionMode: 'bridge',
-        costTier: 'paid_or_sub',
-        appUrl: 'https://gemini.google.com',
+        modelId: 'gemini-4-hydrogen',
+        connectionMode: 'api',
+        costTier: 'free',
+        appUrl: 'https://aistudio.google.com',
         monthlyCapKRW: 0,
         spentKRW: 0,
         domains: ['business', 'content', 'dev', 'life'],
-        strengths: '복합 CEO 지시 분해, 장문 문서·PDF·표 분석, 전체 팀원 업무 배정 및 임원 종합 보고',
-        bridgeGuide: '사전 추천 설정: 이미 결제 중인 Google AI Pro/Ultra 구독 앱을 추가 과금 0원으로 사용합니다. (지시서 복사 → Gemini 앱 바로 열기)',
+        strengths: '복합 CEO 지시 분해, 프로젝트 단계별 전략 기획, 전체 팀원 업무 배정 및 임원 종합 보고',
+        bridgeGuide: 'Google AI Studio 무료 API 키(Gemini 4 Hydrogen)로 24시간 자동 실행됩니다.',
         active: true,
         accent: '#0E6245'
       },
       {
-        id: 'agent_claude',
-        name: 'Claude',
-        shortCode: 'CL',
-        roleTitle: '개발·기획 수석 팀장 (구독 활용)',
-        tier: 'lead',
-        reportsTo: 'ceo',
-        provider: 'claude',
-        modelId: 'claude-sonnet-4-5',
-        connectionMode: 'bridge',
-        costTier: 'paid_or_sub',
-        appUrl: 'https://claude.ai',
+        id: 'agent_groq',
+        name: 'Groq',
+        shortCode: 'GQ',
+        roleTitle: '초고속 분석·기획·개발 팀원 (무료 API)',
+        tier: 'specialist',
+        reportsTo: 'agent_gemini_neon',
+        provider: 'groq',
+        modelId: 'openai/gpt-oss-120b',
+        connectionMode: 'api',
+        costTier: 'free',
+        appUrl: 'https://console.groq.com',
         monthlyCapKRW: 0,
         spentKRW: 0,
         domains: ['dev', 'business', 'content'],
-        strengths: '정밀 코딩·아키텍처 설계, 코드 리뷰, 높은 완성도의 제안서·기획서 작성 및 검수',
-        bridgeGuide: '사전 추천 설정: Claude Pro/Max 월정액 구독을 추가 API 과금 0원으로 사용합니다. (지시서 복사 → Claude 바로 열기)',
+        strengths: '초고속 무료 API(GPT-OSS 120B / Llama / Qwen)로 정밀 코딩·아키텍처 설계·기획안 작성 자동 수행',
+        bridgeGuide: 'Groq 무료 API 키(gsk_…)를 설정에 저장하면 즉시 0원으로 자동 실행됩니다.',
         active: true,
-        accent: '#9A4A2E'
+        accent: '#C2410C'
       },
       {
         id: 'agent_exaone',
@@ -278,17 +285,37 @@ export function loadDb() {
         ...(parsed.settings?.providers || {})
       }
     };
-    parsed.agents = (parsed.agents || def.agents)
-      .filter((a) => a.id !== 'agent_gemini_free')
-      .map((a) => ({
-        reportsTo: a.tier === 'lead' ? 'ceo' : 'agent_gemini_neon',
-        monthlyCapKRW: 0,
-        spentKRW: 0,
-        ...a
-      }));
+    const rawAgents = (parsed.agents || def.agents)
+      .filter((a) => a.id !== 'agent_gemini_free' && a.id !== 'agent_claude')
+      .map((a) => {
+        if (a.id === 'agent_gemini_neon') {
+          return {
+            ...a,
+            name: 'Gemini 4 Hydrogen',
+            shortCode: 'GM',
+            roleTitle: '전략·총괄 팀장',
+            modelId: 'gemini-4-hydrogen',
+            connectionMode: 'api',
+            costTier: 'free',
+            reportsTo: 'ceo'
+          };
+        }
+        return {
+          reportsTo: a.tier === 'lead' ? 'ceo' : 'agent_gemini_neon',
+          monthlyCapKRW: 0,
+          spentKRW: 0,
+          ...a
+        };
+      });
+    if (!rawAgents.some((a) => a.id === 'agent_groq')) {
+      const defGroq = def.agents.find((a) => a.id === 'agent_groq');
+      if (defGroq) rawAgents.splice(1, 0, defGroq);
+    }
+    parsed.agents = rawAgents;
     if (Array.isArray(parsed.tasks)) {
       parsed.tasks.forEach((t) => {
         if (t.assigneeId === 'agent_gemini_free') t.assigneeId = 'agent_exaone';
+        if (t.assigneeId === 'agent_claude') t.assigneeId = 'agent_groq';
       });
     }
     if (Array.isArray(parsed.missions)) {
@@ -519,8 +546,16 @@ export async function initCloudPersistence() {
       if (!restoredDb.settings.providers?.exaone?.apiKey && process.env.EXAONE_API_KEY) {
         restoredDb.settings.providers.exaone.apiKey = process.env.EXAONE_API_KEY;
       }
-      if (!restoredDb.settings.providers?.claude?.apiKey && process.env.ANTHROPIC_API_KEY) {
-        restoredDb.settings.providers.claude.apiKey = process.env.ANTHROPIC_API_KEY;
+      if (!restoredDb.settings.providers?.groq?.apiKey && process.env.GROQ_API_KEY) {
+        restoredDb.settings.providers.groq = restoredDb.settings.providers.groq || { baseUrl: 'https://api.groq.com/openai/v1', model: 'openai/gpt-oss-120b' };
+        restoredDb.settings.providers.groq.apiKey = process.env.GROQ_API_KEY;
+      }
+      if (!restoredDb.settings.providers?.openrouter?.apiKey && process.env.OPENROUTER_API_KEY) {
+        restoredDb.settings.providers.openrouter = restoredDb.settings.providers.openrouter || { baseUrl: 'https://openrouter.ai/api/v1', model: 'openrouter/free' };
+        restoredDb.settings.providers.openrouter.apiKey = process.env.OPENROUTER_API_KEY;
+      }
+      if (restoredDb.settings.providers?.claude) {
+        delete restoredDb.settings.providers.claude;
       }
       const validTgToken = (v) => /^\d+:[A-Za-z0-9_-]{20,}$/.test(String(v || '').trim().replace(/^bot/i, ''));
       const validChatId = (v) => /^-?\d+$/.test(String(v || '').trim());

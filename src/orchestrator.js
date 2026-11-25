@@ -63,6 +63,34 @@ function resolveLanguageModel(agent, settings) {
     return { model: anthropic(modelName), label: `claude:${modelName}` };
   }
 
+  if (agent.provider === 'groq') {
+    const cfg = providers.groq;
+    if (!cfg?.apiKey) return null;
+    const client = createOpenAI({
+      baseURL: cfg.baseUrl || 'https://api.groq.com/openai/v1',
+      apiKey: cfg.apiKey.trim(),
+      compatibility: 'compatible'
+    });
+    const modelName = cfg.model || agent.modelId || 'openai/gpt-oss-120b';
+    return { model: client(modelName), label: `groq:${modelName}` };
+  }
+
+  if (agent.provider === 'openrouter') {
+    const cfg = providers.openrouter;
+    if (!cfg?.apiKey) return null;
+    const client = createOpenAI({
+      baseURL: cfg.baseUrl || 'https://openrouter.ai/api/v1',
+      apiKey: cfg.apiKey.trim(),
+      compatibility: 'compatible',
+      headers: {
+        'HTTP-Referer': 'https://ai-ceo-hub.onrender.com',
+        'X-Title': 'CEO Office'
+      }
+    });
+    const modelName = cfg.model || 'openrouter/free';
+    return { model: client(modelName), label: `openrouter:${modelName}` };
+  }
+
   if (agent.provider === 'exaone') {
     const cfg = providers.exaone;
     if (!cfg?.apiKey) return null;
@@ -237,6 +265,44 @@ export async function testProviderConnection(providerKey, settings) {
     return { ok: true, model: modelName, reply: text.trim().slice(0, 60) };
   }
 
+  if (providerKey === 'groq') {
+    if (!p.apiKey) throw new Error('Groq API 키가 설정되지 않았습니다.');
+    const client = createOpenAI({
+      baseURL: p.baseUrl || 'https://api.groq.com/openai/v1',
+      apiKey: p.apiKey.trim(),
+      compatibility: 'compatible'
+    });
+    const modelName = p.model || 'openai/gpt-oss-120b';
+    const { text } = await generateText({
+      model: client(modelName),
+      prompt: 'Reply with OK',
+      maxRetries: 0,
+      abortSignal: AbortSignal.timeout(12000)
+    });
+    return { ok: true, model: modelName, reply: text.trim().slice(0, 60) };
+  }
+
+  if (providerKey === 'openrouter') {
+    if (!p.apiKey) throw new Error('OpenRouter API 키가 설정되지 않았습니다.');
+    const client = createOpenAI({
+      baseURL: p.baseUrl || 'https://openrouter.ai/api/v1',
+      apiKey: p.apiKey.trim(),
+      compatibility: 'compatible',
+      headers: {
+        'HTTP-Referer': 'https://ai-ceo-hub.onrender.com',
+        'X-Title': 'CEO Office'
+      }
+    });
+    const modelName = p.model || 'openrouter/free';
+    const { text } = await generateText({
+      model: client(modelName),
+      prompt: 'Reply with OK',
+      maxRetries: 0,
+      abortSignal: AbortSignal.timeout(15000)
+    });
+    return { ok: true, model: modelName, reply: text.trim().slice(0, 60) };
+  }
+
   if (providerKey === 'exaone') {
     if (!p.apiKey) throw new Error('LG EXAONE API 키가 설정되지 않았습니다.');
     const exaone = createOpenAI({
@@ -339,7 +405,7 @@ function selectLeadAgent(agents) {
   // Gemini 4 Neon (existing AI Pro subscription, 0 extra API cost) is ALWAYS the primary Team Lead
   return (
     active.find((a) => a.id === 'agent_gemini_neon') ||
-    active.find((a) => a.id === 'agent_claude') ||
+    active.find((a) => a.id === 'agent_groq') ||
     active.find((a) => a.tier === 'lead') ||
     active[0]
   );
@@ -376,8 +442,8 @@ function heuristicDecompose({ directive, domain, costPolicy, agents, leadAgent }
     : pick(['agent_exaone', 'agent_cue', 'agent_gemini_neon']);
 
   const deepWorkAgent = isFreeOnly
-    ? pick(['agent_exaone', 'agent_muse', 'agent_claude'])
-    : pick(['agent_claude', 'agent_gemini_neon', 'agent_exaone']);
+    ? pick(['agent_exaone', 'agent_muse', 'agent_groq'])
+    : pick(['agent_groq', 'agent_gemini_neon', 'agent_exaone']);
 
   const needsCallOrBooking = /예약|식당|병원|전화|ktx|기차|호텔|숙소|주문|결제|구매/.test(text);
   const needsRecurring = /매일|매주|아침|브리핑|모니터링|가격|뉴스|트렌드|추적/.test(text);
@@ -398,8 +464,8 @@ function heuristicDecompose({ directive, domain, costPolicy, agents, leadAgent }
 
   if (needsCode || domain === 'dev') {
     const devAgent = isFreeOnly
-      ? pick(['agent_exaone', 'agent_claude'])
-      : pick(['agent_claude', 'agent_gemini_neon']);
+      ? pick(['agent_exaone', 'agent_groq'])
+      : pick(['agent_groq', 'agent_gemini_neon']);
     tasks.push({
       title: '아키텍처 설계 · 구현 코드 작성 및 리뷰',
       description: '핵심 구현 코드, 예외 처리, 단위 테스트 및 보안 체크리스트를 작성합니다.',
@@ -423,7 +489,7 @@ function heuristicDecompose({ directive, domain, costPolicy, agents, leadAgent }
 
   if (needsEmailOrOutreach || domain === 'business') {
     const bizAgent = needsEmailOrOutreach
-      ? pick(['agent_cue', 'agent_claude', 'agent_exaone'])
+      ? pick(['agent_cue', 'agent_groq', 'agent_exaone'])
       : deepWorkAgent;
     tasks.push({
       title: needsEmailOrOutreach ? '대외 제안 문서 작성 및 메일 초안 준비' : '비즈니스 실행안 및 의사결정 옵션 비교',
@@ -532,6 +598,30 @@ function resolveLiveBackendModel(settings) {
     const google = createGoogleGenerativeAI({ apiKey: gem.apiKey.trim() });
     return { model: google(modelName), label: `gemini:${modelName}` };
   }
+  const orCfg = settings?.providers?.openrouter;
+  if (orCfg?.apiKey) {
+    const client = createOpenAI({
+      baseURL: orCfg.baseUrl || 'https://openrouter.ai/api/v1',
+      apiKey: orCfg.apiKey.trim(),
+      compatibility: 'compatible',
+      headers: {
+        'HTTP-Referer': 'https://ai-ceo-hub.onrender.com',
+        'X-Title': 'CEO Office'
+      }
+    });
+    const modelName = orCfg.model || 'openrouter/free';
+    return { model: client(modelName), label: `openrouter:${modelName}` };
+  }
+  const groq = settings?.providers?.groq;
+  if (groq?.apiKey) {
+    const client = createOpenAI({
+      baseURL: groq.baseUrl || 'https://api.groq.com/openai/v1',
+      apiKey: groq.apiKey.trim(),
+      compatibility: 'compatible'
+    });
+    const modelName = groq.model || 'openai/gpt-oss-120b';
+    return { model: client(modelName), label: `groq:${modelName}` };
+  }
   const exa = settings?.providers?.exaone;
   if (exa?.apiKey) {
     const client = createOpenAI({
@@ -541,12 +631,6 @@ function resolveLiveBackendModel(settings) {
     });
     const modelName = exa.model || 'k-exaone_v2.5';
     return { model: client(modelName), label: `exaone:${modelName}` };
-  }
-  const claude = settings?.providers?.claude;
-  if (claude?.apiKey) {
-    const anthropic = createAnthropic({ apiKey: claude.apiKey });
-    const modelName = claude.model || 'claude-sonnet-4-5';
-    return { model: anthropic(modelName), label: `claude:${modelName}` };
   }
   return null;
 }
@@ -632,7 +716,7 @@ export async function executeAgentTask({ task, mission, agent, settings, priorOu
   }
 
   // Internal AI agents (EXAONE, Gemini 4 Neon, Claude) run autonomously under Team Lead authority using direct API or live EXAONE engine
-  const isInternalAi = ['exaone', 'gemini', 'claude'].includes(agent.provider);
+  const isInternalAi = ['exaone', 'gemini', 'groq', 'openrouter'].includes(agent.provider);
   const resolved = resolveLanguageModel(agent, settings) || (isInternalAi ? resolveLiveBackendModel(settings) : null);
   if (resolved) {
     const system = `당신은 "${agent.name}" (${agent.roleTitle})입니다. 강점: ${agent.strengths}.
@@ -857,8 +941,8 @@ function pickResponders(text, agents, mission, tasks) {
     { id: 'agent_muse', re: /@?뮤즈|muse/ },
     { id: 'agent_cue', re: /@?큐이|@?큐\b|cue|마누스|manus/ },
     { id: 'agent_vooy', re: /@?부이|vooy/ },
-    { id: 'agent_claude', re: /@?클로드|claude/ },
-    { id: 'agent_gemini_neon', re: /@?제미나이|gemini|네온|neon/ },
+    { id: 'agent_groq', re: /@?그록|groq/ },
+    { id: 'agent_gemini_neon', re: /@?제미나이|gemini|하이드로젠|hydrogen|네온|neon/ },
     { id: 'agent_instinct', re: /@?인스팅스|인스팅트|instinct/ }
   ];
 
@@ -920,7 +1004,7 @@ export async function generateTeamChatReplies({ userMessage, mission, tasks, age
   const responders = pickResponders(userMessage, agents, mission, tasks);
   const ceoName = settings?.ceoName || '대표님';
   const replies = [];
-  const hasExplicitMention = /@(?:엑사원|피클|알렉스|뮤즈|큐|큐이|부이|클로드|제미나이|네온|인스팅스|전체)/i.test(userMessage);
+  const hasExplicitMention = /@(?:엑사원|피클|알렉스|뮤즈|큐|큐이|부이|그록|groq|제미나이|네온|하이드로젠|인스팅스|전체)/i.test(userMessage);
 
   for (const ag of responders) {
     const agTasks = tasks.filter((t) => t.assigneeId === ag.id);

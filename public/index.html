@@ -14,7 +14,7 @@
   <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png" />
   <link rel="apple-touch-icon" href="./icons/icon-192.png" />
   <link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" />
-  <link rel="stylesheet" href="./styles.css?v=20261124s" />
+  <link rel="stylesheet" href="./styles.css?v=20261124t" />
   <script src="./vendor/marked.umd.js" defer></script>
   <script src="./vendor/lucide.min.js" defer></script>
 </head>
@@ -388,12 +388,16 @@
                   <span class="badge badge-neutral" id="status-instinct-live">통신 대기</span>
                 </button>
                 <button type="button" class="simple-row clickable" data-open-agent-config="gemini">
-                  <div><strong>Gemini (총괄 팀장)</strong> <span class="mono" style="color:var(--ink-muted);">Google AI Studio 무료 API</span></div>
+                  <div><strong>Gemini (총괄 팀장)</strong> <span class="mono" style="color:var(--ink-muted);">무료 API</span></div>
                   <span class="key-status" id="status-gemini-quick">미연결</span>
                 </button>
-                <button type="button" class="simple-row clickable" data-open-agent-config="claude">
-                  <div><strong>Claude</strong> <span class="mono" style="color:var(--ink-muted);">구독 · MCP</span></div>
-                  <span class="badge badge-blue">구독 (0원)</span>
+                <button type="button" class="simple-row clickable" data-open-agent-config="groq">
+                  <div><strong>Groq</strong> <span class="mono" style="color:var(--ink-muted);">초고속 무료 API</span></div>
+                  <span class="key-status" id="status-groq-quick">미연결</span>
+                </button>
+                <button type="button" class="simple-row clickable" data-open-agent-config="openrouter">
+                  <div><strong>OpenRouter</strong> <span class="mono" style="color:var(--ink-muted);">통합 API</span></div>
+                  <span class="key-status" id="status-openrouter-quick">미연결</span>
                 </button>
               </div>
             </div>
@@ -403,6 +407,8 @@
           <div class="hub-panel" id="hub-panel-mcp">
             <div class="agent-picker-bar" role="tablist" aria-label="에이전트별 연결 설정">
               <button type="button" class="tab-pill active" data-config-agent="gemini">Gemini</button>
+              <button type="button" class="tab-pill" data-config-agent="groq">Groq</button>
+              <button type="button" class="tab-pill" data-config-agent="openrouter">OpenRouter</button>
               <button type="button" class="tab-pill" data-config-agent="exaone">엑사원</button>
               <button type="button" class="tab-pill" data-config-agent="telegram">텔레그램</button>
               <button type="button" class="tab-pill" data-config-agent="pickle">피클</button>
@@ -410,15 +416,14 @@
               <button type="button" class="tab-pill" data-config-agent="instinct">인스팅스</button>
               <button type="button" class="tab-pill" data-config-agent="muse">Muse</button>
               <button type="button" class="tab-pill" data-config-agent="cue">Cue</button>
-              <button type="button" class="tab-pill" data-config-agent="claude">Claude</button>
               <button type="button" class="tab-pill" data-config-agent="general">기본</button>
             </div>
 
-            <!-- Form-based panels: Gemini / EXAONE / Telegram / General -->
+            <!-- Form-based panels: Gemini / Groq / OpenRouter / EXAONE / Telegram / General -->
             <form id="settings-form" class="settings-form">
               <div class="card agent-config-panel active" id="agent-panel-gemini">
                 <div class="provider-head">
-                  <h3>Gemini (총괄 팀장 엔진)</h3>
+                  <h3>Gemini (총괄 팀장)</h3>
                   <div class="provider-right">
                     <span class="key-status" id="status-gemini">미연결</span>
                     <button type="button" class="btn btn-ghost btn-sm" data-ping-provider="gemini">테스트</button>
@@ -435,6 +440,58 @@
                       <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite (무료)</option>
                       <option value="gemini-4-neon">Gemini 4 Neon (유료 API)</option>
                       <option value="gemini-4-carbon">Gemini 4 Carbon (유료 API)</option>
+                    </select>
+                  </label>
+                </div>
+                <div class="form-actions">
+                  <span></span>
+                  <button type="submit" class="btn btn-primary">저장</button>
+                </div>
+              </div>
+
+              <div class="card agent-config-panel" id="agent-panel-groq">
+                <div class="provider-head">
+                  <h3>Groq</h3>
+                  <div class="provider-right">
+                    <span class="key-status" id="status-groq">미연결</span>
+                    <button type="button" class="btn btn-ghost btn-sm" data-ping-provider="groq">테스트</button>
+                  </div>
+                </div>
+                <div class="form-row-two" style="margin-top:12px;">
+                  <label class="field"><span class="field-label">API 키</span><input type="password" id="key-groq" placeholder="gsk_…" autocomplete="off" /></label>
+                  <label class="field">
+                    <span class="field-label">모델</span>
+                    <select id="model-groq">
+                      <option value="openai/gpt-oss-120b">GPT-OSS 120B (무료 최상위)</option>
+                      <option value="llama-3.3-70b-versatile">Llama 3.3 70B (무료)</option>
+                      <option value="qwen/qwen3-32b">Qwen 3 32B (무료)</option>
+                    </select>
+                  </label>
+                </div>
+                <div class="form-actions">
+                  <span></span>
+                  <button type="submit" class="btn btn-primary">저장</button>
+                </div>
+              </div>
+
+              <div class="card agent-config-panel" id="agent-panel-openrouter">
+                <div class="provider-head">
+                  <h3>OpenRouter</h3>
+                  <div class="provider-right">
+                    <span class="key-status" id="status-openrouter">미연결</span>
+                    <button type="button" class="btn btn-ghost btn-sm" data-ping-provider="openrouter">테스트</button>
+                  </div>
+                </div>
+                <div class="form-row-two" style="margin-top:12px;">
+                  <label class="field"><span class="field-label">API 키</span><input type="password" id="key-openrouter" placeholder="sk-or-v1-…" autocomplete="off" /></label>
+                  <label class="field">
+                    <span class="field-label">모델</span>
+                    <select id="model-openrouter">
+                      <option value="openrouter/free">OpenRouter Free Auto (무료)</option>
+                      <option value="google/gemini-4-hydrogen">Google: Gemini 4 Hydrogen (크레딧)</option>
+                      <option value="google/gemini-3.8-flash">Google: Gemini 3.8 Flash (크레딧)</option>
+                      <option value="deepseek/deepseek-r1:free">DeepSeek R1 (무료)</option>
+                      <option value="qwen/qwen3-coder:free">Qwen3 Coder (무료)</option>
                     </select>
                   </label>
                 </div>
@@ -601,8 +658,10 @@
           <label class="field">
             <span class="field-label">프로바이더</span>
             <select id="hire-provider">
+              <option value="gemini">Google Gemini</option>
+              <option value="groq">Groq (무료 API)</option>
+              <option value="openrouter">OpenRouter</option>
               <option value="exaone">LG EXAONE</option>
-              <option value="claude">Claude</option>
               <option value="manus">Manus / Cue</option>
               <option value="custom" selected>기타</option>
             </select>
@@ -639,6 +698,6 @@
   </nav>
 
   <div class="toast-region" id="toast-region" aria-live="polite"></div>
-  <script type="module" src="./app.js?v=20261124s"></script>
+  <script type="module" src="./app.js?v=20261124t"></script>
 </body>
 </html>

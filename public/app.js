@@ -1141,10 +1141,26 @@ function renderIntegrationsView() {
     const hasOpt = Array.from(modelGeminiEl.options).some((o) => o.value === targetVal);
     modelGeminiEl.value = hasOpt ? targetVal : 'gemini-4-hydrogen';
   }
+  const modelGroqEl = document.getElementById('model-groq');
+  if (modelGroqEl) {
+    const savedGroq = p.groq?.model || 'openai/gpt-oss-120b';
+    const hasGroqOpt = Array.from(modelGroqEl.options).some((o) => o.value === savedGroq);
+    modelGroqEl.value = hasGroqOpt ? savedGroq : 'openai/gpt-oss-120b';
+  }
+  const modelOrEl = document.getElementById('model-openrouter');
+  if (modelOrEl) {
+    const savedOr = p.openrouter?.model || 'openrouter/free';
+    const hasOrOpt = Array.from(modelOrEl.options).some((o) => o.value === savedOr);
+    modelOrEl.value = hasOrOpt ? savedOr : 'openrouter/free';
+  }
   document.getElementById('model-exaone').value = p.exaone?.model || 'k-exaone_v2.5';
 
   setKeyStatus('status-gemini', p.gemini);
   setKeyStatus('status-gemini-quick', p.gemini);
+  setKeyStatus('status-groq', p.groq);
+  setKeyStatus('status-groq-quick', p.groq);
+  setKeyStatus('status-openrouter', p.openrouter);
+  setKeyStatus('status-openrouter-quick', p.openrouter);
   setKeyStatus('status-exaone', p.exaone);
   setKeyStatus('status-exaone-quick', p.exaone);
 
@@ -1154,7 +1170,7 @@ function renderIntegrationsView() {
     const cb = state.cloudBackup || {};
     if (runtimeMode === 'server') {
       syncEl.textContent = cb.enabled
-        ? `Render + Gist 동기화됨 (${formatRelativeTime(cb.lastSyncAt)})`
+        ? `Render + 암호화 Gist 동기화됨 (${formatRelativeTime(cb.lastSyncAt)})`
         : 'Render 서버 연결됨 (Gist 미설정)';
       syncEl.classList.add('ok');
     } else {
@@ -1208,17 +1224,17 @@ const BRIDGE_AGENT_META = {
   vooy: { title: '부이 (vooy) 연결 설정 (대기 중)', inboxKey: 'vooy' },
   instinct: { title: '인스팅스 (Instinct) 연결 설정', inboxKey: 'instinct' },
   muse: { title: 'Meta Muse 연결 설정', inboxKey: 'muse' },
-  cue: { title: 'Manus Cue 연결 설정', inboxKey: 'cue' },
-  claude: { title: 'Claude 연결 설정', inboxKey: 'claude' }
+  cue: { title: 'Manus Cue 연결 설정', inboxKey: 'cue' }
 };
 
 function selectConfigAgent(agentKey = 'gemini') {
+  if (agentKey === 'claude') agentKey = 'gemini';
   currentConfigAgent = agentKey;
   document.querySelectorAll('[data-config-agent]').forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.configAgent === agentKey);
   });
 
-  const formPanels = ['gemini', 'exaone', 'telegram', 'general'];
+  const formPanels = ['gemini', 'groq', 'openrouter', 'exaone', 'telegram', 'general'];
   const isFormPanel = formPanels.includes(agentKey);
   formPanels.forEach((key) => {
     document.getElementById(`agent-panel-${key}`)?.classList.toggle('active', agentKey === key);
@@ -1245,7 +1261,7 @@ function selectConfigAgent(agentKey = 'gemini') {
 
     const inboxBtn = document.getElementById('btn-test-pickle-inbox');
     if (inboxBtn) {
-      const labelMap = { pickle: '피클', vooy: '부이', instinct: '인스팅스', muse: 'Muse', cue: 'Cue', claude: 'Claude' };
+      const labelMap = { pickle: '피클', vooy: '부이', instinct: '인스팅스', muse: 'Muse', cue: 'Cue' };
       inboxBtn.textContent = `${labelMap[agentKey] || agentKey} 연결 상태 확인`;
       inboxBtn.dataset.testInboxKey = meta.inboxKey;
       inboxBtn.style.display = '';
@@ -1314,19 +1330,6 @@ Header Value: Bearer ${token}
 - list_my_tasks (agent_id: "agent_cue")
 - submit_task_result
 - request_ceo_approval`,
-    claude: JSON.stringify(
-      {
-        mcpServers: {
-          'ceo-office-hub': {
-            type: 'http',
-            url: endpoint,
-            headers: { Authorization: `Bearer ${token}` }
-          }
-        }
-      },
-      null,
-      2
-    ),
     gemini: `# Gemini 웹 (gemini.google.com) → Settings → Connected Apps → Add a custom app
 MCP Server URL:
 ${endpoint}
@@ -1384,7 +1387,7 @@ function renderTaskDrawer(task) {
 
     <div class="drawer-section">
       <h3>2. 외부 앱 · 월정액 구독 결과 붙여넣기 보고</h3>
-      <p class="form-hint">피클, 부이, 인스팅스, Muse, 또는 Claude/Gemini 웹 구독에서 받은 결과를 붙여넣으면 팀장 종합 보고와 결재함에 즉시 반영됩니다.</p>
+      <p class="form-hint">피클, 부이, 인스팅스, Muse, Cue 등에서 받은 결과를 붙여넣으면 팀장 종합 보고와 결재함에 즉시 반영됩니다.</p>
       <form id="bridge-report-form" class="directive-form">
         <label class="field">
           <span class="field-label">실행 결과 내용 (마크다운 지원)</span>
@@ -1762,8 +1765,10 @@ function bindEvents() {
           body: JSON.stringify({ mode: nextMode })
         });
         state = res.state;
+        selectedMissionId = missionId;
         renderAll();
-        toast(nextMode === 'project' ? '지속 프로젝트로 전환했습니다.' : '단발 업무로 전환했습니다.');
+        switchView(nextMode === 'project' ? 'projects' : 'missions');
+        toast(nextMode === 'project' ? '프로젝트로 전환했습니다.' : '일반 업무로 전환했습니다.');
       } catch (err) {
         toast(err.message, true);
         target.disabled = false;
@@ -2171,7 +2176,7 @@ function bindEvents() {
     }
   });
 
-  // Save Settings (Clean active stack: Gemini + EXAONE + Telegram + Basic Info)
+  // Save Settings (Clean active stack: Gemini + Groq + OpenRouter + EXAONE + Telegram + Basic Info)
   document.getElementById('settings-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const payload = {
@@ -2187,6 +2192,14 @@ function bindEvents() {
           apiKey: document.getElementById('key-gemini')?.value.trim() || '',
           freeModel: document.getElementById('model-gemini')?.value.trim() || 'gemini-4-hydrogen'
         },
+        groq: {
+          apiKey: document.getElementById('key-groq')?.value.trim() || '',
+          model: document.getElementById('model-groq')?.value.trim() || 'openai/gpt-oss-120b'
+        },
+        openrouter: {
+          apiKey: document.getElementById('key-openrouter')?.value.trim() || '',
+          model: document.getElementById('model-openrouter')?.value.trim() || 'openrouter/free'
+        },
         exaone: {
           apiKey: document.getElementById('key-exaone').value.trim(),
           model: document.getElementById('model-exaone').value.trim()
@@ -2196,12 +2209,12 @@ function bindEvents() {
     try {
       const res = await api('/api/settings', { method: 'PUT', body: JSON.stringify(payload) });
       state = res.state;
-      ['key-gemini', 'key-exaone', 'tg-bot-token'].forEach((id) => {
+      ['key-gemini', 'key-groq', 'key-openrouter', 'key-exaone', 'tg-bot-token'].forEach((id) => {
         const el = document.getElementById(id);
         if (el) el.value = '';
       });
       renderAll();
-      toast('설정을 저장하고 클라우드에 동기화했습니다.');
+      toast('설정을 저장하고 암호화 클라우드에 동기화했습니다.');
     } catch (err) {
       toast(err.message, true);
     }

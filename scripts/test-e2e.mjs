@@ -147,7 +147,7 @@ async function runTests() {
       await fetch(`${BASE}/api/chat/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: '@피클 @Claude 진행 상황 공유해줘', missionId: created.mission.id })
+        body: JSON.stringify({ text: '@피클 @Groq 진행 상황 공유해줘', missionId: created.mission.id })
       })
     ).json();
     assert.ok(chatRes.replies.length >= 2, 'explicit multi-@mention chat should produce multi-agent replies');

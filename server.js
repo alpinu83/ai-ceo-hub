@@ -191,15 +191,15 @@ async function autoStartLiveMissionTasks(missionId) {
 
   const hasLiveEngine = Boolean(
     db.settings?.providers?.gemini?.apiKey ||
-      db.settings?.providers?.exaone?.apiKey ||
-      db.settings?.providers?.claude?.apiKey
+      db.settings?.providers?.openrouter?.apiKey ||
+      db.settings?.providers?.groq?.apiKey ||
+      db.settings?.providers?.exaone?.apiKey
   );
   if (!hasLiveEngine) return;
 
   const agentMap = Object.fromEntries(db.agents.map((a) => [a.id, a]));
-  // Under Team Lead authority: auto-run ALL internal AI tasks (EXAONE, Gemini 4 Neon, Claude) without waiting for CEO clicks!
-  // External action bots (Pickle, Cue, Muse, Vooy, Instinct) automatically wait in their live HTTPS/MCP queues.
-  const internalProviders = new Set(['exaone', 'gemini', 'claude']);
+  // Under Team Lead authority: auto-run ALL internal AI tasks without waiting for CEO clicks
+  const internalProviders = new Set(['exaone', 'gemini', 'groq', 'openrouter']);
   const autoTargets = db.tasks.filter((t) => {
     if (t.missionId !== missionId) return false;
     if (t.status !== 'queued' && t.status !== 'awaiting_bridge') return false;
@@ -922,7 +922,7 @@ function resolveInboxAgent(db, rawKey) {
     cue: 'agent_cue',
     manus: 'agent_cue',
     exaone: 'agent_exaone',
-    claude: 'agent_claude',
+    groq: 'agent_groq',
     gemini: 'agent_gemini_neon',
     neon: 'agent_gemini_neon'
   };
@@ -1621,7 +1621,7 @@ app.put('/api/settings', async (c) => {
   }
 
   if (body.providers) {
-    for (const pKey of ['gemini', 'claude', 'exaone', 'manus', 'litellm', 'ollama']) {
+    for (const pKey of ['gemini', 'groq', 'openrouter', 'exaone', 'manus', 'litellm', 'ollama']) {
       const incoming = body.providers[pKey];
       if (!incoming) continue;
       const target = s.providers[pKey] || (s.providers[pKey] = {});
@@ -1762,7 +1762,8 @@ initCloudPersistence()
   .finally(() => {
     server.listen(PORT, '0.0.0.0', () => {
       const db = loadDb();
+      ensureVapidKeys(db);
       syncTelegramPolling(db.settings, getTelegramCallbacks());
-      console.log(`AI CEO Hub v2 (Hono + Official MCP SDK + Vercel AI SDK + LG K-EXAONE 2.5 + Telegram Bot) listening on http://localhost:${PORT}`);
+      console.log(`AI CEO Hub v2 (Hono + Official MCP SDK + Vercel AI SDK + Gemini 4 Hydrogen + Groq + OpenRouter + LG K-EXAONE 2.5 + Telegram Bot) listening on http://localhost:${PORT}`);
     });
   });
