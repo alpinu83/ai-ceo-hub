@@ -1617,10 +1617,49 @@ function renderRosterView() {
   }
 }
 
+// ---- CEO 전역 지침 · 팀장 능동 추진 · 회사 기억 ----
+const MEMORY_KIND_LABEL = { directive: 'CEO 지시', decision: 'CEO 결정', result: '실행 결과', lesson: '교훈', note: '메모' };
+function renderLeadEngineSettings() {
+  const s = state.settings || {};
+  const le = s.leadEngine || {};
+  const setVal = (id, v) => {
+    const el = document.getElementById(id);
+    if (el && document.activeElement !== el) el.value = v;
+  };
+  const setChk = (id, v) => {
+    const el = document.getElementById(id);
+    if (el) el.checked = Boolean(v);
+  };
+  setVal('set-global-directives', s.globalDirectives || '');
+  setChk('set-lead-enabled', le.enabled !== false);
+  setChk('set-lead-telegram', le.telegramReports !== false);
+  setChk('set-lead-autofollow', le.autoFollowUp !== false);
+  setVal('set-lead-maxrounds', le.maxAutoRounds ?? 2);
+  setVal('set-lead-interval', le.followUpMinutes ?? 30);
+
+  const list = document.getElementById('memory-list');
+  if (!list) return;
+  const missionTitle = Object.fromEntries((state.missions || []).map((m) => [m.id, m.title]));
+  const facts = (state.memory?.facts || []).slice(0, 40);
+  list.innerHTML = facts.length
+    ? facts
+        .map(
+          (f) => `<li style="display:flex;gap:8px;align-items:flex-start;padding:6px 0;border-bottom:1px solid rgba(0,0,0,.06);">
+      <span style="flex:1;font-size:13px;line-height:1.45;">${f.pinned ? '📌 ' : ''}<b>${esc(MEMORY_KIND_LABEL[f.kind] || '메모')}</b>${
+        f.missionId && missionTitle[f.missionId] ? ` · ${esc(missionTitle[f.missionId])}` : ''
+      } · ${esc(new Date(f.createdAt).toLocaleString('ko-KR'))}<br />${esc(f.text)}</span>
+      <button type="button" class="btn btn-ghost btn-sm" data-forget-memory="${esc(f.id)}">삭제</button>
+    </li>`
+        )
+        .join('')
+    : '<li class="field-label">아직 쌓인 기억이 없습니다.</li>';
+}
+
 function renderIntegrationsView() {
   const s = state.settings;
   document.getElementById('set-company-name').value = s.companyName || '';
   document.getElementById('set-ceo-name').value = s.ceoName || '';
+  renderLeadEngineSettings();
 
   const p = s.providers || {};
   const modelGeminiEl = document.getElementById('model-gemini');
@@ -2969,6 +3008,18 @@ function bindEvents() {
     const payload = {
       companyName: document.getElementById('set-company-name').value.trim(),
       ceoName: document.getElementById('set-ceo-name').value.trim(),
+      ...(document.getElementById('set-global-directives')
+        ? {
+            globalDirectives: document.getElementById('set-global-directives').value,
+            leadEngine: {
+              enabled: document.getElementById('set-lead-enabled').checked,
+              telegramReports: document.getElementById('set-lead-telegram').checked,
+              autoFollowUp: document.getElementById('set-lead-autofollow').checked,
+              maxAutoRounds: Number(document.getElementById('set-lead-maxrounds').value),
+              followUpMinutes: Number(document.getElementById('set-lead-interval').value)
+            }
+          }
+        : {}),
       telegram: {
         botToken: document.getElementById('tg-bot-token').value.trim(),
         chatId: document.getElementById('tg-chat-id').value.trim(),
@@ -3009,6 +3060,45 @@ function bindEvents() {
       });
       renderAll();
       toast('설정을 저장하고 암호화 클라우드에 동기화했습니다.');
+    } catch (err) {
+      toast(err.message, true);
+    }
+  });
+
+  document.getElementById('btn-memory-add')?.addEventListener('click', async () => {
+    const input = document.getElementById('memory-new-text');
+    const text = input?.value.trim();
+    if (!text) return;
+    try {
+      const res = await api('/api/memory', { method: 'POST', body: JSON.stringify({ text, pinned: true, kind: 'directive' }) });
+      state = res.state;
+      input.value = '';
+      renderAll();
+      toast('고정 기억에 추가했습니다. 모든 AI 팀원에게 적용됩니다.');
+    } catch (err) {
+      toast(err.message, true);
+    }
+  });
+
+  document.getElementById('memory-list')?.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-forget-memory]');
+    if (!btn) return;
+    try {
+      const res = await api(`/api/memory/${encodeURIComponent(btn.dataset.forgetMemory)}`, { method: 'DELETE' });
+      state = res.state;
+      renderAll();
+      toast('기억을 삭제했습니다.');
+    } catch (err) {
+      toast(err.message, true);
+    }
+  });
+
+  document.getElementById('btn-lead-followup')?.addEventListener('click', async () => {
+    try {
+      const res = await api('/api/lead/follow-up', { method: 'POST' });
+      state = res.state;
+      renderAll();
+      toast(res.actions?.length ? `팀장 점검: ${res.actions.join(' / ')}` : '팀장 점검 완료: 지금 처리할 후속 조치가 없습니다.');
     } catch (err) {
       toast(err.message, true);
     }
