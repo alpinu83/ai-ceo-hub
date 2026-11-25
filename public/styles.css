@@ -104,7 +104,7 @@ body {
   letter-spacing: -0.01em;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  overflow-x: hidden;
+  overflow-x: clip;
   max-width: 100%;
 }
 
@@ -1559,6 +1559,10 @@ textarea:focus {
 .approval-queue-col {
   border-right: 1px solid var(--border-hairline);
   padding-right: 20px;
+  position: sticky;
+  top: 68px;
+  max-height: calc(100vh - 88px);
+  overflow-y: auto;
 }
 
 .queue-group-title {
@@ -1923,7 +1927,7 @@ button.simple-row.clickable:hover { background: var(--bg-subtle); }
   .kanban-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .mission-layout, .integrations-grid, .approval-desk { grid-template-columns: minmax(0, 1fr); gap: 24px; }
   .activity-column { border-left: none; border-top: 1px solid var(--border-hairline); padding-left: 0; padding-top: 18px; }
-  .approval-queue-col { border-right: none; border-bottom: 1px solid var(--border-hairline); padding-right: 0; padding-bottom: 16px; }
+  .approval-queue-col { border-right: none; border-bottom: 1px solid var(--border-hairline); padding-right: 0; padding-bottom: 16px; position: static; max-height: none; overflow-y: visible; }
 }
 
 @media (max-width: 960px) {
