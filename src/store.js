@@ -396,7 +396,17 @@ export function createDefaultState() {
   };
 }
 
+// One shared in-memory DB for the whole process.
+// Previously every request re-read the file and long AI calls saved stale copies over each other
+// (lost updates between chat, auto-run, watchdog, approvals). Now all handlers mutate the same object.
+let dbCache = null;
+
+export function invalidateDbCache() {
+  dbCache = null;
+}
+
 export function loadDb() {
+  if (dbCache) return dbCache;
   if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true });
   }
@@ -528,6 +538,7 @@ export function loadDb() {
       parsed.pushSubscriptions = [];
     }
     parsed.settings.webPush = parsed.settings.webPush || { publicKey: '', privateKey: '' };
+    dbCache = parsed;
     return parsed;
   } catch {
     const initial = createDefaultState();
@@ -803,6 +814,7 @@ export async function initCloudPersistence() {
       }
       if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
       fs.writeFileSync(DB_PATH, JSON.stringify(restoredDb, null, 2), 'utf8');
+    dbCache = null; // re-read and migrate the restored copy on next load
       if (tokenRotated && activeGistId) {
         await patchGistContent(JSON.stringify(restoredDb, null, 2));
       }
@@ -907,6 +919,7 @@ export function saveDb(db) {
   if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true });
   }
+  dbCache = db;
   const serialized = JSON.stringify(db, null, 2);
   fs.writeFileSync(DB_PATH, serialized, 'utf8');
   scheduleGistBackup(serialized);
