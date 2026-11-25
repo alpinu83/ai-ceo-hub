@@ -1650,6 +1650,11 @@ app.post('/api/providers/test', async (c) => {
   const db = loadDb();
   try {
     const result = await testProviderConnection(provider, db.settings);
+    if (result?.transport && db.settings?.providers?.[provider]) {
+      db.settings.providers[provider].transport = result.transport;
+      saveDb(db);
+      await flushCloudBackup(db);
+    }
     return c.json(result);
   } catch (err) {
     return c.json({ ok: false, error: err.message }, 400);

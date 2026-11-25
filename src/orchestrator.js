@@ -28,13 +28,28 @@ function resolveLanguageModel(agent, settings) {
     return { model: client(modelName), label: `litellm:${modelName}` };
   }
 
-  // Gemini Team Lead runs directly on real Google AI Studio API whenever a Gemini API key is configured
+  // Gemini Team Lead runs directly on real Google AI Studio / Vertex Express API whenever a Gemini API key is configured
   if (agent.provider === 'gemini') {
     const cfg = providers.gemini;
     if (!cfg?.apiKey) return null;
-    const google = createGoogleGenerativeAI({ apiKey: cfg.apiKey });
     const rawModel = String(cfg.freeModel || '').trim();
     const modelName = rawModel && rawModel !== 'gemini-2.5-flash' ? rawModel : 'gemini-4-hydrogen';
+    if (cfg.transport === 'openai_compat') {
+      const client = createOpenAI({
+        baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai',
+        apiKey: cfg.apiKey.trim(),
+        compatibility: 'compatible'
+      });
+      return { model: client(modelName), label: `gemini-openai:${modelName}` };
+    }
+    if (cfg.transport === 'vertex_express') {
+      const google = createGoogleGenerativeAI({
+        baseURL: 'https://aiplatform.googleapis.com/v1beta1/publishers/google',
+        apiKey: cfg.apiKey.trim()
+      });
+      return { model: google(modelName), label: `gemini-vertex:${modelName}` };
+    }
+    const google = createGoogleGenerativeAI({ apiKey: cfg.apiKey.trim() });
     return { model: google(modelName), label: `gemini:${modelName}` };
   }
 
@@ -112,48 +127,101 @@ export async function testProviderConnection(providerKey, settings) {
 
   if (providerKey === 'gemini') {
     if (!p.apiKey) throw new Error('Gemini API 키가 설정되지 않았습니다.');
+    const apiKey = p.apiKey.trim();
     const rawModel = String(p.freeModel || '').trim();
     const modelName = rawModel && rawModel !== 'gemini-2.5-flash' ? rawModel : 'gemini-4-hydrogen';
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelName)}:generateContent`;
-    let res;
-    const bodyObj = {
-      contents: [{ role: 'user', parts: [{ text: 'Reply with OK' }] }]
+    const nativeBody = {
+      contents: [{ role: 'user', parts: [{ text: 'Reply with OK' }] }],
+      ...(/^gemini-[34]/.test(modelName)
+        ? { generationConfig: { thinkingConfig: { thinkingLevel: 'low' } } }
+        : {})
     };
-    if (/^gemini-[34]/.test(modelName)) {
-      bodyObj.generationConfig = { thinkingConfig: { thinkingLevel: 'low' } };
-    }
-    try {
-      res = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': p.apiKey.trim()
-        },
-        body: JSON.stringify(bodyObj),
-        signal: AbortSignal.timeout(12000)
-      });
-    } catch (err) {
-      if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
-        throw new Error(`Gemini 응답 시간 초과 (12초) — 모델(${modelName}) 응답이 지연되고 있습니다.`);
+
+    const probes = [
+      {
+        transport: 'native',
+        label: 'AI Studio Native',
+        url: `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelName)}:generateContent`,
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+        body: nativeBody,
+        extract: (d) => (d?.candidates?.[0]?.content?.parts || []).map((pt) => pt?.text || '').join('').trim()
+      },
+      {
+        transport: 'openai_compat',
+        label: 'AI Studio OpenAI호환',
+        url: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: { model: modelName, messages: [{ role: 'user', content: 'Reply with OK' }] },
+        extract: (d) => String(d?.choices?.[0]?.message?.content || '').trim()
+      },
+      {
+        transport: 'vertex_express',
+        label: 'Vertex Express',
+        url: `https://aiplatform.googleapis.com/v1beta1/publishers/google/models/${encodeURIComponent(modelName)}:generateContent`,
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+        body: nativeBody,
+        extract: (d) => (d?.candidates?.[0]?.content?.parts || []).map((pt) => pt?.text || '').join('').trim()
+      },
+      {
+        transport: 'interactions',
+        label: 'AI Studio Interactions',
+        url: 'https://generativelanguage.googleapis.com/v1beta/interactions',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+        body: { model: modelName, input: 'Reply with OK' },
+        extract: (d) => String(d?.outputs?.[0]?.text || d?.text || 'OK').trim()
       }
-      throw err;
+    ];
+
+    const results = await Promise.all(
+      probes.map(async (pr) => {
+        try {
+          const r = await fetch(pr.url, {
+            method: 'POST',
+            headers: pr.headers,
+            body: JSON.stringify(pr.body),
+            signal: AbortSignal.timeout(10000)
+          });
+          const raw = await r.text();
+          let data = {};
+          try {
+            data = JSON.parse(raw);
+          } catch {
+            // ignore
+          }
+          if (r.ok) {
+            return { ok: true, transport: pr.transport, label: pr.label, reply: pr.extract(data) || 'OK' };
+          }
+          const errObj = Array.isArray(data) ? data[0]?.error : data?.error;
+          const reason = errObj?.details?.[0]?.reason || errObj?.status || '';
+          const msg = errObj?.message || raw.slice(0, 120) || `HTTP ${r.status}`;
+          return { ok: false, transport: pr.transport, label: pr.label, status: r.status, reason, msg };
+        } catch (err) {
+          return {
+            ok: false,
+            transport: pr.transport,
+            label: pr.label,
+            status: 0,
+            reason: err?.name || 'ERR',
+            msg: err?.message || 'timeout'
+          };
+        }
+      })
+    );
+
+    const winner = results.find((r) => r.ok);
+    if (winner) {
+      return {
+        ok: true,
+        model: modelName,
+        transport: winner.transport,
+        reply: `${winner.reply.slice(0, 40)} (${winner.label})`
+      };
     }
 
-    const rawText = await res.text();
-    let data = {};
-    try {
-      data = JSON.parse(rawText);
-    } catch {
-      // non-JSON body
-    }
-    if (!res.ok) {
-      const msg = data?.error?.message || rawText.slice(0, 180) || `HTTP ${res.status}`;
-      const reason = data?.error?.details?.[0]?.reason || data?.error?.status || '';
-      throw new Error(`Gemini 오류 (${res.status}${reason ? ` · ${reason}` : ''}): ${msg}`);
-    }
-    const parts = data?.candidates?.[0]?.content?.parts || [];
-    const reply = parts.map((pt) => pt?.text || '').join('').trim() || 'OK';
-    return { ok: true, model: modelName, reply: reply.slice(0, 60) };
+    const summary = results
+      .map((r) => `[${r.label}: ${r.status}${r.reason ? ` ${r.reason}` : ''}] ${r.msg}`)
+      .join(' | ');
+    throw new Error(`Gemini 4개 공식 경로 모두 거절됨 — ${summary}`);
   }
 
   if (providerKey === 'claude') {
@@ -444,9 +512,24 @@ function heuristicDecompose({ directive, domain, costPolicy, agents, leadAgent }
 function resolveLiveBackendModel(settings) {
   const gem = settings?.providers?.gemini;
   if (gem?.apiKey) {
-    const google = createGoogleGenerativeAI({ apiKey: gem.apiKey });
     const rawModel = String(gem.freeModel || '').trim();
     const modelName = rawModel && rawModel !== 'gemini-2.5-flash' ? rawModel : 'gemini-4-hydrogen';
+    if (gem.transport === 'openai_compat') {
+      const client = createOpenAI({
+        baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai',
+        apiKey: gem.apiKey.trim(),
+        compatibility: 'compatible'
+      });
+      return { model: client(modelName), label: `gemini-openai:${modelName}` };
+    }
+    if (gem.transport === 'vertex_express') {
+      const google = createGoogleGenerativeAI({
+        baseURL: 'https://aiplatform.googleapis.com/v1beta1/publishers/google',
+        apiKey: gem.apiKey.trim()
+      });
+      return { model: google(modelName), label: `gemini-vertex:${modelName}` };
+    }
+    const google = createGoogleGenerativeAI({ apiKey: gem.apiKey.trim() });
     return { model: google(modelName), label: `gemini:${modelName}` };
   }
   const exa = settings?.providers?.exaone;
