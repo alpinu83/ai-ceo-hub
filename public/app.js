@@ -427,16 +427,24 @@ function renderHomeView() {
       .slice(0, 3)
       .map((apr) => {
         const ag = getAgent(apr.agentId);
+        const msn = state.missions.find((m) => m.id === apr.missionId);
+        const msnTag = msn
+          ? `${msn.mode === 'project' ? '프로젝트' : '업무'} · ${msn.title}`
+          : '';
         const costTxt = apr.estimatedCostKRW > 0 ? formatKRW(apr.estimatedCostKRW) : '';
         return `<div class="home-item pending-accent">
           <div class="home-item-top">
-            <span class="badge badge-amber">${esc(ag?.name || 'AI')}</span>
+            <div style="display:flex;gap:5px;flex-wrap:wrap;min-width:0;">
+              ${msnTag ? `<span class="badge badge-blue" style="max-width:100%;overflow:hidden;text-overflow:ellipsis;">${esc(msnTag)}</span>` : ''}
+              <span class="badge badge-amber">${esc(ag?.name || 'AI')}</span>
+            </div>
             ${costTxt ? `<span class="mono" style="font-weight:700;">${esc(costTxt)}</span>` : ''}
           </div>
           <div class="home-item-title">${esc(apr.title)}</div>
           <div class="home-item-actions">
             <button type="button" class="btn btn-primary btn-sm" data-quick-approve="${esc(apr.id)}">승인</button>
             <button type="button" class="btn btn-ghost btn-sm" data-open-approval="${esc(apr.id)}">상세</button>
+            ${msn ? `<button type="button" class="btn btn-ghost btn-sm" data-open-mission-board="${esc(msn.id)}">원본 보기</button>` : ''}
           </div>
         </div>`;
       })
@@ -1001,10 +1009,14 @@ function renderApprovalsView() {
     return list
       .map((a) => {
         const ag = getAgent(a.agentId);
+        const msn = state.missions.find((m) => m.id === a.missionId);
+        const msnLabel = msn
+          ? `${msn.mode === 'project' ? `프로젝트 P${Number(msn.phase) || 1}` : '일반 업무'} · ${msn.title}`
+          : a.category;
         const sel = a.id === selectedApprovalId ? 'selected' : '';
         return `<button type="button" class="queue-item ${sel} ${isPending ? 'pending-stripe' : ''}" data-select-approval="${esc(a.id)}">
           <div class="queue-item-meta">
-            <span>${esc(a.category)}</span>
+            <span class="badge badge-blue" style="max-width:75%;overflow:hidden;text-overflow:ellipsis;">${esc(msnLabel)}</span>
             <span class="mono">${a.estimatedCostKRW > 0 ? formatKRW(a.estimatedCostKRW) : '무료'}</span>
           </div>
           <div class="queue-item-title">${esc(a.title)}</div>
@@ -1028,6 +1040,8 @@ function renderApprovalsView() {
   }
 
   const ag = getAgent(apr.agentId);
+  const msn = state.missions.find((m) => m.id === apr.missionId);
+  const msnKind = msn?.mode === 'project' ? `프로젝트 · Phase ${Number(msn.phase) || 1}` : '일반 업무';
   const task = state.tasks.find((t) => t.id === apr.taskId);
   const stampLabels = {
     pending: { text: 'CEO 결재 대기', cls: 'pending' },
@@ -1039,8 +1053,15 @@ function renderApprovalsView() {
 
   detailPane.innerHTML = `
     <div class="memo-top">
-      <div>
-        <div class="memo-kicker">EXECUTIVE DECISION MEMO · ${esc(apr.id.toUpperCase())}</div>
+      <div style="min-width:0;">
+        <div class="memo-kicker" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;">
+          ${
+            msn
+              ? `<span class="badge badge-blue">${esc(msnKind)} · ${esc(msn.title)}</span>
+                 <button type="button" class="btn-inline-edit" data-open-mission-board="${esc(msn.id)}">원본 열기 →</button>`
+              : `<span>${esc(apr.category)}</span>`
+          }
+        </div>
         <h2 class="memo-title">${esc(apr.title)}</h2>
       </div>
       <span class="memo-stamp ${st.cls}">${esc(st.text)}</span>
@@ -1048,16 +1069,16 @@ function renderApprovalsView() {
 
     <div class="memo-facts">
       <div>
+        <div class="memo-fact-label">관련 프로젝트 / 업무</div>
+        <div class="memo-fact-val">${esc(msn ? msn.title : '단독 안건')}</div>
+      </div>
+      <div>
         <div class="memo-fact-label">상신 AI 팀원</div>
         <div class="memo-fact-val">${esc(ag?.name || apr.agentId)}</div>
       </div>
       <div>
-        <div class="memo-fact-label">예상 비용 / 예약금</div>
-        <div class="memo-fact-val mono">${apr.estimatedCostKRW > 0 ? formatKRW(apr.estimatedCostKRW) : '비용 없음'}${apr.depositKRW ? ` (예약금 ${formatKRW(apr.depositKRW)})` : ''}</div>
-      </div>
-      <div>
-        <div class="memo-fact-label">리스크 등급</div>
-        <div class="memo-fact-val">${esc(apr.riskLevel.toUpperCase())} · ${esc(apr.category)}</div>
+        <div class="memo-fact-label">예상 비용 · 유형</div>
+        <div class="memo-fact-val mono">${apr.estimatedCostKRW > 0 ? formatKRW(apr.estimatedCostKRW) : '비용 없음'} · ${esc(apr.category)}</div>
       </div>
     </div>
 

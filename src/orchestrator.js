@@ -90,30 +90,46 @@ function resolveLanguageModel(agent, settings) {
 
 function createOpenAiModelFallbackFetch(fallbackModels = []) {
   return async (url, init) => {
-    const res = await fetch(url, init);
-    if (res.ok || ![400, 404, 429, 502, 503].includes(res.status) || !init?.body || typeof init.body !== 'string') {
-      return res;
+    const withTimeout = (opts) => ({
+      ...opts,
+      signal: opts?.signal || AbortSignal.timeout(22000)
+    });
+    let res;
+    try {
+      res = await fetch(url, withTimeout(init));
+      if (res.ok || ![400, 404, 429, 502, 503].includes(res.status)) return res;
+    } catch {
+      res = null;
+    }
+    if (!init?.body || typeof init.body !== 'string') {
+      if (res) return res;
+      throw new Error('모델 요청 시간 초과');
     }
     let parsed;
     try {
       parsed = JSON.parse(init.body);
     } catch {
-      return res;
+      if (res) return res;
+      throw new Error('모델 요청 시간 초과');
     }
-    if (!parsed?.model) return res;
+    if (!parsed?.model) {
+      if (res) return res;
+      throw new Error('모델 요청 시간 초과');
+    }
     for (const fb of fallbackModels) {
       if (!fb || fb === parsed.model) continue;
       try {
-        const fbRes = await fetch(url, {
+        const fbRes = await fetch(url, withTimeout({
           ...init,
           body: JSON.stringify({ ...parsed, model: fb })
-        });
+        }));
         if (fbRes.ok) return fbRes;
       } catch {
         // try next fallback
       }
     }
-    return res;
+    if (res) return res;
+    throw new Error('모델 응답 시간 초과');
   };
 }
 

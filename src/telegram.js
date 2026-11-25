@@ -104,7 +104,7 @@ export async function sendTelegramAlert(settings, title, detail) {
   }
 }
 
-export async function sendTelegramApprovalCard(settings, approval, agentName) {
+export async function sendTelegramApprovalCard(settings, approval, agentName, missionLabel = '') {
   const tg = settings?.telegram;
   if (!isValidBotToken(tg?.botToken) || !isNumericChatId(tg?.chatId)) return { ok: false, skipped: true };
   if (approval?.id && shouldThrottleTelegram(`apr:${approval.id}`)) {
@@ -119,6 +119,7 @@ export async function sendTelegramApprovalCard(settings, approval, agentName) {
   const text = [
     `<b>[CEO 결재 요청] ${escapeHtml(settings.companyName || 'CEO Office')}</b>`,
     ``,
+    missionLabel ? `<b>관련 프로젝트/업무:</b> ${escapeHtml(missionLabel)}` : '',
     `<b>안건:</b> ${escapeHtml(approval.title)}`,
     `<b>상신:</b> ${escapeHtml(agentName || approval.agentId)}`,
     `<b>유형:</b> ${escapeHtml(approval.category)}`,
@@ -128,7 +129,9 @@ export async function sendTelegramApprovalCard(settings, approval, agentName) {
     escapeHtml(approval.summary || ''),
     ``,
     `<b>승인 시 실행:</b> ${escapeHtml(approval.proposedAction || '')}`
-  ].join('\n');
+  ]
+    .filter((line, idx, arr) => !(line === '' && arr[idx - 1] === ''))
+    .join('\n');
 
   const keyboard = {
     inline_keyboard: [

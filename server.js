@@ -591,11 +591,21 @@ function getTelegramCallbacks() {
 }
 
 function notifyAllApprovalChannels(settings, apr, agentName) {
-  notifyWebhook(settings, 'approval_requested', apr).catch(() => {});
-  sendTelegramApprovalCard(settings, apr, agentName).catch(() => {});
+  let missionLabel = '';
+  try {
+    const db = loadDb();
+    const msn = db.missions.find((m) => m.id === apr?.missionId);
+    if (msn) {
+      missionLabel = `${msn.mode === 'project' ? `[프로젝트 P${Number(msn.phase) || 1}] ` : '[일반 업무] '}${msn.title}`;
+    }
+  } catch {
+    // ignore
+  }
+  notifyWebhook(settings, 'approval_requested', { ...apr, missionLabel }).catch(() => {});
+  sendTelegramApprovalCard(settings, apr, agentName, missionLabel).catch(() => {});
   sendWebPushNotification({
-    title: `[결재 요청] ${apr.title}`,
-    body: `${agentName || '총괄 팀장'} · ${(apr.summary || '').slice(0, 90)}`,
+    title: missionLabel ? `[결재 · ${missionLabel}]` : `[결재 요청] ${apr.title}`,
+    body: `${apr.title} · ${agentName || '총괄 팀장'}`,
     view: 'approvals',
     tag: `apr-${apr.id}`
   }).catch(() => {});
