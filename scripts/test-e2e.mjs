@@ -152,6 +152,34 @@ async function runTests() {
     ).json();
     assert.ok(chatRes.replies.length >= 2, 'explicit multi-@mention chat should produce multi-agent replies');
 
+    // 8b. CEO global directives + company memory shared by every AI agent, and the Team Lead follow-up run
+    const jsonHeaders = { 'Content-Type': 'application/json' };
+    const setRes = await (
+      await fetch(`${BASE}/api/settings`, {
+        method: 'PUT',
+        headers: jsonHeaders,
+        body: JSON.stringify({ globalDirectives: '테스트 지침: 끝나면 먼저 보고', leadEngine: { maxAutoRounds: 1, followUpMinutes: 15 } })
+      })
+    ).json();
+    assert.equal(setRes.state.settings.globalDirectives, '테스트 지침: 끝나면 먼저 보고', 'global directives must be saved');
+    assert.equal(setRes.state.settings.leadEngine.maxAutoRounds, 1, 'lead engine settings must be saved');
+    const memAdd = await (
+      await fetch(`${BASE}/api/memory`, {
+        method: 'POST',
+        headers: jsonHeaders,
+        body: JSON.stringify({ text: '배포 전에는 모바일 화면을 확인한다', missionId: created.mission.id })
+      })
+    ).json();
+    assert.ok(memAdd.fact?.id, 'memory fact must be created');
+    const memView = await (await fetch(`${BASE}/api/memory?missionId=${created.mission.id}`)).json();
+    assert.ok(memView.context.includes('테스트 지침'), 'company context must include global directives');
+    assert.ok(memView.context.includes('모바일 화면'), 'company context must include remembered facts');
+    assert.ok(memView.facts.some((f) => f.kind === 'decision'), 'CEO approval decisions must be remembered');
+    const memDel = await (await fetch(`${BASE}/api/memory/${memAdd.fact.id}`, { method: 'DELETE' })).json();
+    assert.equal(memDel.ok, true, 'memory fact must be deletable');
+    const followRes = await (await fetch(`${BASE}/api/lead/follow-up`, { method: 'POST' })).json();
+    assert.equal(followRes.ok, true, 'team lead follow-up must run');
+
     const standupRes = await (
       await fetch(`${BASE}/api/missions/${created.mission.id}/standup`, { method: 'POST' })
     ).json();
