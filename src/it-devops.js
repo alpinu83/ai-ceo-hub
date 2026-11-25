@@ -146,8 +146,50 @@ const FileSelectSchema = z.object({
     .boolean()
     .describe('지시·협업 결과 중 이 저장소의 실제 파일을 수정해야 하는 항목이 있으면 true, 리서치·전략·외부 작업뿐이면 false'),
   files: z.array(z.string()).max(3).describe('수정 또는 점검할 저장소 내 파일 경로 (최대 3개, 변경 불필요 시 빈 배열)'),
-  analysisPlan: z.string().describe('수정 계획 1~2문장 요약 (변경 불필요 시 그 이유)')
+  analysisPlan: z.string().describe('수정 계획 1~2문장 요약 (변경 불필요 시 그 이유)'),
+  searchHints: z
+    .array(z.string())
+    .max(8)
+    .optional()
+    .describe('수정 위치를 찾기 위한 코드 키워드(함수명·id·클래스명·화면 문구 등, 파일에 실제로 있을 법한 문자열)')
 });
+
+// Free-tier models (Groq ~8k tokens/min) can't take whole large files: send only the relevant parts.
+const MAX_FILE_CONTEXT_CHARS = 7000;
+const MAX_TOTAL_CONTEXT_CHARS = 14000;
+
+function excerptForPrompt(content, hints = [], budget = MAX_FILE_CONTEXT_CHARS) {
+  if (content.length <= budget) return { text: content, partial: false };
+  const ranges = [[0, Math.min(800, content.length)]];
+  const lowered = content.toLowerCase();
+  for (const raw of hints) {
+    const hint = String(raw || '').trim();
+    if (hint.length < 2) continue;
+    let from = 0;
+    for (let hits = 0; hits < 2; hits++) {
+      const idx = lowered.indexOf(hint.toLowerCase(), from);
+      if (idx < 0) break;
+      ranges.push([Math.max(0, idx - 1200), Math.min(content.length, idx + hint.length + 1200)]);
+      from = idx + hint.length;
+    }
+  }
+  ranges.sort((a, b) => a[0] - b[0]);
+  const merged = [];
+  for (const r of ranges) {
+    const last = merged[merged.length - 1];
+    if (last && r[0] <= last[1]) last[1] = Math.max(last[1], r[1]);
+    else merged.push([...r]);
+  }
+  let used = 0;
+  const parts = [];
+  for (const [s, e] of merged) {
+    if (used >= budget) break;
+    const end = Math.min(e, s + (budget - used));
+    parts.push(`/* ... (${s}자 위치) ... */\n${content.slice(s, end)}`);
+    used += end - s;
+  }
+  return { text: parts.join('\n'), partial: true };
+}
 
 function codedError(message, code, extra = {}) {
   const err = new Error(message);
@@ -229,7 +271,7 @@ export async function runItMaintenancePipeline({
     throw new Error(`허용 목록에 없는 저장소입니다: ${cfg.repo}`);
   }
   const teamBlock = String(teamContext || '').trim()
-    ? `\n\n[AI 팀 협업 결정사항 (참고용 — 실제 저장소에 존재하지 않는 서버·DB·파일 언급은 무시하고, 실제 파일에 적용 가능한 변경만 반영)]\n${String(teamContext).slice(0, 9000)}`
+    ? `\n\n[AI 팀 협업 결정사항 (참고용 — 실제 저장소에 존재하지 않는 서버·DB·파일 언급은 무시하고, 실제 파일에 적용 가능한 변경만 반영)]\n${String(teamContext).slice(0, 3500)}`
     : '';
   if (!cfg.enabled) {
     throw new Error('IT팀 GitHub 토큰이 설정되지 않았습니다. 설정 → 연결 설정 → IT팀 GitHub에서 토큰을 등록해 주세요.');
@@ -266,7 +308,7 @@ export async function runItMaintenancePipeline({
 대상 저장소(${cfg.repo}${siteUrl ? ` / 라이브 사이트 ${siteUrl}` : ''})의 실제 파일 목록에서 CEO의 지시와 팀 결정사항을 반영하기 위해 읽고 수정해야 할 가장 핵심 파일 1~3개만 정확히 고르세요.
 반드시 목록에 있는 정확한 파일 경로만 선택하세요.
 지시·결정사항이 리서치·전략·외부 계정 작업(광고비 집행, 콘솔 설정 등)뿐이라 이 저장소 코드를 바꿀 필요가 없으면 needsCodeChange=false, files=[]로 답하세요.`,
-    prompt: `[저장소: ${cfg.repo} (${cfg.branch})]\n[파일 목록]\n${allFiles.join('\n')}\n\n[CEO 지시]\n제목: ${missionTitle || ''}\n내용: ${instruction}${teamBlock}`
+    prompt: `[저장소: ${cfg.repo} (${cfg.branch})]\n[파일 목록]\n${allFiles.slice(0, 300).join('\n')}\n\n[CEO 지시]\n제목: ${missionTitle || ''}\n내용: ${instruction}${teamBlock}`
   });
 
   if (!selection.needsCodeChange || !Array.isArray(selection.files) || selection.files.length === 0) {
@@ -285,8 +327,13 @@ export async function runItMaintenancePipeline({
 
   // 3. Read actual live source code from GitHub
   const loadedFiles = await Promise.all(targetPaths.map((p) => readRepoFile(cfg, p)));
+  const hints = Array.isArray(selection.searchHints) ? selection.searchHints : [];
+  const perFileBudget = Math.max(3000, Math.floor(MAX_TOTAL_CONTEXT_CHARS / loadedFiles.length));
   const fileContext = loadedFiles
-    .map((f) => `=== FILE: ${f.path} (${f.content.length} chars) ===\n${f.content.slice(0, 26000)}`)
+    .map((f) => {
+      const ex = excerptForPrompt(f.content, hints, Math.min(MAX_FILE_CONTEXT_CHARS, perFileBudget));
+      return `=== FILE: ${f.path} (${f.content.length} chars${ex.partial ? ', 관련 부분만 발췌' : ''}) ===\n${ex.text}`;
+    })
     .join('\n\n');
 
   // 4. IT Dev generates exact search/replace patches
@@ -299,7 +346,8 @@ export async function runItMaintenancePipeline({
 - 불필요한 대규모 리팩토링 금지. 필요한 부분만 정확히 수정하세요.
 - HTML/CSS/JS/JSON 파일 수정 시 문법 오류나 기존 기능 깨짐이 없도록 하세요.
 - 보안을 약화시키거나 비밀키를 코드에 하드코딩하지 마세요.
-- 팀 결정사항에 실제 파일에 없는 구조가 언급되어 있으면 지어내지 말고, 실제 코드에 맞는 부분만 구현하세요.`,
+- 팀 결정사항에 실제 파일에 없는 구조가 언급되어 있으면 지어내지 말고, 실제 코드에 맞는 부분만 구현하세요.
+- 큰 파일은 관련 부분만 발췌되어 있습니다. search 문자열은 발췌된 코드 안에서만 고르고, '/* ... (N자 위치) ... */' 표시는 search에 넣지 마세요.`,
     prompt: `[대상 저장소: ${cfg.repo}]\n[CEO 지시]\n${instruction}${teamBlock}\n\n[실제 저장소 소스 코드]\n${fileContext}`
   });
 
