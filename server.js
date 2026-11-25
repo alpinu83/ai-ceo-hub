@@ -721,7 +721,9 @@ function buildCodeInstruction(mission, tasks, extraNote = '') {
 }
 
 function setCodeStatus(apr, status, extra = {}) {
-  apr.codeChange = { ...(apr.codeChange || {}), ...extra, status, updatedAt: new Date().toISOString() };
+  const base = { ...(apr.codeChange || {}) };
+  if (['ready', 'merging', 'merged', 'deployed'].includes(status)) delete base.error; // stale failure text
+  apr.codeChange = { ...base, ...extra, status, updatedAt: new Date().toISOString() };
 }
 
 function applyPrFieldsToApproval(apr, result, extra = {}) {
