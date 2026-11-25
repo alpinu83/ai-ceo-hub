@@ -54,6 +54,19 @@ import {
 } from './src/lead-engine.js';
 import { describeSkillsForClient, getSkillSettings, selectSkills, renderSkills } from './src/skills.js';
 import { testGoogleDataConnection, buildAnalyticsContext, describeGoogleDataStatus } from './src/google-data.js';
+import { factCheckOutput, formatFactIssues, saysNothingToDo, isNearDuplicate, getRepoSnapshot } from './src/grounding.js';
+
+const AI_TASK_CONCURRENCY = Math.max(1, Number(process.env.AI_TASK_CONCURRENCY || 2));
+async function runWithConcurrency(items, limit, fn) {
+  const queue = [...items];
+  const workers = Array.from({ length: Math.min(limit, queue.length) }, async () => {
+    while (queue.length) {
+      const item = queue.shift();
+      await fn(item);
+    }
+  });
+  await Promise.all(workers);
+}
 import { handleOfficialMcpHttp, MCP_TOOL_CATALOG } from './src/mcp.js';
 import {
   sendTelegramAlert,
@@ -313,8 +326,8 @@ async function autoStartLiveMissionTasks(missionId, { proposeNext = true } = {})
   }
   saveDb(db);
 
-  await Promise.all(
-    autoTargets.map(async (target) => {
+  // 무료 API 분당 한도 때문에 동시에 너무 많이 호출하면 검수·재시도까지 같이 실패 → 동시 실행 수 제한
+  await runWithConcurrency(autoTargets, AI_TASK_CONCURRENCY, async (target) => {
       const ag = agentMap[target.assigneeId];
       try {
         const res = await executeAgentTask({ task: target, mission, agent: ag, settings: db.settings });
@@ -327,6 +340,12 @@ async function autoStartLiveMissionTasks(missionId, { proposeNext = true } = {})
         if (res.quality) taskRow.quality = res.quality;
         taskRow.updatedAt = doneIso;
 
+        // 빈 결재 방지: 결과물 스스로 "할 일 없음/이미 완료"라고 하면 대표님께 결재를 올리지 않고 팀장 전결 종료
+        if (taskRow.requiresApproval && saysNothingToDo(res.output)) {
+          taskRow.requiresApproval = false;
+          taskRow.output = `> 팀장 판단: 실행할 변경이 없어 결재 없이 종료합니다.\n\n${taskRow.output}`;
+          appendLog(fresh, '총괄 팀장', `"${taskRow.title}" — 실행할 변경이 없다고 보고돼 빈 결재를 올리지 않고 종료했습니다.`, 'info');
+        }
         if (taskRow.requiresApproval) {
           taskRow.status = 'awaiting_approval';
           const existing = fresh.approvals.find((a) => a.taskId === taskRow.id && a.status === 'pending');
@@ -375,8 +394,7 @@ async function autoStartLiveMissionTasks(missionId, { proposeNext = true } = {})
         notifyTelegramAnomaly(fresh.settings, `${ag.name} 업무 실행 이상`, `"${target.title}" — ${err.message}`);
         saveDb(fresh);
       }
-    })
-  );
+  });
 
   // Team Lead automatically compiles executive summary once internal tasks finish
   let isProjectMission = false;
@@ -473,6 +491,34 @@ async function submitNextPhaseProposal(missionId, { leadAssessment = '' } = {}) 
     if (violations.length) {
       proposal.suggestedSteps = (proposal.suggestedSteps || []).filter((s) => !findScopeViolations(mission, s).length);
       proposal.rationale = `${proposal.rationale}\n(업무 범위 밖 내용 ${violations.join(', ')}은 자동으로 제외함)`;
+    }
+  }
+
+  // 제안서 사실 확인: 없는 파일·PR을 전제로 하거나, 이미 끝난 작업을 다시 하자는 제안이면 한 번 다시 씁니다
+  const snap = mission.githubRepo
+    ? await getRepoSnapshot({ repo: mission.githubRepo, branch: mission.githubBranch || 'main', token: getGithubRepoConfig(db.settings).token }).catch(() => null)
+    : null;
+  const doneTitles = missionTasks.filter((t) => t.status === 'completed').map((t) => t.title).slice(0, 60);
+  const checkProposal = (p) => {
+    const issues = factCheckOutput(proposalText(p), snap, { canExecute: true }).map((i) => i.detail);
+    for (const step of p.suggestedSteps || []) {
+      const dup = doneTitles.find((t) => isNearDuplicate(step, t));
+      if (dup) issues.push(`이미 완료된 작업 "${dup}"과 사실상 같은 단계 "${String(step).slice(0, 60)}"`);
+    }
+    return issues;
+  };
+  let proposalIssues = checkProposal(proposal);
+  if (proposalIssues.length) {
+    proposal = await proposeNextProjectPhase({
+      mission,
+      tasks: missionTasks,
+      agents: db.agents,
+      settings: db.settings,
+      leadAssessment: `${leadAssessment}\n[중요] 직전 제안에 다음 문제가 있어 폐기했습니다. 같은 실수를 하지 말고, 실제 파일·새로운 일만 담아 다시 제안하세요:\n${proposalIssues.map((x, i) => `${i + 1}. ${x}`).join('\n')}`
+    });
+    proposalIssues = checkProposal(proposal);
+    if (proposalIssues.length) {
+      proposal.rationale = `${proposal.rationale}\n\n⚠️ 자동 사실 확인 경고(결재 전 확인 필요):\n${proposalIssues.map((x, i) => `${i + 1}. ${x}`).join('\n')}`;
     }
   }
 
@@ -851,6 +897,32 @@ function isAuditSafe(result) {
   return result?.audit?.passed !== false && result?.audit?.riskLevel !== 'high';
 }
 
+/**
+ * 사전 승인된 카드(들)을 "변경 내용 확인" 결재로 대체. 새 카드를 승인해야만 병합·배포됨.
+ */
+function requestDiffApproval(db, apr, result, mission, extraIds = []) {
+  const taskIds = [...new Set([...(apr.taskIds || []), ...(apr.taskId ? [apr.taskId] : [])])];
+  const newApr = createItPrApproval(db, mission, result, {
+    taskIds,
+    titlePrefix: '[변경 내용 확인] ',
+    summaryLead: `먼저 승인하신 "${apr.title}"의 실제 코드 변경안(PR)입니다. 아래 변경 내용을 확인하고 승인하셔야 병합·배포됩니다. (이 결재 전에는 아무것도 배포되지 않습니다)`
+  });
+  newApr.supersedes = [apr.id, ...extraIds];
+  for (const id of [apr.id, ...extraIds]) {
+    const old = db.approvals.find((a) => a.id === id);
+    if (old) setCodeStatus(old, 'superseded', { note: `변경 내용 확인 결재(${newApr.title})로 이관`, newApprovalId: newApr.id });
+  }
+  appendLog(db, 'IT 유지보수팀', `"${apr.title}" → PR #${result.prNumber} 변경 내용을 붙여 다시 결재 상신(자동 병합 안 함).`, 'approval');
+  itTeamMessage(
+    db,
+    apr.missionId,
+    '변경 내용 확인 요청',
+    `사전 승인하신 "${apr.title}"의 실제 변경안 PR #${result.prNumber}을 만들었습니다 (${(result.changedFiles || []).join(', ')}). 변경 내용을 붙여 다시 결재에 올렸고, 승인하셔야 병합·배포됩니다.\nPR: ${result.prUrl}`,
+    'approval'
+  );
+  return newApr;
+}
+
 function createItPrApproval(db, mission, result, { taskIds = [], titlePrefix = '', summaryLead = '' } = {}) {
   const now = new Date().toISOString();
   const apr = {
@@ -864,7 +936,7 @@ function createItPrApproval(db, mission, result, { taskIds = [], titlePrefix = '
     category: 'IT 코드 수정 · 실배포 승인',
     estimatedCostKRW: 0,
     depositKRW: 0,
-    summary: `${summaryLead ? `${summaryLead}\n\n` : ''}${result.prSummary}\n\n[대상 저장소] ${result.repo} (${result.branch})\n[수정 파일] ${result.changedFiles.join(', ')}\n[IT 보안 감사: ${result.audit?.passed ? 'PASS' : '주의'} · ${String(result.audit?.riskLevel || '').toUpperCase()}] ${result.audit?.notes || ''}\n[GitHub PR] ${result.prUrl}`,
+    summary: `${summaryLead ? `${summaryLead}\n\n` : ''}${result.prSummary}\n\n[대상 저장소] ${result.repo} (${result.branch})\n[수정 파일] ${result.changedFiles.join(', ')}\n[IT 보안 감사: ${result.audit?.passed ? 'PASS' : '주의'} · ${String(result.audit?.riskLevel || '').toUpperCase()}] ${result.audit?.notes || ''}\n[GitHub PR] ${result.prUrl}${result.diffSummary ? `\n\n[변경 내용 미리보기]\n${String(result.diffSummary).slice(0, 1200)}` : ''}`,
     proposedAction: `승인 시 ${result.repo} PR #${result.prNumber}을 main에 자동 머지하고 ${deployLabelFor(result.repo)}까지 진행합니다. (CI 실패 시 머지 보류)`,
     status: 'pending',
     ceoNote: '',
@@ -1433,7 +1505,7 @@ async function runCodeBundleInner(missionId, { retryEmpty = false } = {}) {
       for (const apr of targets) {
         applyPrFieldsToApproval(apr, result, { codeBundleId: bundleId, taskIds });
         apr.category = 'IT 코드 수정 · 실배포 승인';
-        apr.summary = `${apr.summary}\n\n[실코드 변경안] ${result.prSummary}\n[수정 파일] ${result.changedFiles.join(', ')}\n[IT 보안 감사: ${result.audit?.passed ? 'PASS' : '주의'} · ${String(result.audit?.riskLevel || '').toUpperCase()}] ${result.audit?.notes || ''}`;
+        apr.summary = `${apr.summary}\n\n[실코드 변경안] ${result.prSummary}\n[수정 파일] ${result.changedFiles.join(', ')}\n[IT 보안 감사: ${result.audit?.passed ? 'PASS' : '주의'} · ${String(result.audit?.riskLevel || '').toUpperCase()}] ${result.audit?.notes || ''}${result.diffSummary ? `\n\n[변경 내용 미리보기]\n${String(result.diffSummary).slice(0, 1200)}` : ''}`;
         apr.proposedAction = `승인 시 ${result.repo} PR #${result.prNumber}을 main에 자동 머지하고 ${label}까지 진행합니다. (CI 실패 시 머지 보류)`;
         setCodeStatus(apr, 'ready');
       }
@@ -1469,14 +1541,20 @@ async function runCodeBundleInner(missionId, { retryEmpty = false } = {}) {
     saveDb(db);
     await flushCloudBackup(db);
 
-    let applied = false;
+    const preApproved = targets.filter((a) => a.status === 'approved');
     for (const apr of targets) {
       if (apr.status === 'pending') {
         sendApprovalNotifications(db.settings, apr, apr.codeChange?.agentName || 'IT 유지보수팀');
-      } else if (apr.status === 'approved' && !applied) {
-        applied = true;
-        applyApprovedCodeChange(apr.id).catch((err) => console.warn('apply code change error:', err.message));
       }
+    }
+    if (preApproved.length) {
+      // PR이 생기기 전에 승인된 건은 자동 병합하지 않고, 변경 내용을 붙여 결재를 다시 올림
+      const fresh2 = loadDb();
+      const first = fresh2.approvals.find((a) => a.id === preApproved[0].id);
+      const newApr = requestDiffApproval(fresh2, first, result, fresh2.missions.find((m) => m.id === missionId), preApproved.slice(1).map((a) => a.id));
+      saveDb(fresh2);
+      await flushCloudBackup(fresh2);
+      sendApprovalNotifications(fresh2.settings, newApr, 'IT 유지보수팀');
     }
     return { ok: true, result };
   }
@@ -1607,8 +1685,12 @@ async function applyApprovedCodeChange(aprId) {
         sendApprovalNotifications(db.settings, reviewApr, 'IT 보안팀');
         return { ok: false, heldForReview: true };
       }
-      setCodeStatus(apr, 'ready');
+      // 사전 승인만 있고 PR이 없던 건: 여기서 바로 병합하지 않고 변경 내용(diff)을 붙여 결재를 다시 올림
+      const diffApr = requestDiffApproval(db, apr, result, mission);
       saveDb(db);
+      await flushCloudBackup(db);
+      sendApprovalNotifications(db.settings, diffApr, 'IT 유지보수팀');
+      return { ok: true, awaitingDiffApproval: true, approvalId: diffApr.id };
     } catch (err) {
       db = loadDb();
       apr = db.approvals.find((a) => a.id === aprId);
