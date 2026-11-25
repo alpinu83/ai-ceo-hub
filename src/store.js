@@ -18,10 +18,15 @@ export function resolveStableMcpToken() {
   }
   const renderSeed = process.env.RENDER_SERVICE_ID || process.env.RENDER_EXTERNAL_HOSTNAME || '';
   if (renderSeed) {
-    const hash = crypto.createHash('sha256').update(`ceo-office-stable-v1:${renderSeed}`).digest('hex').slice(0, 20);
+    const secretSalt = String(process.env.GITHUB_GIST_TOKEN || '').trim() || 'local-dev-salt';
+    const hash = crypto
+      .createHmac('sha256', secretSalt)
+      .update(`ceo-office-stable-v2:${renderSeed}`)
+      .digest('hex')
+      .slice(0, 24);
     return `ceo_mcp_${hash}`;
   }
-  return `ceo_mcp_${crypto.randomBytes(8).toString('hex')}`;
+  return `ceo_mcp_${crypto.randomBytes(12).toString('hex')}`;
 }
 
 export function createDefaultState() {
@@ -568,11 +573,19 @@ export async function initCloudPersistence() {
       if (restoredDb.settings.telegram?.pollingEnabled === undefined && process.env.TELEGRAM_POLLING === 'true') {
         restoredDb.settings.telegram.pollingEnabled = true;
       }
-      if (process.env.MCP_TOKEN || process.env.RENDER_SERVICE_ID) {
-        restoredDb.settings.mcpToken = resolveStableMcpToken();
+      let tokenRotated = false;
+      if (process.env.MCP_TOKEN || process.env.RENDER_SERVICE_ID || process.env.RENDER_EXTERNAL_HOSTNAME) {
+        const nextToken = resolveStableMcpToken();
+        if (restoredDb.settings.mcpToken !== nextToken) {
+          restoredDb.settings.mcpToken = nextToken;
+          tokenRotated = true;
+        }
       }
       if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
       fs.writeFileSync(DB_PATH, JSON.stringify(restoredDb, null, 2), 'utf8');
+      if (tokenRotated && activeGistId) {
+        await patchGistContent(JSON.stringify(restoredDb, null, 2));
+      }
     }
 
     // 6) Ensure an encrypted private Gist exists (create one if none yet or if we migrated from legacy)
