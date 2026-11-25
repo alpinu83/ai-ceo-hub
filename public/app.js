@@ -379,16 +379,88 @@ async function api(url, options = {}) {
   const ct = res.headers.get('content-type') || '';
   const data = ct.includes('application/json') ? await res.json().catch(() => ({})) : await res.text();
   if (res.status === 401 && typeof data === 'object' && data.code === 'CEO_KEY_REQUIRED' && !options._keyRetried) {
-    const entered = window.prompt('CEO 관리자 키를 입력해 주세요 (서버 CEO_ADMIN_KEY):', '');
-    if (entered && entered.trim()) {
-      localStorage.setItem('ceoAdminKey', entered.trim());
-      return api(url, { ...options, _keyRetried: true });
-    }
+    const unlocked = await ensureCeoAuth();
+    if (unlocked) return api(url, { ...options, _keyRetried: true });
   }
   if (!res.ok) {
     throw new Error((typeof data === 'object' && data.error) || `요청 실패 (${res.status})`);
   }
   return data;
+}
+
+// ---- CEO login (server CEO_ADMIN_KEY lock) ----
+let ceoAuthPromise = null;
+let ceoAuthDeclined = false;
+
+async function rawAuthPost(path, body) {
+  const base = apiBase ? apiBase : '.';
+  const res = await fetch(`${base}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {})
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok === false) throw new Error(data.error || `요청 실패 (${res.status})`);
+  return data;
+}
+
+async function verifyTelegramLogin(payload) {
+  const data = await rawAuthPost('/api/auth/telegram-verify', payload);
+  if (data.key) localStorage.setItem('ceoAdminKey', data.key);
+  return true;
+}
+
+function ensureCeoAuth() {
+  if (ceoAuthDeclined) return Promise.resolve(false);
+  if (ceoAuthPromise) return ceoAuthPromise;
+  ceoAuthPromise = (async () => {
+    localStorage.removeItem('ceoAdminKey');
+    const useTelegram = window.confirm(
+      'CEO Office 로그인이 필요합니다.\n\n[확인] 텔레그램으로 로그인 코드 받기\n[취소] 관리자 키 직접 입력'
+    );
+    try {
+      if (useTelegram) {
+        await rawAuthPost('/api/auth/telegram-request');
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const code = window.prompt('텔레그램으로 보낸 6자리 로그인 코드를 입력하세요.\n(텔레그램 메시지의 링크를 눌러도 됩니다)', '');
+          if (!code) break;
+          try {
+            return await verifyTelegramLogin({ code });
+          } catch (err) {
+            toast(err.message, true);
+          }
+        }
+      } else {
+        const entered = window.prompt('관리자 키(CEO_ADMIN_KEY)를 입력하세요:', '');
+        if (entered && entered.trim()) {
+          localStorage.setItem('ceoAdminKey', entered.trim());
+          return true;
+        }
+      }
+    } catch (err) {
+      toast(err.message, true);
+    }
+    ceoAuthDeclined = true;
+    toast('로그인하지 않아 데이터를 불러오지 못했습니다. 새로고침하면 다시 로그인할 수 있습니다.', true);
+    return false;
+  })().finally(() => {
+    setTimeout(() => {
+      ceoAuthPromise = null;
+    }, 0);
+  });
+  return ceoAuthPromise;
+}
+
+async function consumeLoginLinkFromHash() {
+  const m = String(location.hash || '').match(/login=([a-f0-9]{20,})/i);
+  if (!m) return;
+  history.replaceState(null, '', location.pathname + location.search);
+  try {
+    await verifyTelegramLogin({ token: m[1] });
+    toast('텔레그램 로그인 완료');
+  } catch (err) {
+    toast(err.message, true);
+  }
 }
 
 function getAgent(id) {
@@ -2876,6 +2948,7 @@ async function init() {
   bindEvents();
   try {
     await detectRuntime();
+    await consumeLoginLinkFromHash();
     state = await api('/api/state');
     selectedMissionId = state.missions[0]?.id || null;
     officeMissionFilter = state.missions[0]?.id || 'all';
