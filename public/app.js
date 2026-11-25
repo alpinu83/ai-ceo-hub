@@ -1632,8 +1632,21 @@ function renderLeadEngineSettings() {
   };
   setVal('set-global-directives', s.globalDirectives || '');
   setChk('set-lead-enabled', le.enabled !== false);
-  setChk('set-lead-telegram', le.telegramReports !== false);
   setChk('set-lead-autofollow', le.autoFollowUp !== false);
+  setVal('set-lead-advance', le.advanceMode || 'propose');
+
+  // 텔레그램 알림 종류·방해금지
+  const nt = s.telegram?.notify || {};
+  const nq = nt.quiet || {};
+  setChk('tg-notify-reports', nt.reports !== false);
+  setChk('tg-notify-approvals', nt.approvals !== false);
+  setChk('tg-notify-alerts', nt.alerts !== false);
+  setChk('tg-quiet-enabled', nq.enabled);
+  setVal('tg-quiet-start', nq.start || '23:00');
+  setVal('tg-quiet-end', nq.end || '08:00');
+  setChk('tg-quiet-urgent', nq.allowUrgent);
+
+  renderSkillsSettings();
   setVal('set-lead-maxrounds', le.maxAutoRounds ?? 2);
   setVal('set-lead-interval', le.followUpMinutes ?? 30);
 
@@ -1653,6 +1666,66 @@ function renderLeadEngineSettings() {
         )
         .join('')
     : '<li class="field-label">아직 쌓인 기억이 없습니다.</li>';
+}
+
+// ---- AI 스킬 · 품질 검수 ----
+let skillCatalog = null;
+let skillCatalogLoading = false;
+async function loadSkillCatalog(force = false) {
+  if (skillCatalogLoading || (skillCatalog && !force)) return skillCatalog;
+  skillCatalogLoading = true;
+  try {
+    skillCatalog = await api('/api/skills');
+  } catch {
+    skillCatalog = { builtin: [], custom: [] }; // 서버 없이 열린 경우 반복 요청 방지
+  } finally {
+    skillCatalogLoading = false;
+  }
+  renderSkillsSettings();
+  return skillCatalog;
+}
+
+function renderSkillsSettings() {
+  const list = document.getElementById('skills-list');
+  if (!list) return;
+  const cfg = state.settings?.skills || {};
+  const en = document.getElementById('skills-enabled');
+  if (en) en.checked = cfg.enabled !== false;
+  const rm = document.getElementById('skills-review-mode');
+  if (rm && document.activeElement !== rm) rm.value = cfg.reviewMode || 'important';
+  const ms = document.getElementById('skills-min-score');
+  if (ms && document.activeElement !== ms) ms.value = cfg.minScore ?? 8;
+  if (!skillCatalog) {
+    list.innerHTML = '<li class="field-label">스킬 목록을 불러오는 중…</li>';
+    loadSkillCatalog();
+    return;
+  }
+  const disabled = new Set(cfg.disabled || []);
+  const builtin = skillCatalog.builtin
+    .map(
+      (s) => `<li style="padding:5px 0;border-bottom:1px solid rgba(0,0,0,.06);"><label class="checkbox-row" style="align-items:flex-start;">
+      <input type="checkbox" data-skill-toggle="${esc(s.id)}" ${disabled.has(s.id) ? '' : 'checked'} ${s.always ? 'disabled' : ''} />
+      <span><b>${esc(s.name)}</b>${s.always ? ' · 항상 적용' : ''}${s.important ? ' · 교차 검수 대상' : ''}<br /><span class="field-label">${esc(s.summary)}</span></span>
+    </label></li>`
+    )
+    .join('');
+  const custom = (cfg.custom || skillCatalog.custom || [])
+    .map(
+      (s) => `<li style="display:flex;gap:8px;padding:5px 0;border-bottom:1px solid rgba(0,0,0,.06);"><span style="flex:1;">🛠️ <b>${esc(s.name)}</b> <span class="field-label">${esc(s.keywords ? `키워드: ${s.keywords}` : '항상 적용')}</span><br /><span class="field-label">${esc(String(s.instructions || '').slice(0, 140))}</span></span>
+      <button type="button" class="btn btn-ghost btn-sm" data-skill-delete="${esc(s.id)}">삭제</button></li>`
+    )
+    .join('');
+  list.innerHTML = builtin + custom;
+}
+
+function readSkillSettingsFromForm() {
+  const disabled = [...document.querySelectorAll('[data-skill-toggle]')].filter((el) => !el.checked && !el.disabled).map((el) => el.dataset.skillToggle);
+  return {
+    enabled: document.getElementById('skills-enabled')?.checked !== false,
+    reviewMode: document.getElementById('skills-review-mode')?.value || 'important',
+    minScore: Number(document.getElementById('skills-min-score')?.value || 8),
+    disabled
+  };
 }
 
 function renderIntegrationsView() {
@@ -3011,10 +3084,11 @@ function bindEvents() {
       ...(document.getElementById('set-global-directives')
         ? {
             globalDirectives: document.getElementById('set-global-directives').value,
+            ...(document.getElementById('skills-list') && skillCatalog ? { skills: readSkillSettingsFromForm() } : {}),
             leadEngine: {
               enabled: document.getElementById('set-lead-enabled').checked,
-              telegramReports: document.getElementById('set-lead-telegram').checked,
               autoFollowUp: document.getElementById('set-lead-autofollow').checked,
+              advanceMode: document.getElementById('set-lead-advance')?.value || 'propose',
               maxAutoRounds: Number(document.getElementById('set-lead-maxrounds').value),
               followUpMinutes: Number(document.getElementById('set-lead-interval').value)
             }
@@ -3023,7 +3097,22 @@ function bindEvents() {
       telegram: {
         botToken: document.getElementById('tg-bot-token').value.trim(),
         chatId: document.getElementById('tg-chat-id').value.trim(),
-        pollingEnabled: document.getElementById('tg-polling-enabled').checked
+        pollingEnabled: document.getElementById('tg-polling-enabled').checked,
+        ...(document.getElementById('tg-notify-reports')
+          ? {
+              notify: {
+                reports: document.getElementById('tg-notify-reports').checked,
+                approvals: document.getElementById('tg-notify-approvals').checked,
+                alerts: document.getElementById('tg-notify-alerts').checked,
+                quiet: {
+                  enabled: document.getElementById('tg-quiet-enabled').checked,
+                  start: document.getElementById('tg-quiet-start').value || '23:00',
+                  end: document.getElementById('tg-quiet-end').value || '08:00',
+                  allowUrgent: document.getElementById('tg-quiet-urgent').checked
+                }
+              }
+            }
+          : {})
       },
       providers: {
         gemini: {
@@ -3060,6 +3149,40 @@ function bindEvents() {
       });
       renderAll();
       toast('설정을 저장하고 암호화 클라우드에 동기화했습니다.');
+    } catch (err) {
+      toast(err.message, true);
+    }
+  });
+
+  document.getElementById('btn-skill-add')?.addEventListener('click', async () => {
+    const name = document.getElementById('skill-new-name')?.value.trim();
+    const keywords = document.getElementById('skill-new-keywords')?.value.trim();
+    const instructions = document.getElementById('skill-new-instructions')?.value.trim();
+    if (!name || !instructions) return toast('스킬 이름과 지침을 입력해 주세요.', true);
+    try {
+      const res = await api('/api/skills/custom', { method: 'POST', body: JSON.stringify({ name, keywords, instructions }) });
+      state = res.state;
+      skillCatalog = res.skills;
+      ['skill-new-name', 'skill-new-keywords', 'skill-new-instructions'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.value = '';
+      });
+      renderAll();
+      toast(`"${name}" 스킬을 추가했습니다. 맞는 작업부터 바로 적용됩니다.`);
+    } catch (err) {
+      toast(err.message, true);
+    }
+  });
+
+  document.getElementById('skills-list')?.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-skill-delete]');
+    if (!btn) return;
+    try {
+      const res = await api(`/api/skills/custom/${encodeURIComponent(btn.dataset.skillDelete)}`, { method: 'DELETE' });
+      state = res.state;
+      skillCatalog = res.skills;
+      renderAll();
+      toast('스킬을 삭제했습니다.');
     } catch (err) {
       toast(err.message, true);
     }
