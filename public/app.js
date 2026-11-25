@@ -458,9 +458,9 @@ function renderCommandView() {
         const done = tasks.filter((t) => t.status === 'completed').length;
         const active = m.id === selectedMissionId ? 'active' : '';
         const prefix = m.mode === 'project' ? `<span class="badge badge-blue" style="padding:1px 6px;font-size:10.5px;">P${Number(m.phase) || 1}</span>` : '';
-        return `<button class="mission-tab ${active}" data-select-mission="${esc(m.id)}">
+        return `<button class="mission-tab ${active}" data-select-mission="${esc(m.id)}" title="${esc(m.title)}">
           ${prefix}
-          <span>${esc(m.title)}</span>
+          <span class="mission-tab-title">${esc(m.title)}</span>
           <span class="mono">${done}/${tasks.length}</span>
         </button>`;
       })
@@ -836,7 +836,7 @@ function renderMissionReportAndFlow(mission, lead, tasks) {
         <span class="flow-step-kicker">STEP 1 · 지시 &amp; 총괄</span>
         <span class="badge badge-green">팀장 전결 자동 추진</span>
       </div>
-      <div class="flow-step-title">${esc(state.settings.ceoName || '대표님')} (CEO) → ${esc(lead?.name || 'Gemini 4 Neon')} (총괄 팀장)</div>
+      <div class="flow-step-title">${esc(state.settings.ceoName || '대표님')} (CEO) → ${esc(lead?.name || 'Gemini 4 Hydrogen')} (총괄 팀장)</div>
     </div>
 
     <div class="flow-arrow">↓</div>

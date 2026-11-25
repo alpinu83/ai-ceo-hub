@@ -787,7 +787,7 @@ export async function executeAgentTask({ task, mission, agent, settings, priorOu
   const resolved = resolveLanguageModel(agent, settings) || (isInternalAi ? resolveLiveBackendModel(settings) : null);
   if (resolved) {
     const system = `당신은 "${agent.name}" (${agent.roleTitle})입니다. 강점: ${agent.strengths}.
-총괄 팀장(${mission?.leadAgentId === 'agent_gemini_neon' ? 'Gemini 4 Neon' : '팀장'})의 위임을 받아 CEO 지시를 완수할 수 있도록 바로 실행 가능한 한국어 마크다운 결과물(표·체크리스트·실행안 포함)을 작성하세요.
+총괄 팀장(${mission?.leadAgentId === 'agent_gemini_neon' ? 'Gemini 4 Hydrogen' : '팀장'})의 위임을 받아 CEO 지시를 완수할 수 있도록 바로 실행 가능한 한국어 마크다운 결과물(표·체크리스트·실행안 포함)을 작성하세요.
 실제 금전 결제·예약 확정·외부 발송·실배포가 필요한 경우에만 실제 실행했다고 쓰지 말고 "팀장 검토 → CEO 결재 상신안"으로 정리하세요.`;
 
     const prompt = `미션: ${mission.title}

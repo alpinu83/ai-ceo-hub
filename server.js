@@ -250,9 +250,9 @@ async function autoStartLiveMissionTasks(missionId) {
             const apr = createApprovalForTask(taskRow, ag, mission);
             fresh.approvals.unshift(apr);
             const leadAg = fresh.agents.find((a) => a.id === (mission.leadAgentId || 'agent_gemini_neon'));
-            notifyAllApprovalChannels(fresh.settings, apr, leadAg?.name || 'Gemini 4 Neon');
+            notifyAllApprovalChannels(fresh.settings, apr, leadAg?.name || 'Gemini 4 Hydrogen');
           }
-          appendLog(fresh, 'Gemini 4 Neon (총괄 팀장)', `"${taskRow.title}" 검토 완료 → 중요 의사결정으로 CEO 결재 상신.`, 'approval');
+          appendLog(fresh, 'Gemini 4 Hydrogen (총괄 팀장)', `"${taskRow.title}" 검토 완료 → 중요 의사결정으로 CEO 결재 상신.`, 'approval');
         } else {
           taskRow.status = 'completed';
           appendLog(fresh, ag.name, `"${taskRow.title}" 팀장 전결 자동 완료.`, 'success');
@@ -364,7 +364,7 @@ async function submitNextPhaseProposal(missionId) {
     estimatedCostKRW: 0,
     depositKRW: 0,
     summary: `${proposal.rationale}\n\n기대 효과: ${proposal.expectedImpact}`,
-    proposedAction: `승인 시 총괄 팀장(${lead?.name || 'Gemini 4 Neon'})이 Phase ${proposal.nextPhase} 작업을 자동 분배·착수합니다:\n${stepsText}`,
+    proposedAction: `승인 시 총괄 팀장(${lead?.name || 'Gemini 4 Hydrogen'})이 Phase ${proposal.nextPhase} 작업을 자동 분배·착수합니다:\n${stepsText}`,
     status: 'pending',
     ceoNote: '',
     createdAt: now,
@@ -376,14 +376,14 @@ async function submitNextPhaseProposal(missionId) {
 
   appendLog(
     db,
-    `${lead?.name || 'Gemini 4 Neon'} (총괄 팀장)`,
+    `${lead?.name || 'Gemini 4 Hydrogen'} (총괄 팀장)`,
     `프로젝트 "${mission.title}" Phase ${proposal.nextPhase} 후속 추진안을 CEO 결재함에 제안했습니다.`,
     'approval'
   );
   appendMessage(db, {
     missionId: mission.id,
     senderId: leadId,
-    senderName: lead?.name || 'Gemini 4 Neon',
+    senderName: lead?.name || 'Gemini 4 Hydrogen',
     senderRole: lead?.roleTitle || '총괄 팀장',
     senderShortCode: lead?.shortCode || 'GN',
     senderAccent: lead?.accent || '#0E6245',
@@ -395,7 +395,7 @@ async function submitNextPhaseProposal(missionId) {
 
   saveDb(db);
   await flushCloudBackup(db);
-  notifyAllApprovalChannels(db.settings, apr, lead?.name || 'Gemini 4 Neon');
+  notifyAllApprovalChannels(db.settings, apr, lead?.name || 'Gemini 4 Hydrogen');
   return { ok: true, approval: apr, proposal, db };
 }
 
@@ -464,14 +464,14 @@ async function launchNextProjectPhase(missionId, nextDirective, ceoNote = '') {
   const lead = agentMap[mission.leadAgentId || 'agent_gemini_neon'];
   appendLog(
     db,
-    `${lead?.name || 'Gemini 4 Neon'} (총괄 팀장)`,
+    `${lead?.name || 'Gemini 4 Hydrogen'} (총괄 팀장)`,
     `CEO 승인을 받아 "${mission.title}" Phase ${nextPhase} (${newTasks.length}개 실무)에 자동 착수했습니다.`,
     'success'
   );
   appendMessage(db, {
     missionId: mission.id,
     senderId: lead?.id || 'agent_gemini_neon',
-    senderName: lead?.name || 'Gemini 4 Neon',
+    senderName: lead?.name || 'Gemini 4 Hydrogen',
     senderRole: lead?.roleTitle || '총괄 팀장',
     senderShortCode: lead?.shortCode || 'GN',
     senderAccent: lead?.accent || '#0E6245',
@@ -1313,9 +1313,9 @@ app.post('/api/missions/:id/run-all', async (c) => {
         const apr = createApprovalForTask(item.task, item.agent, mission);
         db.approvals.unshift(apr);
         const leadAg = db.agents.find((a) => a.id === (mission.leadAgentId || 'agent_gemini_neon'));
-        notifyAllApprovalChannels(db.settings, apr, leadAg?.name || 'Gemini 4 Neon');
+        notifyAllApprovalChannels(db.settings, apr, leadAg?.name || 'Gemini 4 Hydrogen');
       }
-      appendLog(db, 'Gemini 4 Neon (총괄 팀장)', `"${item.task.title}" 검토 완료 → 중요 의사결정으로 CEO 결재 상신.`, 'approval');
+      appendLog(db, 'Gemini 4 Hydrogen (총괄 팀장)', `"${item.task.title}" 검토 완료 → 중요 의사결정으로 CEO 결재 상신.`, 'approval');
     } else {
       item.task.status = 'completed';
       appendLog(

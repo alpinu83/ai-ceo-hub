@@ -903,17 +903,24 @@ textarea:focus {
   align-items: center;
   gap: 6px;
   flex-shrink: 0;
-  max-width: 240px;
+  max-width: 280px;
+  overflow: hidden;
   transition: color 0.12s ease, border-color 0.12s ease;
 }
 
 .mission-tab:hover { color: var(--ink-primary); }
 
-.mission-tab span:first-child {
+.mission-tab-title {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
+  flex: 1 1 auto;
+}
+
+.mission-tab .badge,
+.mission-tab .mono {
+  flex-shrink: 0;
 }
 
 .mission-tab.active {
