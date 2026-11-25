@@ -31,7 +31,8 @@ import {
   testProviderConnection,
   notifyWebhook,
   generateTeamChatReplies,
-  generateStandupSession
+  generateStandupSession,
+  classifyChatDirective
 } from './src/orchestrator.js';
 import { handleOfficialMcpHttp, MCP_TOOL_CATALOG } from './src/mcp.js';
 import {
@@ -225,7 +226,7 @@ async function createMissionInDb({
   return { mission, tasks: createdTasks, db };
 }
 
-async function autoStartLiveMissionTasks(missionId) {
+async function autoStartLiveMissionTasks(missionId, { proposeNext = true } = {}) {
   const db = loadDb();
   const mission = db.missions.find((m) => m.id === missionId);
   if (!mission) return;
@@ -369,7 +370,7 @@ async function autoStartLiveMissionTasks(missionId) {
 
   // Continuous Project mode: Team Lead automatically analyzes results and proposes the next phase for CEO approval
   try {
-    if (isProjectMission) {
+    if (isProjectMission && proposeNext) {
       await submitNextPhaseProposal(missionId);
     }
   } catch {
@@ -1338,7 +1339,7 @@ async function handleCodeDecision(aprId, decision) {
           saveDb(fresh);
         }
       } else if (apr.missionId) {
-        autoStartLiveMissionTasks(apr.missionId).catch(() => {});
+        autoStartLiveMissionTasks(apr.missionId, { proposeNext: false }).catch(() => {});
       }
     }
     return { ok: true };
@@ -1857,32 +1858,152 @@ app.post('/api/chat/send', async (c) => {
     type: 'ceo_chat',
     text
   });
+  saveDb(db);
 
+  // CEO orders in the meeting room become real work (tasks → auto-run → PR/approval), not just chat replies
+  let intake = { note: '' };
+  try {
+    intake = await intakeChatDirective(text, mission?.id || '');
+  } catch (err) {
+    console.warn('chat directive intake failed:', err.message);
+  }
+
+  const db2 = loadDb();
+  const mission2 = intake.missionId ? db2.missions.find((m) => m.id === intake.missionId) || mission : mission;
   const replies = await generateTeamChatReplies({
     userMessage: text,
-    mission,
-    tasks: missionTasks,
-    agents: db.agents,
-    recentMessages: db.messages || [],
-    settings: db.settings
+    mission: mission2,
+    tasks: mission2 ? db2.tasks.filter((t) => t.missionId === mission2.id) : missionTasks,
+    agents: db2.agents,
+    recentMessages: db2.messages || [],
+    settings: db2.settings,
+    actionNote: intake.note || ''
   });
 
-  const savedReplies = replies.map((r) => appendMessage(db, r));
+  const savedReplies = replies.map((r) => appendMessage(db2, r));
   appendLog(
-    db,
+    db2,
     '회의실',
-    `CEO 메시지에 ${savedReplies.map((r) => r.senderName).join(', ')} 응답.`,
+    `CEO 메시지에 ${savedReplies.map((r) => r.senderName).join(', ')} 응답.${intake.note ? ` [업무 반영] ${intake.note}` : ''}`,
     'info'
   );
-  saveDb(db);
-  flushCloudBackup(db).catch(() => {});
+  saveDb(db2);
+  flushCloudBackup(db2).catch(() => {});
+
+  if (intake.startMissionId) {
+    autoStartLiveMissionTasks(intake.startMissionId, { proposeNext: false }).catch(() => {});
+  }
 
   return c.json({
     ceoMessage: ceoMsg,
     replies: savedReplies,
-    state: sanitizeStateForClient(db)
+    intake: { note: intake.note || '', taskIds: intake.taskIds || [], missionId: intake.missionId || '' },
+    state: sanitizeStateForClient(db2)
   });
 });
+
+const MAJOR_DECISION_RE = /결제|송금|계약|광고비|예약\s*확정|최종\s*예약|실제\s*발송|대외\s*발송/;
+
+async function intakeChatDirective(text, missionId) {
+  const db = loadDb();
+  const mission = missionId ? db.missions.find((m) => m.id === missionId) || null : null;
+  const tasks = mission ? db.tasks.filter((t) => t.missionId === mission.id) : [];
+  const rejected = mission
+    ? db.approvals
+        .filter((a) => a.missionId === mission.id && a.status === 'rejected' && a.taskId)
+        .sort((a, b) => String(b.decidedAt || '').localeCompare(String(a.decidedAt || '')))
+    : [];
+  const repoLinked = Boolean(mission && getMissionRepoCfg(db.settings, mission));
+
+  const cls = await classifyChatDirective({
+    text,
+    mission,
+    tasks,
+    agents: db.agents,
+    settings: db.settings,
+    rejectedTitles: rejected.slice(0, 3).map((a) => a.title),
+    repoLinked
+  });
+  if (cls.kind !== 'directive') return { note: '' };
+
+  // No project selected: same as a Telegram /order → new work item, decomposed and auto-run
+  if (!mission) {
+    const created = await createMissionInDb({ directive: text, domain: 'business' });
+    return {
+      note: `새 업무 "${created.mission.title}"로 등록해 ${created.tasks.length}개 작업으로 나눠 배정하고 자동 실행을 시작했습니다.`,
+      missionId: created.mission.id,
+      taskIds: created.tasks.map((t) => t.id)
+    };
+  }
+
+  const fresh = loadDb();
+  const m = fresh.missions.find((x) => x.id === mission.id);
+  const agentMap = Object.fromEntries(fresh.agents.map((a) => [a.id, a]));
+  const now = new Date().toISOString();
+  const phase = Number(m.phase) || 1;
+  const parts = [];
+  const taskIds = [];
+
+  if (cls.reopenRejected && rejected[0]) {
+    const t = fresh.tasks.find((x) => x.id === rejected[0].taskId);
+    if (t) {
+      const ag = agentMap[t.assigneeId];
+      t.status = ag?.connectionMode === 'bridge' ? 'awaiting_bridge' : 'queued';
+      t.description = `${t.description}\n[CEO 회의실 지시] ${text}`;
+      t.updatedAt = now;
+      delete t.codeBundleId;
+      if (ag) t.dispatchPrompt = buildDispatchPrompt(ag, t, m);
+      taskIds.push(t.id);
+      parts.push(`반려됐던 "${t.title}" 재작업 시작(@${ag?.name || '담당'})`);
+    }
+  }
+
+  const existingTitles = new Set(
+    fresh.tasks.filter((t) => t.missionId === m.id && t.status !== 'completed' && t.status !== 'rejected').map((t) => t.title)
+  );
+  for (const spec of cls.tasks || []) {
+    if (!spec?.title || existingTitles.has(spec.title)) continue;
+    let assigneeId = spec.assigneeId;
+    if (spec.isCodeChange && repoLinked && agentMap.agent_it_dev?.active) assigneeId = 'agent_it_dev';
+    const ag = agentMap[assigneeId] || agentMap[m.leadAgentId] || fresh.agents[0];
+    const desc = `${spec.description || spec.title}\n[CEO 회의실 원문] ${text}`;
+    const task = {
+      id: uid('tsk'),
+      missionId: m.id,
+      phase,
+      title: spec.title,
+      description: desc,
+      assigneeId: ag.id,
+      domain: spec.isCodeChange ? 'it_ops' : m.domain,
+      status: ag.connectionMode === 'bridge' ? 'awaiting_bridge' : 'queued',
+      requiresApproval: MAJOR_DECISION_RE.test(`${spec.title} ${spec.description}`),
+      estimatedCostKRW: 0,
+      dispatchPrompt: '',
+      output: '',
+      executionModeUsed: '',
+      source: 'meeting_room',
+      createdAt: now,
+      updatedAt: now
+    };
+    task.dispatchPrompt = buildDispatchPrompt(ag, task, m);
+    fresh.tasks.unshift(task);
+    existingTitles.add(task.title);
+    taskIds.push(task.id);
+    parts.push(`새 업무 "${task.title}"(@${ag.name})${spec.isCodeChange && repoLinked ? ' → 완료되면 IT팀이 실코드 PR을 만들어 결재에 올림' : ''}`);
+  }
+
+  if (!taskIds.length) return { note: '' };
+  m.status = 'in_progress';
+  appendLog(fresh, '회의실 지시 반영', `${m.title}: ${parts.join(' / ')}`, 'info');
+  saveDb(fresh);
+  await flushCloudBackup(fresh);
+  return {
+    note: `${parts.join(' / ')} — 등록 후 자동 실행을 시작했습니다.`,
+    missionId: m.id,
+    startMissionId: m.id,
+    taskIds
+  };
+}
 
 app.delete('/api/chat', async (c) => {
   const missionId = String(c.req.query('missionId') || '').trim();
