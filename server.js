@@ -50,6 +50,7 @@ import {
   escapeTelegramHtml
 } from './src/lead-engine.js';
 import { describeSkillsForClient, getSkillSettings, selectSkills, renderSkills } from './src/skills.js';
+import { testGoogleDataConnection, buildAnalyticsContext, describeGoogleDataStatus } from './src/google-data.js';
 import { handleOfficialMcpHttp, MCP_TOOL_CATALOG } from './src/mcp.js';
 import {
   sendTelegramAlert,
@@ -4026,9 +4027,18 @@ app.put('/api/settings', async (c) => {
   }
 
   if (body.providers) {
-    for (const pKey of ['gemini', 'groq', 'openrouter', 'exaone', 'manus', 'litellm', 'ollama', 'githubRepo']) {
+    for (const pKey of ['gemini', 'groq', 'openrouter', 'exaone', 'manus', 'litellm', 'ollama', 'githubRepo', 'googleData']) {
       const incoming = body.providers[pKey];
       if (!incoming) continue;
+      if (pKey === 'googleData' && typeof incoming.apiKey === 'string' && incoming.apiKey.trim()) {
+        // 서비스 계정 JSON이 맞는지 저장 전에 확인
+        try {
+          const sa = JSON.parse(incoming.apiKey);
+          if (!sa.client_email || !sa.private_key) throw new Error('client_email/private_key 없음');
+        } catch (err) {
+          return c.json({ error: `서비스 계정 JSON 키 형식이 아닙니다: ${err.message}` }, 400);
+        }
+      }
       const target = s.providers[pKey] || (s.providers[pKey] = {});
       if (incoming.clearApiKey) {
         target.apiKey = '';
@@ -4037,7 +4047,7 @@ app.put('/api/settings', async (c) => {
         target.apiKey = incoming.apiKey.trim();
         target.enabled = true;
       }
-      for (const field of ['freeModel', 'paidModel', 'model', 'baseUrl', 'cueEmail', 'repo', 'allowedRepos', 'branch']) {
+      for (const field of ['freeModel', 'paidModel', 'model', 'baseUrl', 'cueEmail', 'repo', 'allowedRepos', 'branch', 'ga4PropertyId', 'searchConsoleSite']) {
         if (typeof incoming[field] === 'string') target[field] = incoming[field].trim();
       }
     }
@@ -4048,6 +4058,14 @@ app.put('/api/settings', async (c) => {
   await flushCloudBackup(db);
   syncTelegramPolling(db.settings, getTelegramCallbacks());
   return c.json({ state: sanitizeStateForClient(db) });
+});
+
+// ---- GA4 · 서치콘솔 실제 데이터 (팀원들이 보는 것과 같은 요약) ----
+app.get('/api/analytics', async (c) => {
+  const db = loadDb();
+  const status = describeGoogleDataStatus(db.settings);
+  const text = await buildAnalyticsContext(db.settings, { siteUrl: String(c.req.query('site') || '') }).catch((err) => `조회 실패: ${err.message}`);
+  return c.json({ status, text });
 });
 
 // ---- AI 스킬 (작업 유형별 절차·출력 형식·점검표) + 교차 검수 ----
@@ -4145,6 +4163,9 @@ app.post('/api/providers/test', async (c) => {
     if (provider === 'githubRepo') {
       const result = await testGithubRepoConnection(db.settings);
       return c.json({ ...result, model: result.repo });
+    }
+    if (provider === 'googleData') {
+      return c.json(await testGoogleDataConnection(db.settings));
     }
     const result = await testProviderConnection(provider, db.settings);
     if (result?.transport && db.settings?.providers?.[provider]) {
