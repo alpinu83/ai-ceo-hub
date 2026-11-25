@@ -795,6 +795,7 @@ function renderActiveMission(mission) {
             <h2 class="sheet-title">${esc(mission.title)}</h2>
             <button type="button" class="btn-inline-edit" id="btn-rename-mission" data-mission-id="${esc(mission.id)}" title="이름 수정">이름 수정</button>
             <button type="button" class="btn-inline-edit" id="btn-bind-mission-repo" data-mission-id="${esc(mission.id)}" title="GitHub 저장소 · 라이브 사이트 연결">연동 설정</button>
+            <button type="button" class="btn-inline-edit" id="btn-mission-scope" data-mission-id="${esc(mission.id)}" title="이 업무가 집중할 일과 하지 말 일">${mission.scope?.exclude?.length || mission.scope?.focus ? '업무 범위 ✓' : '업무 범위'}</button>
           </div>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;">
@@ -2497,6 +2498,31 @@ function bindEvents() {
         state = res.state;
         renderAll();
         toast('이름을 수정했습니다.');
+      } catch (err) {
+        toast(err.message, true);
+      }
+      return;
+    }
+
+    if (target.id === 'btn-mission-scope') {
+      const missionId = target.dataset.missionId;
+      const m = state.missions.find((x) => x.id === missionId);
+      if (!m) return;
+      const focus = window.prompt('이 업무가 집중할 일을 적어 주세요 (모든 AI에게 최우선 지침으로 전달):', m.scope?.focus || '');
+      if (focus === null) return;
+      const exclude = window.prompt(
+        '이 업무에서 하지 말 일의 키워드를 쉼표로 적어 주세요 (이 단어가 들어간 작업·제안은 자동 제외):',
+        (m.scope?.exclude || []).join(', ')
+      );
+      if (exclude === null) return;
+      try {
+        const res = await api(`/api/missions/${missionId}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ scope: { focus: focus.trim(), exclude: exclude.split(',').map((s) => s.trim()).filter(Boolean) } })
+        });
+        state = res.state;
+        renderAll();
+        toast('업무 범위를 저장했습니다. 이제부터 모든 작업·제안에 적용됩니다.');
       } catch (err) {
         toast(err.message, true);
       }
