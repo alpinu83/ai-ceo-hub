@@ -189,15 +189,25 @@ function pickItModel(agents, settings, preferredId) {
 }
 
 async function generateObjectResilient(models, opts) {
-  let lastErr = null;
+  const errors = [];
+  const seen = new Set();
   for (const m of models.filter(Boolean)) {
-    try {
-      return await generateObject({ ...opts, model: m.model, maxRetries: 0 });
-    } catch (err) {
-      lastErr = err;
+    const key = m.label || m.model?.modelId || String(errors.length);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    // Some free OpenAI-compatible endpoints reject tool/schema mode; retry the same model in plain JSON mode.
+    for (const mode of ['auto', 'json']) {
+      try {
+        return await generateObject({ ...opts, model: m.model, maxRetries: 0, ...(mode === 'json' ? { mode: 'json' } : {}) });
+      } catch (err) {
+        const msg = String(err?.message || err).replace(/\s+/g, ' ').slice(0, 140);
+        errors.push(`${key}${mode === 'json' ? '(json)' : ''}: ${msg}`);
+        if (/quota|rate limit|429|401|403|api key/i.test(msg)) break; // provider-level failure: skip json retry
+      }
     }
   }
-  throw lastErr || new Error('사용 가능한 AI 모델이 없습니다.');
+  if (errors.length === 0) throw new Error('사용 가능한 AI 모델이 없습니다.');
+  throw new Error(`모든 AI 모델 호출 실패 → ${errors.slice(0, 6).join(' | ')}`);
 }
 
 /**
@@ -229,6 +239,9 @@ export async function runItMaintenancePipeline({
     pickItModel(agents, settings, 'agent_it_dev'),
     pickItModel(agents, settings, 'agent_it_qa'),
     pickItModel(agents, settings, 'agent_qwen'),
+    pickItModel(agents, settings, 'agent_it_sec'),
+    pickItModel(agents, settings, 'agent_deepseek'),
+    pickItModel(agents, settings, 'agent_gemma'),
     resolveLiveBackendModel(settings)
   ].filter(Boolean);
   const secModels = [
