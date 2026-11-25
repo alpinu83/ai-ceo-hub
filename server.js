@@ -53,6 +53,16 @@ import {
   closeMaintenancePr,
   watchDeployment
 } from './src/it-devops.js';
+import { getAiProviderHealth } from './src/ai-guard.js';
+import {
+  kstParts,
+  normalizeTimes,
+  normalizeDays,
+  dueSlotKeys,
+  buildDefaultRoutines,
+  runOpsCheck,
+  buildDailyBriefing
+} from './src/operations.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1434,6 +1444,276 @@ async function triggerItPrForMission(missionId, customInstruction = '') {
   }
 }
 
+// ================================================================
+// 회사 운영 엔진: 루틴(정기) 업무 · 정기 점검 · 자동 복구(워치독) · 일일 마감 보고
+// ================================================================
+const OPS_SELF_URL = process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || 'https://ai-ceo-hub.onrender.com';
+const INTERNAL_AI_PROVIDERS = new Set(['exaone', 'gemini', 'groq', 'openrouter']);
+let opsTickRunning = false;
+let lastWatchdogAt = 0;
+const routineRunsInFlight = new Set();
+
+function describeRoutineSchedule(r) {
+  const days = r.days || [];
+  const label = ['일', '월', '화', '수', '목', '금', '토'];
+  return `${days.length ? days.map((d) => label[d]).join('·') : '매일'} ${(r.times || []).join(', ')}`;
+}
+
+function ensureRoutines(db) {
+  if (Array.isArray(db.routines)) return false;
+  db.routines = buildDefaultRoutines(db.missions || []);
+  return true;
+}
+
+function getRoutineHubMission(db) {
+  let m = db.missions.find((x) => x.isRoutineHub);
+  if (m) return m;
+  const lead = db.agents.find((a) => a.tier === 'lead' && a.active) || db.agents[0];
+  m = {
+    id: uid('msn'),
+    title: '정기 업무 (루틴)',
+    directive: '루틴 업무 메뉴에 등록된 정기 업무를 담당 팀원이 정해진 시간마다 수행합니다.',
+    domain: 'business',
+    costPolicy: db.settings.defaultCostPolicy || 'free_first',
+    mode: 'one_off',
+    githubRepo: '',
+    githubBranch: 'main',
+    siteUrl: '',
+    extraRepos: [],
+    phase: 1,
+    phaseHistory: [],
+    leadAgentId: lead?.id || 'agent_gemini_neon',
+    status: 'in_progress',
+    createdAt: new Date().toISOString(),
+    leadPlanSummary: '',
+    finalReport: '',
+    isRoutineHub: true
+  };
+  db.missions.push(m);
+  return m;
+}
+
+function performOpsCheck(db) {
+  const cfg = getGithubRepoConfig(db.settings);
+  return runOpsCheck({
+    db,
+    githubToken: cfg.token,
+    repos: cfg.allowedRepos,
+    aiHealth: getAiProviderHealth(),
+    cloudStatus: getCloudPersistenceStatus(),
+    selfUrl: OPS_SELF_URL
+  });
+}
+
+function createRoutineTask(routine) {
+  const db = loadDb();
+  const r = db.routines.find((x) => x.id === routine.id) || routine;
+  const mission = db.missions.find((m) => m.id === r.missionId) || getRoutineHubMission(db);
+  const agentMap = Object.fromEntries(db.agents.map((a) => [a.id, a]));
+  let ag = agentMap[r.assigneeId];
+  if (!ag?.active) ag = db.agents.find((a) => a.active && INTERNAL_AI_PROVIDERS.has(a.provider) && a.tier !== 'lead') || db.agents[0];
+  const now = new Date().toISOString();
+  const task = {
+    id: uid('tsk'),
+    missionId: mission.id,
+    phase: Number(mission.phase) || 1,
+    title: `[루틴] ${r.title} (${kstParts().date})`,
+    description: r.description || r.title,
+    assigneeId: ag.id,
+    domain: mission.githubRepo && (ag.team === 'it' || /코드|사이트|저장소|수정/.test(r.description || '')) ? 'it_ops' : mission.domain,
+    status: ag.connectionMode === 'bridge' ? 'awaiting_bridge' : 'queued',
+    requiresApproval: false,
+    estimatedCostKRW: 0,
+    dispatchPrompt: '',
+    output: '',
+    executionModeUsed: '',
+    source: 'routine',
+    routineId: r.id,
+    createdAt: now,
+    updatedAt: now
+  };
+  task.dispatchPrompt = buildDispatchPrompt(ag, task, mission);
+  db.tasks.unshift(task);
+  mission.status = 'in_progress';
+  r.lastTaskId = task.id;
+  saveDb(db);
+  autoStartLiveMissionTasks(mission.id, { proposeNext: false }).catch(() => {});
+  return { task, mission, agent: ag };
+}
+
+async function runRoutine(routineId, { slotKeys = [], manual = false } = {}) {
+  if (routineRunsInFlight.has(routineId)) return { ok: false, error: '이미 실행 중입니다.' };
+  routineRunsInFlight.add(routineId);
+  try {
+    let db = loadDb();
+    ensureRoutines(db);
+    const r = db.routines.find((x) => x.id === routineId);
+    if (!r) return { ok: false, error: '루틴을 찾을 수 없습니다.' };
+    if (slotKeys.length) r.runKeys = [...(r.runKeys || []), ...slotKeys].slice(-30);
+    r.lastRunAt = new Date().toISOString();
+    r.lastStatus = 'running';
+    r.runCount = (r.runCount || 0) + 1;
+    saveDb(db);
+
+    let status = 'ok';
+    let result = '';
+    let anomalies = [];
+    let telegramHtml = '';
+    if (r.kind === 'ops_check' || r.kind === 'briefing') {
+      const ops = await performOpsCheck(loadDb());
+      anomalies = ops.anomalies;
+      status = ops.status;
+      if (r.kind === 'ops_check') {
+        result = ops.markdown;
+      } else {
+        const fresh = loadDb();
+        const b = buildDailyBriefing({ db: fresh, ops, companyName: fresh.settings.companyName || 'CEO Office' });
+        result = `${b.markdown}\n\n---\n#### 상세 점검 결과\n${ops.markdown}`;
+        telegramHtml = b.telegramHtml;
+      }
+    } else {
+      const created = createRoutineTask(r);
+      status = 'started';
+      result = `업무 "${created.task.title}"를 @${created.agent.name}에게 배정하고 실행을 시작했습니다. (${created.mission.title})`;
+    }
+
+    db = loadDb();
+    const r2 = db.routines.find((x) => x.id === routineId);
+    if (r2) {
+      r2.lastStatus = status;
+      r2.lastResult = result;
+      r2.lastFinishedAt = new Date().toISOString();
+      if (r.kind === 'task') r2.lastTaskId = r2.lastTaskId || '';
+    }
+    appendLog(
+      db,
+      '루틴 업무',
+      `${manual ? '[수동 실행] ' : ''}"${r.title}" ${status === 'warning' ? `이상 ${anomalies.length}건 발견` : status === 'started' ? '업무 배정·실행 시작' : '정상 완료'}`,
+      status === 'warning' ? 'warning' : 'info'
+    );
+    saveDb(db);
+    await flushCloudBackup(db);
+
+    const tg = db.settings.telegram || {};
+    if (telegramHtml && r.notify === 'always' && tg.botToken && tg.chatId) {
+      sendTelegramText(tg.botToken, tg.chatId, telegramHtml).catch(() => {});
+    } else if (anomalies.length && r.notify !== 'never') {
+      notifyTelegramAnomaly(db.settings, `${r.title}: 이상 ${anomalies.length}건`, anomalies.slice(0, 4).join('\n'));
+    }
+    return { ok: true, status, result };
+  } catch (err) {
+    const db = loadDb();
+    const r = (db.routines || []).find((x) => x.id === routineId);
+    if (r) {
+      r.lastStatus = 'error';
+      r.lastResult = `실행 오류: ${err.message}`;
+    }
+    appendLog(db, '루틴 업무', `루틴 실행 오류: ${err.message}`, 'warning');
+    saveDb(db);
+    return { ok: false, error: err.message };
+  } finally {
+    routineRunsInFlight.delete(routineId);
+  }
+}
+
+/**
+ * Self-maintenance: recover stuck work and restart stalled AI tasks without the CEO noticing.
+ */
+async function runWatchdog() {
+  const db = loadDb();
+  const now = Date.now();
+  const ageMin = (iso) => (iso ? (now - new Date(iso).getTime()) / 60000 : Infinity);
+  const agentMap = Object.fromEntries(db.agents.map((a) => [a.id, a]));
+  const actions = [];
+  const exhausted = [];
+  const nowIso = new Date().toISOString();
+
+  for (const t of db.tasks) {
+    if (t.status === 'running' && ageMin(t.updatedAt) > 20) {
+      t.status = 'queued';
+      t.updatedAt = nowIso;
+      actions.push(`멈춘 작업 복구 "${t.title}"`);
+    }
+  }
+
+  const cooling = new Set(getAiProviderHealth().cooldowns.map((c) => c.provider));
+  const allAiCooling = ['gemini', 'groq', 'openrouter'].every((p) => cooling.has(p));
+  const relaunch = new Set();
+  if (!allAiCooling) {
+    for (const t of db.tasks) {
+      if (t.status !== 'queued') continue;
+      const ag = agentMap[t.assigneeId];
+      if (!ag?.active || !INTERNAL_AI_PROVIDERS.has(ag.provider)) continue;
+      const age = ageMin(t.updatedAt);
+      if (age < 10 || age > 3 * 24 * 60) continue;
+      if (db.tasks.some((x) => x.missionId === t.missionId && x.status === 'running')) continue;
+      if ((t.autoRetries || 0) >= 3) {
+        if (!t.autoRetryExhausted) {
+          t.autoRetryExhausted = true;
+          exhausted.push(t.title);
+          actions.push(`자동 재시도 3회 소진 "${t.title}"`);
+        }
+        continue;
+      }
+      t.autoRetries = (t.autoRetries || 0) + 1;
+      relaunch.add(t.missionId);
+      actions.push(`대기 업무 재실행 "${t.title}" (${t.autoRetries}회차)`);
+    }
+  }
+
+  db.settings.opsWatchdog = {
+    lastRunAt: nowIso,
+    lastActions: actions.slice(0, 10),
+    aiCooling: [...cooling]
+  };
+  if (actions.length) appendLog(db, '자동 복구', actions.join(' / ').slice(0, 600), 'info');
+  saveDb(db);
+  if (actions.length) flushCloudBackup(db).catch(() => {});
+  for (const missionId of relaunch) autoStartLiveMissionTasks(missionId, { proposeNext: false }).catch(() => {});
+  if (exhausted.length) {
+    notifyTelegramAnomaly(db.settings, '자동 재시도 한계 도달', `${exhausted.slice(0, 3).join(', ')} — AI 엔진 한도나 지시 내용을 확인해 주세요.`);
+  }
+  return { actions };
+}
+
+async function opsTick() {
+  if (process.env.CI || opsTickRunning) return;
+  opsTickRunning = true;
+  try {
+    const db = loadDb();
+    if (ensureRoutines(db)) {
+      saveDb(db);
+      await flushCloudBackup(db);
+    }
+    for (const r of db.routines) {
+      const keys = dueSlotKeys(r);
+      if (keys.length) await runRoutine(r.id, { slotKeys: keys });
+    }
+    if (Date.now() - lastWatchdogAt > 5 * 60 * 1000) {
+      lastWatchdogAt = Date.now();
+      await runWatchdog();
+    }
+  } catch (err) {
+    console.warn('ops tick error:', err.message);
+  } finally {
+    opsTickRunning = false;
+  }
+}
+
+function sanitizeRoutineInput(body, existing = {}) {
+  const out = {};
+  if (typeof body.title === 'string' && body.title.trim()) out.title = body.title.trim().slice(0, 80);
+  if (typeof body.description === 'string') out.description = body.description.trim().slice(0, 2000);
+  if (body.times !== undefined) out.times = normalizeTimes(body.times);
+  if (body.days !== undefined) out.days = normalizeDays(body.days);
+  if (typeof body.missionId === 'string') out.missionId = body.missionId.trim();
+  if (typeof body.assigneeId === 'string') out.assigneeId = body.assigneeId.trim();
+  if (['anomaly', 'always', 'never'].includes(body.notify)) out.notify = body.notify;
+  if (typeof body.enabled === 'boolean') out.enabled = body.enabled;
+  if (['task', 'ops_check', 'briefing'].includes(body.kind) && !existing.id) out.kind = body.kind;
+  return out;
+}
+
 function getTelegramCallbacks() {
   return {
     getSettings: () => loadDb().settings,
@@ -1709,7 +1989,8 @@ app.get('/vendor/lucide.min.js', (c) => {
 // State & Open-Source Stack Info
 app.get('/api/state', (c) => {
   const db = loadDb();
-  return c.json(sanitizeStateForClient(db));
+  if (ensureRoutines(db)) saveDb(db);
+  return c.json({ ...sanitizeStateForClient(db), aiHealth: getAiProviderHealth() });
 });
 
 app.get('/api/oss-stack', (c) => {
@@ -2973,6 +3254,77 @@ app.post('/api/approvals/:id/decide', async (c) => {
   return c.json({ approval: latestApr, codeApply, state: sanitizeStateForClient(latestDb) });
 });
 
+// Routine (recurring) work
+app.post('/api/routines', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const db = loadDb();
+  ensureRoutines(db);
+  const input = sanitizeRoutineInput(body);
+  if (!input.title) return c.json({ error: '루틴 이름을 입력해 주세요.' }, 400);
+  if (!input.times?.length) return c.json({ error: '실행 시간을 HH:MM 형식으로 입력해 주세요. (예: 09:00, 18:30)' }, 400);
+  const routine = {
+    id: uid('rtn'),
+    kind: input.kind || 'task',
+    description: '',
+    days: [],
+    missionId: '',
+    assigneeId: '',
+    notify: 'anomaly',
+    enabled: true,
+    lastRunAt: null,
+    lastStatus: '',
+    lastResult: '',
+    lastTaskId: '',
+    runKeys: [],
+    runCount: 0,
+    system: false,
+    createdAt: new Date().toISOString(),
+    ...input
+  };
+  db.routines.push(routine);
+  appendLog(db, 'CEO', `루틴 업무 등록: "${routine.title}" (${describeRoutineSchedule(routine)})`, 'info');
+  saveDb(db);
+  await flushCloudBackup(db);
+  return c.json({ routine, state: sanitizeStateForClient(db) });
+});
+
+app.patch('/api/routines/:id', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const db = loadDb();
+  ensureRoutines(db);
+  const routine = db.routines.find((r) => r.id === c.req.param('id'));
+  if (!routine) return c.json({ error: '루틴을 찾을 수 없습니다.' }, 404);
+  const input = sanitizeRoutineInput(body, routine);
+  if (input.times && !input.times.length) return c.json({ error: '실행 시간을 HH:MM 형식으로 입력해 주세요.' }, 400);
+  Object.assign(routine, input);
+  saveDb(db);
+  await flushCloudBackup(db);
+  return c.json({ routine, state: sanitizeStateForClient(db) });
+});
+
+app.delete('/api/routines/:id', async (c) => {
+  const db = loadDb();
+  ensureRoutines(db);
+  const before = db.routines.length;
+  db.routines = db.routines.filter((r) => r.id !== c.req.param('id'));
+  if (db.routines.length === before) return c.json({ error: '루틴을 찾을 수 없습니다.' }, 404);
+  saveDb(db);
+  await flushCloudBackup(db);
+  return c.json({ state: sanitizeStateForClient(db) });
+});
+
+app.post('/api/routines/:id/run', async (c) => {
+  const res = await runRoutine(c.req.param('id'), { manual: true });
+  const db = loadDb();
+  if (!res.ok) return c.json({ error: res.error, state: sanitizeStateForClient(db) }, 400);
+  return c.json({ ...res, state: { ...sanitizeStateForClient(db), aiHealth: getAiProviderHealth() } });
+});
+
+app.get('/api/ops/health', (c) => {
+  const db = loadDb();
+  return c.json({ ai: getAiProviderHealth(), watchdog: db.settings.opsWatchdog || null });
+});
+
 // Agents CRUD
 app.post('/api/agents', async (c) => {
   const body = await c.req.json();
@@ -3218,6 +3570,11 @@ initCloudPersistence()
       setTimeout(() => {
         recoverCodeApprovalsOnBoot().catch((err) => console.warn('code approval recovery failed:', err.message));
       }, 15000);
+      // Company operations loop: routines, scheduled checks, watchdog (every minute)
+      setTimeout(() => {
+        opsTick();
+        setInterval(opsTick, 60 * 1000);
+      }, 30000);
       console.log(`AI CEO Hub v2 (Hono + Official MCP SDK + Vercel AI SDK + Gemini 4 Hydrogen + Groq + OpenRouter + LG K-EXAONE 2.5 + Telegram Bot) listening on http://localhost:${PORT}`);
     });
   });
