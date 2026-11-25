@@ -514,6 +514,7 @@ function renderAll() {
   renderOfficeView();
   renderApprovalsView();
   renderRosterView();
+  renderRoutinesView();
   renderIntegrationsView();
 
   if (openDrawerTaskId) {
@@ -1401,6 +1402,130 @@ function renderApprovalsView() {
   `;
 }
 
+/* ==================== ROUTINES (루틴 업무) ==================== */
+let lastAiHealth = null;
+const ROUTINE_KIND_LABELS = { ops_check: '시스템 점검', briefing: '마감 보고', task: '정기 업무' };
+const ROUTINE_DAY_LABELS = ['일', '월', '화', '수', '목', '금', '토'];
+
+function routineScheduleText(r) {
+  const days = r.days || [];
+  let dayText = '매일';
+  if (days.length === 5 && [1, 2, 3, 4, 5].every((d) => days.includes(d))) dayText = '평일';
+  else if (days.length) dayText = `매주 ${days.map((d) => ROUTINE_DAY_LABELS[d]).join('·')}`;
+  return `${dayText} ${(r.times || []).join(', ')}`;
+}
+
+function routineStatusBadge(r, task) {
+  if (!r.lastRunAt) return ['badge-neutral', '실행 전'];
+  if (r.lastStatus === 'running') return ['badge-blue', '실행 중'];
+  if (r.lastStatus === 'error') return ['badge-red', '오류'];
+  if (r.lastStatus === 'warning') return ['badge-amber', '이상 발견'];
+  if (r.lastStatus === 'started') {
+    if (!task) return ['badge-neutral', '배정됨'];
+    if (task.status === 'completed') return ['badge-green', '완료'];
+    if (task.status === 'awaiting_approval') return ['badge-amber', '결재 대기'];
+    if (task.status === 'rejected') return ['badge-red', '반려'];
+    return ['badge-blue', '진행 중'];
+  }
+  return ['badge-green', '정상'];
+}
+
+function renderRoutinesView() {
+  if (!state) return;
+  if (state.aiHealth) lastAiHealth = state.aiHealth;
+  const routines = state.routines || [];
+  const countEl = document.getElementById('nav-routines-count');
+  if (countEl) countEl.textContent = routines.filter((r) => r.enabled).length;
+  const listEl = document.getElementById('routine-list');
+  if (!listEl) return;
+
+  const assigneeSel = document.getElementById('routine-assignee');
+  if (assigneeSel) {
+    const prev = assigneeSel.value;
+    const internal = state.agents.filter((a) => a.active && ['exaone', 'gemini', 'groq', 'openrouter'].includes(a.provider));
+    assigneeSel.innerHTML = internal
+      .map((a) => `<option value="${esc(a.id)}">${esc(a.name)} · ${esc(a.roleTitle || '')}</option>`)
+      .join('');
+    if (prev && internal.some((a) => a.id === prev)) assigneeSel.value = prev;
+  }
+  const missionSel = document.getElementById('routine-mission');
+  if (missionSel) {
+    const prev = missionSel.value;
+    const ms = state.missions.filter((m) => !m.isRoutineHub);
+    missionSel.innerHTML =
+      '<option value="">정기 업무 (루틴) 전용 보드</option>' +
+      ms.map((m) => `<option value="${esc(m.id)}">${esc(m.title)}${m.githubRepo ? ' · 코드 반영 가능' : ''}</option>`).join('');
+    if (prev) missionSel.value = prev;
+  }
+
+  const opsEl = document.getElementById('routine-ops-status');
+  if (opsEl) {
+    const cds = lastAiHealth?.cooldowns || [];
+    const wd = state.settings?.opsWatchdog;
+    const fmtT = (iso) => new Date(iso).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Seoul' });
+    opsEl.innerHTML = `<div class="sheet routine-ops">
+        <div class="routine-ops-row"><strong>AI 엔진</strong>${
+          cds.length
+            ? cds.map((c) => `<span class="badge badge-amber" title="${esc(c.reason)}">${esc(c.provider)}${c.model && c.model !== '*' ? ` · ${esc(c.model)}` : ''} 휴식 ~${esc(fmtT(c.until))}</span>`).join('')
+            : '<span class="badge badge-green">모든 엔진 정상</span>'
+        }</div>
+        <div class="routine-ops-row"><strong>자동 복구</strong><span>${
+          wd ? `5분마다 점검 · 마지막 ${esc(formatTime(wd.lastRunAt))} · ${wd.lastActions?.length ? esc(wd.lastActions.slice(0, 3).join(' / ')) : '조치할 것 없음'}` : '서버 기동 후 곧 시작'
+        }</span></div>
+      </div>`;
+  }
+
+  if (!routines.length) {
+    listEl.innerHTML = '<div class="empty-state">등록된 루틴이 없습니다. 오른쪽 위 "루틴 추가"로 정기 업무를 만들어 보세요.</div>';
+    return;
+  }
+  listEl.innerHTML = routines
+    .map((r) => {
+      const task = r.lastTaskId ? state.tasks.find((t) => t.id === r.lastTaskId) : null;
+      const [cls, label] = routineStatusBadge(r, task);
+      const mission = state.missions.find((m) => m.id === r.missionId);
+      const agent = r.assigneeId ? getAgent(r.assigneeId) : null;
+      const target =
+        r.kind === 'task' ? `${mission ? esc(mission.title) : '정기 업무 보드'} · ${agent ? esc(agent.name) : '자동 배정'}` : '시스템 자동 실행 (AI 한도 사용 안 함)';
+      const notifyText = { anomaly: '이상 시 텔레그램', always: '매번 텔레그램', never: '알림 없음' }[r.notify] || '';
+      return `<div class="sheet routine-card ${r.enabled ? '' : 'is-off'}">
+          <div class="routine-head">
+            <div style="min-width:0;">
+              <div class="routine-meta">
+                <span class="badge badge-neutral">${esc(ROUTINE_KIND_LABELS[r.kind] || r.kind)}</span>
+                <span class="badge ${cls}">${esc(label)}</span>
+                ${r.enabled ? '' : '<span class="badge badge-neutral">꺼짐</span>'}
+              </div>
+              <h3 class="routine-title">${esc(r.title)}</h3>
+              <div class="routine-sub">${esc(routineScheduleText(r))} · ${target} · ${esc(notifyText)}</div>
+            </div>
+            <div class="routine-actions">
+              <button type="button" class="btn btn-ghost btn-sm" data-routine-run="${esc(r.id)}">지금 실행</button>
+              <button type="button" class="btn btn-ghost btn-sm" data-routine-toggle="${esc(r.id)}">${r.enabled ? '끄기' : '켜기'}</button>
+              <button type="button" class="btn btn-ghost btn-sm" data-routine-delete="${esc(r.id)}">삭제</button>
+            </div>
+          </div>
+          ${r.description ? `<p class="routine-desc">${esc(r.description)}</p>` : ''}
+          ${
+            r.lastRunAt
+              ? `<details class="routine-result">
+                  <summary>마지막 실행 ${esc(formatTime(r.lastRunAt))} · 누적 ${Number(r.runCount) || 0}회</summary>
+                  <div class="markdown-body">${renderMarkdown(r.lastResult || '')}</div>
+                  ${task ? `<button type="button" class="btn-inline-edit" data-routine-open-task="${esc(task.id)}">업무 결과 보기 →</button>` : ''}
+                </details>`
+              : '<div class="routine-sub" style="margin-top:8px;">아직 실행 기록이 없습니다.</div>'
+          }
+        </div>`;
+    })
+    .join('');
+}
+
+function applyStateKeepingHealth(nextState) {
+  const health = state?.aiHealth || lastAiHealth;
+  state = nextState;
+  if (!state.aiHealth && health) state.aiHealth = health;
+}
+
 function renderRosterView() {
   // Visual Org Tree
   const treeCanvas = document.getElementById('org-tree-canvas');
@@ -1913,6 +2038,42 @@ function bindEvents() {
     toast(next === 'studio' ? '다크 테마로 전환했습니다.' : '라이트 테마로 전환했습니다.');
   });
 
+  // Routine form
+  const routineWrap = document.getElementById('routine-form-wrap');
+  document.getElementById('btn-toggle-routine-form')?.addEventListener('click', () => {
+    if (!routineWrap) return;
+    routineWrap.style.display = routineWrap.style.display === 'none' ? 'block' : 'none';
+    if (routineWrap.style.display === 'block') document.getElementById('routine-title')?.focus();
+  });
+  document.getElementById('btn-cancel-routine')?.addEventListener('click', () => {
+    if (routineWrap) routineWrap.style.display = 'none';
+  });
+  document.getElementById('routine-form')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const daysVal = document.getElementById('routine-days').value;
+    const payload = {
+      title: document.getElementById('routine-title').value,
+      times: document.getElementById('routine-times').value,
+      description: document.getElementById('routine-description').value,
+      days: daysVal === 'daily' || daysVal === 'weekdays' ? daysVal : [Number(daysVal)],
+      assigneeId: document.getElementById('routine-assignee').value,
+      missionId: document.getElementById('routine-mission').value,
+      notify: document.getElementById('routine-notify').value,
+      kind: 'task'
+    };
+    try {
+      const res = await api('/api/routines', { method: 'POST', body: JSON.stringify(payload) });
+      applyStateKeepingHealth(res.state);
+      e.target.reset();
+      if (routineWrap) routineWrap.style.display = 'none';
+      renderAll();
+      refreshIcons();
+      toast(`루틴 "${res.routine.title}"을(를) 등록했습니다.`);
+    } catch (err) {
+      toast(err.message, true);
+    }
+  });
+
   // Navigation (Desktop Sidebar + Mobile Bottom Bar + Corner Settings Gear)
   document.querySelectorAll('.nav-item, .mobile-nav-item, .nav-gear-btn').forEach((btn) => {
     btn.addEventListener('click', () => switchView(btn.dataset.view));
@@ -2036,6 +2197,57 @@ function bindEvents() {
 
     const target = e.target.closest('button');
     if (!target) return;
+
+    if (target.dataset.routineRun) {
+      const id = target.dataset.routineRun;
+      target.disabled = true;
+      target.textContent = '실행 중…';
+      try {
+        const res = await api(`/api/routines/${id}/run`, { method: 'POST' });
+        applyStateKeepingHealth(res.state);
+        renderAll();
+        refreshIcons();
+        toast(res.status === 'warning' ? '점검 완료: 이상 항목이 있습니다. 결과를 확인해 주세요.' : res.status === 'started' ? '담당 팀원에게 업무를 배정하고 실행을 시작했습니다.' : '실행 완료: 이상 없음');
+      } catch (err) {
+        toast(err.message, true);
+        target.disabled = false;
+        target.textContent = '지금 실행';
+      }
+      return;
+    }
+    if (target.dataset.routineToggle) {
+      const id = target.dataset.routineToggle;
+      const r = (state.routines || []).find((x) => x.id === id);
+      try {
+        const res = await api(`/api/routines/${id}`, { method: 'PATCH', body: JSON.stringify({ enabled: !r?.enabled }) });
+        applyStateKeepingHealth(res.state);
+        renderAll();
+        refreshIcons();
+        toast(r?.enabled ? '루틴을 껐습니다.' : '루틴을 켰습니다.');
+      } catch (err) {
+        toast(err.message, true);
+      }
+      return;
+    }
+    if (target.dataset.routineDelete) {
+      const id = target.dataset.routineDelete;
+      const r = (state.routines || []).find((x) => x.id === id);
+      if (!window.confirm(`"${r?.title || '루틴'}"을(를) 삭제할까요?`)) return;
+      try {
+        const res = await api(`/api/routines/${id}`, { method: 'DELETE' });
+        applyStateKeepingHealth(res.state);
+        renderAll();
+        refreshIcons();
+        toast('루틴을 삭제했습니다.');
+      } catch (err) {
+        toast(err.message, true);
+      }
+      return;
+    }
+    if (target.dataset.routineOpenTask) {
+      openDrawer(target.dataset.routineOpenTask);
+      return;
+    }
 
     if (target.dataset.officeChannel) {
       officeMissionFilter = target.dataset.officeChannel;

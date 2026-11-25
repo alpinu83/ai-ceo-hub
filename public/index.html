@@ -61,6 +61,10 @@
           <div class="nav-sublist" id="nav-sublist-missions"></div>
         </div>
 
+        <button class="nav-item" data-view="routines" id="nav-routines">
+          <span class="nav-left"><i data-lucide="calendar-clock" class="icon-sm"></i><span>루틴 업무</span></span>
+          <span class="nav-meta" id="nav-routines-count">0</span>
+        </button>
         <button class="nav-item" data-view="office" id="nav-office">
           <span class="nav-left"><i data-lucide="messages-square" class="icon-sm"></i><span>회의실</span></span>
         </button>
@@ -236,6 +240,76 @@
         </section>
 
         <!-- 3. LIVE OFFICE / MEETING ROOM -->
+        <section class="view" id="view-routines" aria-label="루틴 업무">
+          <div class="section-intro">
+            <h2 class="section-heading">루틴 업무</h2>
+            <button type="button" class="btn btn-primary btn-sm" id="btn-toggle-routine-form">
+              <i data-lucide="plus" class="icon-xs"></i>
+              <span>루틴 추가</span>
+            </button>
+          </div>
+
+          <div class="sheet routine-form-sheet" id="routine-form-wrap" style="display:none;">
+            <form id="routine-form">
+              <div class="form-row-two">
+                <label class="field">
+                  <span class="field-label">루틴 이름 *</span>
+                  <input type="text" id="routine-title" maxlength="80" placeholder="예: 매주 월요일 경쟁 사이트 동향 정리" required />
+                </label>
+                <label class="field">
+                  <span class="field-label">실행 시간 * (여러 개는 쉼표로)</span>
+                  <input type="text" id="routine-times" placeholder="09:00, 18:00" required />
+                </label>
+              </div>
+              <label class="field" style="margin-top:12px;">
+                <span class="field-label">담당자에게 줄 지시</span>
+                <textarea id="routine-description" rows="3" placeholder="무엇을 확인하고 어떤 결과물을 낼지 적어 주세요."></textarea>
+              </label>
+              <div class="form-row-two" style="margin-top:12px;">
+                <label class="field">
+                  <span class="field-label">요일</span>
+                  <select id="routine-days">
+                    <option value="daily">매일</option>
+                    <option value="weekdays">평일</option>
+                    <option value="1">매주 월요일</option>
+                    <option value="2">매주 화요일</option>
+                    <option value="3">매주 수요일</option>
+                    <option value="4">매주 목요일</option>
+                    <option value="5">매주 금요일</option>
+                    <option value="6">매주 토요일</option>
+                    <option value="0">매주 일요일</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span class="field-label">담당 AI 팀원</span>
+                  <select id="routine-assignee"></select>
+                </label>
+              </div>
+              <div class="form-row-two" style="margin-top:12px;">
+                <label class="field">
+                  <span class="field-label">대상 프로젝트 · 업무</span>
+                  <select id="routine-mission"></select>
+                </label>
+                <label class="field">
+                  <span class="field-label">텔레그램 알림</span>
+                  <select id="routine-notify">
+                    <option value="anomaly">이상 있을 때만</option>
+                    <option value="always">매번</option>
+                    <option value="never">안 함</option>
+                  </select>
+                </label>
+              </div>
+              <div class="routine-form-actions">
+                <button type="button" class="btn btn-ghost btn-sm" id="btn-cancel-routine">취소</button>
+                <button type="submit" class="btn btn-primary btn-sm">등록</button>
+              </div>
+            </form>
+          </div>
+
+          <div id="routine-ops-status"></div>
+          <div class="routine-list" id="routine-list"></div>
+        </section>
+
         <section class="view" id="view-office" aria-label="회의실">
           <div class="participants-backdrop" id="participants-backdrop" aria-hidden="true"></div>
           <div class="office-layout" id="office-layout">
