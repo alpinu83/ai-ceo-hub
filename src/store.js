@@ -314,6 +314,69 @@ export function createDefaultState() {
         bridgeGuide: '사전 추천 설정: 짧은 문자 지시문을 원클릭 복사해 인스팅스 대화방에 그대로 보내고 회신을 등록합니다.',
         active: true,
         accent: '#52525B'
+      },
+      {
+        id: 'agent_it_dev',
+        name: 'IT 개발 · Qwen 3.8',
+        shortCode: 'ID',
+        roleTitle: 'IT팀 풀스택 개발·버그 보수 (Groq 무료)',
+        team: 'it',
+        tier: 'specialist',
+        reportsTo: 'agent_gemini_neon',
+        provider: 'groq',
+        modelId: 'qwen/qwen3.8-27b',
+        connectionMode: 'api',
+        costTier: 'free',
+        appUrl: 'https://console.groq.com',
+        monthlyCapKRW: 0,
+        spentKRW: 0,
+        domains: ['dev', 'it_ops'],
+        strengths: 'CEO Office 자체 UI·API 기능 보수, 버그 수정 패치(diff) 작성, 리팩토링 및 성능 최적화 전담',
+        bridgeGuide: 'Groq 무료 API 키로 GM Corp IT팀 개발 보수 작업을 0원 자동 수행합니다.',
+        active: true,
+        accent: '#0F766E'
+      },
+      {
+        id: 'agent_it_sec',
+        name: 'IT 보안 · Nemotron',
+        shortCode: 'IS',
+        roleTitle: 'IT팀 보안 감사·아키텍처 리뷰 (OR 무료 550B)',
+        team: 'it',
+        tier: 'specialist',
+        reportsTo: 'agent_gemini_neon',
+        provider: 'openrouter',
+        modelId: 'nvidia/nemotron-3-ultra-550b-a55b:free',
+        connectionMode: 'api',
+        costTier: 'free',
+        appUrl: 'https://openrouter.ai',
+        monthlyCapKRW: 0,
+        spentKRW: 0,
+        domains: ['dev', 'it_ops'],
+        strengths: 'API 키·토큰·인증 보안 감사, 취약점 진단, 코드 리뷰 및 실배포 전 안전성 검증 전담',
+        bridgeGuide: 'OpenRouter 무료 API 키로 GM Corp IT팀 보안 감사를 0원 자동 수행합니다.',
+        active: true,
+        accent: '#1E3A8A'
+      },
+      {
+        id: 'agent_it_qa',
+        name: 'IT QA · GPT-OSS',
+        shortCode: 'IQ',
+        roleTitle: 'IT팀 테스트·QA·릴리스 검증 (Groq 무료)',
+        team: 'it',
+        tier: 'specialist',
+        reportsTo: 'agent_gemini_neon',
+        provider: 'groq',
+        modelId: 'openai/gpt-oss-120b',
+        connectionMode: 'api',
+        costTier: 'free',
+        appUrl: 'https://console.groq.com',
+        monthlyCapKRW: 0,
+        spentKRW: 0,
+        domains: ['dev', 'it_ops'],
+        strengths: 'E2E 테스트 시나리오 작성, 회귀 버그 검증 체크리스트, PR 설명 및 릴리스 노트 작성 전담',
+        bridgeGuide: 'Groq 무료 API 키로 GM Corp IT팀 QA·릴리스 검증을 0원 자동 수행합니다.',
+        active: true,
+        accent: '#9A3412'
       }
     ],
     missions: [],
@@ -403,6 +466,12 @@ export function loadDb() {
       if (!rawAgents.some((a) => a.id === requiredId)) {
         const defAg = def.agents.find((a) => a.id === requiredId);
         if (defAg) rawAgents.splice(1, 0, defAg);
+      }
+    }
+    for (const itId of ['agent_it_dev', 'agent_it_sec', 'agent_it_qa']) {
+      if (!rawAgents.some((a) => a.id === itId)) {
+        const defIt = def.agents.find((a) => a.id === itId);
+        if (defIt) rawAgents.push(defIt);
       }
     }
     parsed.agents = rawAgents;

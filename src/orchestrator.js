@@ -92,7 +92,7 @@ function createOpenAiModelFallbackFetch(fallbackModels = []) {
   return async (url, init) => {
     const withTimeout = (opts) => ({
       ...opts,
-      signal: opts?.signal || AbortSignal.timeout(22000)
+      signal: opts?.signal || AbortSignal.timeout(60000)
     });
     let res;
     try {
@@ -568,7 +568,7 @@ const PlanSchema = z.object({
         title: z.string().describe('짧고 명확한 실무 작업명'),
         description: z.string().describe('구체적 실행 방법과 완료 기준'),
         assigneeId: z.string().describe('활성 조직원 id 중 하나'),
-        domain: z.enum(['business', 'life', 'content', 'dev']),
+        domain: z.enum(['business', 'life', 'content', 'dev', 'it_ops']),
         requiresApproval: z.boolean().describe('결제/예약확정/외부발송/배포 포함 시 true'),
         estimatedCostKRW: z.number().min(0).describe('예상 외부 비용(원), 없으면 0')
       })
@@ -793,15 +793,18 @@ export async function decomposeDirective({ directive, title, domain, costPolicy,
     const rosterText = activeAgents
       .map(
         (a) =>
-          `- id: "${a.id}", 이름: "${a.name}", 직책: "${a.roleTitle}", 연동: "${a.connectionMode}", 비용: "${a.costTier}", 강점: "${a.strengths}"`
+          `- id: "${a.id}", 이름: "${a.name}", 소속: "${a.team === 'it' ? 'IT유지보수팀' : '전략실행본부'}", 직책: "${a.roleTitle}", 연동: "${a.connectionMode}", 비용: "${a.costTier}", 강점: "${a.strengths}"`
       )
       .join('\n');
 
     const system = `당신은 AI 조직의 총괄 팀장(${leadAgent.name})입니다.
 CEO의 지시를 3~5개 구체적 실무 작업으로 분해하고, 아래 조직원 중 최적 담당자(assigneeId)를 배정하세요.
+부서 배정 규칙:
+- 업무 영역이 "it_ops"이거나 CEO Office 앱 자체 수정·기능 보수·버그 해결·보안 점검 지시일 때는 **IT유지보수팀(agent_it_dev, agent_it_sec, agent_it_qa)** 에게 우선 배정하세요.
+- 일반 비즈니스·콘텐츠·생활 프로젝트는 **전략실행본부** 팀원에게 우선 배정하세요.
 권한 위임 규칙 (매우 중요):
-- 리서치, 시장 조사, 전략/로드맵 수립, MVP 기획, SEO·콘텐츠·문서 초안, 코드 작성·리뷰, 모니터링 세팅 등 일반 실무는 모두 **팀장 전결(requiresApproval=false)**로 자동 진행합니다.
-- CEO 결재(requiresApproval=true)는 오직 **실제 금전 결제/송금/광고비 집행, 외부 식당·병원 예약 최종 확정, 대외 공식 발송·프로덕션 실배포**처럼 되돌리기 어렵고 영향이 큰 의사결정에만 지정하세요.
+- 리서치, 시장 조사, 전략/로드맵 수립, MVP 기획, SEO·콘텐츠·문서 초안, 코드 패치 초안·보안 감사·QA 시나리오 등 일반 실무는 모두 **팀장 전결(requiresApproval=false)**로 자동 진행합니다.
+- CEO 결재(requiresApproval=true)는 오직 **실제 금전 결제/송금/광고비 집행, 외부 식당·병원 예약 최종 확정, 대외 공식 발송·프로덕션 코드 실배포**처럼 되돌리기 어렵고 영향이 큰 의사결정에만 지정하세요.
 
 [활성 AI 조직원]
 ${rosterText}`;
@@ -1095,7 +1098,10 @@ function pickResponders(text, agents, mission, tasks) {
     { id: 'agent_qwen', re: /@?큐원|qwen/ },
     { id: 'agent_groq', re: /@?라마|llama|그록|groq|gpt-oss/ },
     { id: 'agent_gemini_neon', re: /@?제미나이|gemini|하이드로젠|hydrogen|네온|neon/ },
-    { id: 'agent_instinct', re: /@?인스팅스|인스팅트|instinct/ }
+    { id: 'agent_instinct', re: /@?인스팅스|인스팅트|instinct/ },
+    { id: 'agent_it_dev', re: /@?it\s*개발|@?it팀|it개발/ },
+    { id: 'agent_it_sec', re: /@?it\s*보안|@?it팀|it보안/ },
+    { id: 'agent_it_qa', re: /@?it\s*qa|@?it팀|itqa/ }
   ];
 
   if (/@전체|모두|전원|다들/.test(lower)) {

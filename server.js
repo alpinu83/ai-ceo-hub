@@ -1416,8 +1416,13 @@ app.post('/api/missions/:id/deploy-idle', async (c) => {
       .map((t) => t.assigneeId)
   );
 
+  const isItMission = mission.domain === 'it_ops';
   const idleAgents = db.agents.filter(
-    (a) => a.active && a.tier !== 'lead' && !busyAgentIds.has(a.id)
+    (a) =>
+      a.active &&
+      a.tier !== 'lead' &&
+      !busyAgentIds.has(a.id) &&
+      (isItMission ? a.team === 'it' : a.team !== 'it')
   );
 
   if (idleAgents.length === 0) {
@@ -1739,11 +1744,13 @@ app.post('/api/agents', async (c) => {
 
   const db = loadDb();
   const tier = ['lead', 'specialist', 'executor'].includes(body.tier) ? body.tier : 'specialist';
+  const team = body.team === 'it' ? 'it' : 'core';
   const newAgent = {
     id: uid('agent'),
     name,
     shortCode: (String(body.shortCode || '').trim() || name.slice(0, 2)).toUpperCase(),
-    roleTitle: String(body.roleTitle || '맞춤 전문 팀원').trim(),
+    roleTitle: String(body.roleTitle || (team === 'it' ? 'IT 유지보수 팀원' : '맞춤 전문 팀원')).trim(),
+    team,
     tier,
     reportsTo: tier === 'lead' ? 'ceo' : 'agent_gemini_neon',
     provider: String(body.provider || 'custom').trim(),
@@ -1752,11 +1759,11 @@ app.post('/api/agents', async (c) => {
     costTier: ['free', 'freemium', 'paid_or_sub'].includes(body.costTier) ? body.costTier : 'free',
     monthlyCapKRW: Number(body.monthlyCapKRW) || 0,
     spentKRW: 0,
-    domains: Array.isArray(body.domains) && body.domains.length ? body.domains : ['business'],
+    domains: Array.isArray(body.domains) && body.domains.length ? body.domains : (team === 'it' ? ['dev', 'it_ops'] : ['business']),
     strengths: String(body.strengths || 'CEO 지시에 맞춘 전문 실무 처리').trim(),
     bridgeGuide: String(body.bridgeGuide || '지시서를 복사하거나 API/MCP로 연결해 사용합니다.').trim(),
     active: true,
-    accent: String(body.accent || '#0E6245')
+    accent: String(body.accent || (team === 'it' ? '#0F766E' : '#0E6245'))
   };
 
   db.agents.push(newAgent);

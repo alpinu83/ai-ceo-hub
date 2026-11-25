@@ -24,53 +24,167 @@ const PRESETS = {
     domain: 'dev',
     directive:
       '결제 웹훅 재시도 로직의 엣지 케이스를 조사하고, 안전한 멱등성 처리 코드와 단위 테스트를 작성해 코드 리뷰까지 마쳐줘. 프로덕션 배포는 반드시 내 결재를 받은 뒤 진행해줘.'
+  },
+  it_ops: {
+    title: 'CEO Office 자체 기능 보수 · 보안 감사 · QA 점검',
+    domain: 'it_ops',
+    directive:
+      'GM Corp IT 유지보수팀은 현재 CEO Office의 개선 필요 사항을 점검하고, 수정 코드 패치(diff)·보안 취약점 리뷰·QA 테스트 시나리오를 작성해 보고해줘. 실제 배포 전에는 반드시 내 결재를 받아줘.'
   }
 };
 
-const HIRE_PRESETS = {
-  ollama: {
-    name: 'Ollama Qwen 2.5 (로컬)',
-    role: '보안 문서 요약 · 로컬 무료 팀원',
-    tier: 'specialist',
-    mode: 'api',
-    cost: 'free',
-    provider: 'ollama',
-    model: 'qwen2.5:14b',
-    cap: 0,
-    strengths: '외부 전송 없이 내 PC/Mac에서 비용 0원으로 사내 민감 문서 요약·초안 작성'
+const HIRE_MODEL_CATALOG = {
+  groq: [
+    {
+      id: 'openai/gpt-oss-120b',
+      label: 'GPT-OSS 120B (무료 최상위 · 500t/s)',
+      name: 'GPT-OSS 120B (Groq)',
+      role: '초고속 기획·마케팅·QA 팀원 (Groq 무료)',
+      strengths: 'Groq 초고속 무료 API(GPT-OSS 120B · 500t/s)로 기획안, 마케팅 카피, QA 체크리스트를 초단위로 작성',
+      mode: 'api',
+      cost: 'free'
+    },
+    {
+      id: 'qwen/qwen3.8-27b',
+      label: 'Qwen 3.8 27B (무료 · 코딩/보안/추론)',
+      name: 'Qwen 3.8 (Groq)',
+      role: '풀스택 코딩·자동화·SEO 전문 팀원 (Groq 무료)',
+      strengths: 'Groq 최신 무료 Qwen 3.8 27B로 프론트·백엔드 코드 패치, SEO 구조 개선, 자동화 스크립트 구현',
+      mode: 'api',
+      cost: 'free'
+    },
+    {
+      id: 'openai/gpt-oss-20b',
+      label: 'GPT-OSS 20B (초경량 · 1000t/s)',
+      name: 'GPT-OSS 20B (Groq)',
+      role: '초고속 요약·분류·모니터링 팀원 (Groq 무료)',
+      strengths: '1000t/s 초고속 무료 응답으로 단순 분류, 요약, 빠른 초안 작성 수행',
+      mode: 'api',
+      cost: 'free'
+    }
+  ],
+  openrouter: [
+    {
+      id: 'nvidia/nemotron-3-ultra-550b-a55b:free',
+      label: 'NVIDIA Nemotron 3 Ultra 550B (무료 추론 1위)',
+      name: 'Nemotron 3 Ultra (OR)',
+      role: '심층 추론·보안 감사·전략 분석 팀원 (OR 무료 550B)',
+      strengths: 'OpenRouter 무료 1위 550B 추론 엔진으로 복잡한 수익 모델 설계, 보안 감사, 리스크 검증 수행',
+      mode: 'api',
+      cost: 'free'
+    },
+    {
+      id: 'google/gemma-4-31b-it:free',
+      label: 'Google Gemma 4 31B (무료 · UX/기획/글쓰기)',
+      name: 'Gemma 4 31B (OR)',
+      role: '기획·UX·카피라이팅 전문 팀원 (OR 무료)',
+      strengths: 'Google Gemma 4 31B 무료 모델로 UX 개선안, 깔끔한 기획서·카피·코드 보조 수행',
+      mode: 'api',
+      cost: 'free'
+    },
+    {
+      id: 'nvidia/nemotron-3.5-super-vl:free',
+      label: 'NVIDIA Nemotron 3.5 Super (무료 · 1M 컨텍스트)',
+      name: 'Nemotron 3.5 Super (OR)',
+      role: '장문 리서치·대용량 문서 종합 팀원 (OR 무료)',
+      strengths: '1M 컨텍스트 무료 모델로 방대한 자료 요약, 장문 코드베이스 분석, 멀티모달 리서치 수행',
+      mode: 'api',
+      cost: 'free'
+    },
+    {
+      id: 'openrouter/free',
+      label: 'OpenRouter Free Auto (무료 자동 라우터)',
+      name: 'OpenRouter Auto (OR)',
+      role: '다목적 자동 무료 지원 팀원 (OR 무료)',
+      strengths: '가용 무료 모델 중 최적 모델을 자동 선택해 안정적으로 실무 초안 및 분석 수행',
+      mode: 'api',
+      cost: 'free'
+    }
+  ],
+  gemini: [
+    {
+      id: 'gemini-4-hydrogen',
+      label: 'Gemini 4 Hydrogen (무료 최상위)',
+      name: 'Gemini 4 Hydrogen',
+      role: '전략·총괄 기획 팀원 (Gemini 무료)',
+      strengths: 'Google AI Studio 무료 최상위 모델로 긴 문맥 분석, 전략 기획, 구조화 보고서 작성 수행',
+      mode: 'api',
+      cost: 'free'
+    },
+    {
+      id: 'gemini-3.8-flash',
+      label: 'Gemini 3.8 Flash (무료 고속)',
+      name: 'Gemini 3.8 Flash',
+      role: '고속 리서치·요약·실무 팀원 (Gemini 무료)',
+      strengths: '빠른 응답 속도와 높은 정확도로 리서치, 문서 정리, 일상 업무 자동 처리',
+      mode: 'api',
+      cost: 'free'
+    },
+    {
+      id: 'gemini-3.1-flash-lite-preview',
+      label: 'Gemini 3.1 Flash Lite (초경량 무료)',
+      name: 'Gemini 3.1 Flash Lite',
+      role: '초경량 반복 정리·분류 팀원 (Gemini 무료)',
+      strengths: '대량 텍스트 분류, 알림 요약, 단순 반복 정리 작업에 최적',
+      mode: 'api',
+      cost: 'free'
+    }
+  ],
+  exaone: [
+    {
+      id: 'k-exaone_v2.5',
+      label: 'LG K-EXAONE 2.5 (한국어 무료 · 512K)',
+      name: 'LG K-EXAONE 2.5',
+      role: '한국어 정밀 문서·세무·법무 팀원 (EXAONE 무료)',
+      strengths: '512K 컨텍스트 한국어 특화 무료 모델로 세무·법무 검토, 한국어 제안서·이메일 작성 수행',
+      mode: 'api',
+      cost: 'free'
+    }
+  ],
+  manus: [
+    {
+      id: 'manus-cue-mcp',
+      label: 'Manus / Cue (MCP 커넥터)',
+      name: 'Manus Cue',
+      role: '외부 자율 실행·리서치 팀원 (MCP)',
+      strengths: 'MCP 커넥터를 통해 외부 웹 리서치, 문서 작성, 제휴 조사를 자율 수행',
+      mode: 'mcp',
+      cost: 'freemium'
+    }
+  ],
+  custom: []
+};
+
+const HIRE_ROLE_PRESETS = {
+  it_dev: {
+    team: 'it',
+    role: 'IT팀 풀스택 개발·버그 보수',
+    strengths: 'CEO Office UI·API 기능 보수, 버그 수정 패치(diff) 작성, 리팩토링 및 성능 최적화 전담'
   },
-  openrouter: {
-    name: 'Llama 3.3 70B (OpenRouter 무료)',
-    role: '오픈소스 리서치 · 초안 팀원',
-    tier: 'specialist',
-    mode: 'litellm',
-    cost: 'free',
-    provider: 'litellm',
-    model: 'openrouter-free',
-    cap: 0,
-    strengths: 'LiteLLM 게이트웨이를 통해 OpenRouter 무료 티어로 대량 번역·초안·브레인스토밍 수행'
+  it_sec: {
+    team: 'it',
+    role: 'IT팀 보안 감사·취약점 리뷰',
+    strengths: 'API 키·토큰·인증 보안 감사, 취약점 진단, 코드 리뷰 및 실배포 전 안전성 검증 전담'
   },
-  openclaw: {
-    name: 'OpenClaw (로컬 메신저 비서)',
-    role: '텔레그램 · WhatsApp · 브라우저 실행 팀원',
-    tier: 'executor',
-    mode: 'mcp',
-    cost: 'free',
-    provider: 'custom',
-    model: 'openclaw-local',
-    cap: 0,
-    strengths: '로컬 게이트웨이로 WhatsApp·Telegram·Slack·브라우저 자동화 및 CEO 결재 알림 전달'
+  it_qa: {
+    team: 'it',
+    role: 'IT팀 QA·테스트·릴리스 검증',
+    strengths: 'E2E 테스트 시나리오 작성, 회귀 버그 검증 체크리스트, PR·릴리스 노트 작성 전담'
   },
-  perplexity: {
-    name: 'Perplexity',
-    role: '실시간 웹 검색 · 출처 검증 팀원',
-    tier: 'specialist',
-    mode: 'bridge',
-    cost: 'freemium',
-    provider: 'custom',
-    model: 'sonar-pro',
-    cap: 20000,
-    strengths: '최신 뉴스·시장 데이터·출처 링크 기반 팩트체크 및 경쟁사 조사'
+  strategy: {
+    team: 'core',
+    role: '전략·수익 모델·ROI 분석 팀원',
+    strengths: '비즈니스 모델 설계, 단위 경제성(ROI) 검증, 경쟁사 비교 및 리스크 분석 수행'
+  },
+  marketing: {
+    team: 'core',
+    role: '마케팅·콘텐츠·카피라이팅 팀원',
+    strengths: 'SEO 콘텐츠 기획, SNS 확산 카피, 전환율 중심 랜딩 페이지 문구 작성 수행'
+  },
+  docs: {
+    team: 'core',
+    role: '한국어 문서·법무·세무 검토 팀원',
+    strengths: '국내 규정·세무/법무 유의사항 점검, 정교한 한국어 제안서 및 체크리스트 작성 수행'
   }
 };
 
@@ -88,7 +202,8 @@ const DOMAIN_LABELS = {
   business: '비즈니스',
   life: '일상·예약',
   content: '콘텐츠',
-  dev: '개발'
+  dev: '개발',
+  it_ops: 'IT팀 보수'
 };
 
 const POLICY_LABELS = {
@@ -537,7 +652,7 @@ function renderCommandView() {
   logList.innerHTML = state.logs
     .slice(0, 28)
     .map(
-      (log) => `<li class="activity-item">
+      (log) => `<li class="activity-item level-${esc(log.level || 'info')}">
         <div class="activity-head">
           <span class="activity-actor">${esc(log.actor)}</span>
           <span class="activity-time">${esc(formatTime(log.timestamp))}</span>
@@ -1136,8 +1251,18 @@ function renderRosterView() {
   // Visual Org Tree
   const treeCanvas = document.getElementById('org-tree-canvas');
   const leads = state.agents.filter((a) => a.tier === 'lead');
-  const workers = state.agents.filter((a) => a.tier !== 'lead');
+  const coreWorkers = state.agents.filter((a) => a.tier !== 'lead' && a.team !== 'it');
+  const itWorkers = state.agents.filter((a) => a.team === 'it');
   const modeDot = (m) => (m === 'api' || m === 'litellm' ? 'dot-green' : m === 'mcp' ? 'dot-blue' : 'dot-amber');
+
+  const renderNodePill = (ag) => `<button type="button" class="org-node-pill ${ag.active ? '' : 'inactive'}" data-focus-agent="${esc(ag.id)}">
+    <span class="agent-avatar sm" style="background:${esc(ag.accent)}">${esc(ag.shortCode)}</span>
+    <div style="text-align:left;">
+      <div class="org-node-name">${esc(ag.name)}</div>
+      <div class="org-node-role">${esc(COST_LABELS[ag.costTier])} · ${esc(MODE_LABELS[ag.connectionMode])}</div>
+    </div>
+    <i class="dot ${modeDot(ag.connectionMode)}"></i>
+  </button>`;
 
   treeCanvas.innerHTML = `
     <div class="org-level">
@@ -1151,78 +1276,64 @@ function renderRosterView() {
     </div>
     <div class="org-connector"></div>
     <div class="org-level">
-      ${leads
-        .map(
-          (ag) => `<button type="button" class="org-node-pill ${ag.active ? '' : 'inactive'}" data-focus-agent="${esc(ag.id)}">
-            <span class="agent-avatar sm" style="background:${esc(ag.accent)}">${esc(ag.shortCode)}</span>
-            <div style="text-align:left;">
-              <div class="org-node-name">${esc(ag.name)}</div>
-              <div class="org-node-role">${esc(ag.roleTitle)}</div>
-            </div>
-            <i class="dot ${modeDot(ag.connectionMode)}"></i>
-          </button>`
-        )
-        .join('')}
+      ${leads.map(renderNodePill).join('')}
     </div>
     <div class="org-connector"></div>
     <div class="org-level">
-      ${workers
-        .map(
-          (ag) => `<button type="button" class="org-node-pill ${ag.active ? '' : 'inactive'}" data-focus-agent="${esc(ag.id)}">
-            <span class="agent-avatar sm" style="background:${esc(ag.accent)}">${esc(ag.shortCode)}</span>
-            <div style="text-align:left;">
-              <div class="org-node-name">${esc(ag.name)}</div>
-              <div class="org-node-role">${esc(COST_LABELS[ag.costTier])} · ${esc(MODE_LABELS[ag.connectionMode])}</div>
-            </div>
-            <i class="dot ${modeDot(ag.connectionMode)}"></i>
-          </button>`
-        )
-        .join('')}
+      ${coreWorkers.map(renderNodePill).join('')}
     </div>
+    ${
+      itWorkers.length
+        ? `<div class="org-connector"></div>
+           <div class="org-level">
+             <span class="badge badge-green" style="align-self:center;">IT 유지보수팀</span>
+             ${itWorkers.map(renderNodePill).join('')}
+           </div>`
+        : ''
+    }
   `;
 
   // Tier Cards
-  const tiers = {
-    lead: document.getElementById('roster-leads'),
-    specialist: document.getElementById('roster-specialists'),
-    executor: document.getElementById('roster-executors')
-  };
-
-  for (const key of Object.keys(tiers)) {
-    const list = state.agents.filter((a) => a.tier === key);
-    tiers[key].innerHTML = list
-      .map(
-        (ag) => `
-        <article class="agent-card ${ag.active ? '' : 'inactive'} ${highlightedAgentId === ag.id ? 'highlight' : ''}" id="agent-card-${esc(ag.id)}">
-          <div class="agent-card-head">
-            <div class="agent-identity">
-              <span class="agent-avatar lg" style="background:${esc(ag.accent)}">${esc(ag.shortCode)}</span>
-              <div>
-                <div class="agent-name">${esc(ag.name)}</div>
-                <div class="agent-role">${esc(ag.roleTitle)}</div>
-              </div>
-            </div>
-            <span class="badge ${ag.costTier === 'free' ? 'badge-green' : ag.costTier === 'freemium' ? 'badge-blue' : 'badge-amber'}">
-              ${esc(COST_LABELS[ag.costTier])}
-            </span>
+  const renderAgentCard = (ag) => `
+    <article class="agent-card ${ag.active ? '' : 'inactive'} ${highlightedAgentId === ag.id ? 'highlight' : ''}" id="agent-card-${esc(ag.id)}">
+      <div class="agent-card-head">
+        <div class="agent-identity">
+          <span class="agent-avatar lg" style="background:${esc(ag.accent)}">${esc(ag.shortCode)}</span>
+          <div>
+            <div class="agent-name">${esc(ag.name)}</div>
+            <div class="agent-role">${esc(ag.roleTitle)}</div>
           </div>
+        </div>
+        <span class="badge ${ag.costTier === 'free' ? 'badge-green' : ag.costTier === 'freemium' ? 'badge-blue' : 'badge-amber'}">
+          ${esc(COST_LABELS[ag.costTier])}
+        </span>
+      </div>
 
-          <p class="agent-strengths">${esc(ag.strengths)}</p>
+      <p class="agent-strengths">${esc(ag.strengths)}</p>
 
-          <div class="agent-card-controls">
-            <select data-agent-mode="${esc(ag.id)}" aria-label="${esc(ag.name)} 연동 방식" style="width:auto;padding:5px 8px;font-size:12px;">
-              <option value="api" ${ag.connectionMode === 'api' ? 'selected' : ''}>API 자동</option>
-              <option value="mcp" ${ag.connectionMode === 'mcp' ? 'selected' : ''}>MCP</option>
-              <option value="bridge" ${ag.connectionMode === 'bridge' ? 'selected' : ''}>앱·구독</option>
-            </select>
-            <button type="button" class="btn btn-ghost btn-sm" data-toggle-agent="${esc(ag.id)}">
-              ${ag.active ? '비활성' : '활성화'}
-            </button>
-          </div>
-        </article>
-      `
-      )
-      .join('');
+      <div class="agent-card-controls">
+        <select data-agent-mode="${esc(ag.id)}" aria-label="${esc(ag.name)} 연동 방식" style="width:auto;padding:5px 8px;font-size:12px;">
+          <option value="api" ${ag.connectionMode === 'api' ? 'selected' : ''}>API 자동</option>
+          <option value="mcp" ${ag.connectionMode === 'mcp' ? 'selected' : ''}>MCP</option>
+          <option value="bridge" ${ag.connectionMode === 'bridge' ? 'selected' : ''}>앱·구독</option>
+        </select>
+        <button type="button" class="btn btn-ghost btn-sm" data-toggle-agent="${esc(ag.id)}">
+          ${ag.active ? '비활성' : '활성화'}
+        </button>
+      </div>
+    </article>
+  `;
+
+  const tiers = [
+    { el: document.getElementById('roster-leads'), list: state.agents.filter((a) => a.tier === 'lead') },
+    { el: document.getElementById('roster-specialists'), list: state.agents.filter((a) => a.tier === 'specialist' && a.team !== 'it') },
+    { el: document.getElementById('roster-executors'), list: state.agents.filter((a) => a.tier === 'executor' && a.team !== 'it') },
+    { el: document.getElementById('roster-it'), list: itWorkers }
+  ];
+
+  for (const t of tiers) {
+    if (!t.el) continue;
+    t.el.innerHTML = t.list.map(renderAgentCard).join('');
   }
 }
 
@@ -2320,9 +2431,87 @@ function bindEvents() {
     if (runBtn) handleRunTask(runBtn.dataset.runTask, runBtn);
   });
 
-  // Hire Modal
+  // Hire Modal (Smart Provider -> Model Dropdown -> Auto-fill + Role Presets + IT Team)
   const hireBackdrop = document.getElementById('hire-modal-backdrop');
+  const hireProviderEl = document.getElementById('hire-provider');
+  const hireModelSelectEl = document.getElementById('hire-model-select');
+  const hireCustomModelWrap = document.getElementById('hire-custom-model-wrap');
+  const hireModelInput = document.getElementById('hire-model');
+  const hireRolePresetEl = document.getElementById('hire-role-preset');
+  const hireTeamEl = document.getElementById('hire-team');
+  const hireNameEl = document.getElementById('hire-name');
+  const hireRoleEl = document.getElementById('hire-role');
+  const hireModeEl = document.getElementById('hire-mode');
+  const hireCostEl = document.getElementById('hire-cost');
+  const hireStrengthsEl = document.getElementById('hire-strengths');
+
+  const applyHireRolePreset = () => {
+    const presetKey = hireRolePresetEl?.value || 'auto';
+    if (presetKey === 'auto' || presetKey === 'custom') return;
+    const rp = HIRE_ROLE_PRESETS[presetKey];
+    if (!rp) return;
+    if (hireTeamEl) hireTeamEl.value = rp.team;
+    if (hireRoleEl) hireRoleEl.value = rp.role;
+    if (hireStrengthsEl) hireStrengthsEl.value = rp.strengths;
+  };
+
+  const applyHireModelAutoFill = () => {
+    const provider = hireProviderEl?.value || 'groq';
+    const selectedId = hireModelSelectEl?.value || '__custom__';
+    const isCustom = selectedId === '__custom__';
+    if (hireCustomModelWrap) hireCustomModelWrap.style.display = isCustom ? '' : 'none';
+
+    const list = HIRE_MODEL_CATALOG[provider] || [];
+    const entry = list.find((m) => m.id === selectedId);
+    if (entry) {
+      if (hireModelInput) hireModelInput.value = entry.id;
+      if (hireModeEl) hireModeEl.value = entry.mode || 'api';
+      if (hireCostEl) hireCostEl.value = entry.cost || 'free';
+      if (hireNameEl) hireNameEl.value = entry.name;
+      if ((hireRolePresetEl?.value || 'auto') === 'auto') {
+        if (hireRoleEl) hireRoleEl.value = entry.role;
+        if (hireStrengthsEl) hireStrengthsEl.value = entry.strengths;
+      } else {
+        applyHireRolePreset();
+      }
+    } else if (isCustom) {
+      if (hireModelInput) hireModelInput.value = '';
+      if (provider === 'custom' && hireModeEl) hireModeEl.value = 'bridge';
+    }
+  };
+
+  const syncHireModelOptions = () => {
+    const provider = hireProviderEl?.value || 'groq';
+    const list = HIRE_MODEL_CATALOG[provider] || [];
+    if (!hireModelSelectEl) return;
+    const opts = list
+      .map((m) => `<option value="${esc(m.id)}">${esc(m.label)}</option>`)
+      .concat('<option value="__custom__">직접 입력…</option>');
+    hireModelSelectEl.innerHTML = opts.join('');
+    hireModelSelectEl.value = list[0]?.id || '__custom__';
+    applyHireModelAutoFill();
+  };
+
+  hireProviderEl?.addEventListener('change', syncHireModelOptions);
+  hireModelSelectEl?.addEventListener('change', applyHireModelAutoFill);
+  hireRolePresetEl?.addEventListener('change', () => {
+    const key = hireRolePresetEl.value;
+    if (key === 'auto') {
+      applyHireModelAutoFill();
+    } else if (key === 'custom') {
+      if (hireRoleEl) {
+        hireRoleEl.value = '';
+        hireRoleEl.focus();
+      }
+    } else {
+      applyHireRolePreset();
+    }
+  });
+
   const openHire = () => {
+    if (hireRolePresetEl) hireRolePresetEl.value = 'auto';
+    if (hireTeamEl) hireTeamEl.value = 'core';
+    syncHireModelOptions();
     hireBackdrop.classList.add('open');
     hireBackdrop.setAttribute('aria-hidden', 'false');
   };
@@ -2340,16 +2529,21 @@ function bindEvents() {
 
   document.getElementById('hire-agent-form').addEventListener('submit', async (e) => {
     e.preventDefault();
+    const chosenModel =
+      hireModelSelectEl?.value && hireModelSelectEl.value !== '__custom__'
+        ? hireModelSelectEl.value
+        : hireModelInput?.value.trim() || '';
     const payload = {
-      name: document.getElementById('hire-name').value.trim(),
-      roleTitle: document.getElementById('hire-role').value.trim(),
+      name: hireNameEl.value.trim(),
+      roleTitle: hireRoleEl.value.trim(),
+      team: hireTeamEl?.value === 'it' ? 'it' : 'core',
       tier: document.getElementById('hire-tier').value,
-      connectionMode: document.getElementById('hire-mode').value,
-      costTier: document.getElementById('hire-cost').value,
-      provider: document.getElementById('hire-provider').value,
-      modelId: document.getElementById('hire-model').value.trim(),
+      connectionMode: hireModeEl.value,
+      costTier: hireCostEl.value,
+      provider: hireProviderEl.value,
+      modelId: chosenModel,
       monthlyCapKRW: 0,
-      strengths: document.getElementById('hire-strengths').value.trim()
+      strengths: hireStrengthsEl.value.trim()
     };
     try {
       const res = await api('/api/agents', { method: 'POST', body: JSON.stringify(payload) });
@@ -2357,7 +2551,7 @@ function bindEvents() {
       e.target.reset();
       closeHire();
       renderAll();
-      toast(`${res.agent.name} 팀원이 조직에 합류했습니다.`);
+      toast(`${res.agent.name} 팀원이 ${payload.team === 'it' ? 'IT 유지보수팀' : '조직'}에 합류했습니다.`);
     } catch (err) {
       toast(err.message, true);
     }

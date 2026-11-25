@@ -14,7 +14,7 @@
   <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png" />
   <link rel="apple-touch-icon" href="./icons/icon-192.png" />
   <link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" />
-  <link rel="stylesheet" href="./styles.css?v=20261124w" />
+  <link rel="stylesheet" href="./styles.css?v=20261124x" />
   <script src="./vendor/marked.umd.js" defer></script>
   <script src="./vendor/lucide.min.js" defer></script>
 </head>
@@ -142,6 +142,7 @@
                   <button type="button" class="pill-chip" data-preset="life">식당 예약</button>
                   <button type="button" class="pill-chip" data-preset="content">콘텐츠</button>
                   <button type="button" class="pill-chip" data-preset="dev">개발</button>
+                  <button type="button" class="pill-chip" data-preset="it_ops">IT팀 보수</button>
                 </div>
                 <div class="composer-send-group">
                   <select id="input-mission-mode" class="assignee-select" aria-label="업무 유형">
@@ -171,6 +172,7 @@
                       <option value="life">일상·예약</option>
                       <option value="content">콘텐츠</option>
                       <option value="dev">개발</option>
+                      <option value="it_ops">IT팀 · 자체 보수·보안</option>
                     </select>
                   </label>
                   <label class="field">
@@ -350,6 +352,14 @@
           <div class="org-tier">
             <div class="tier-header"><h3>실행 팀원</h3></div>
             <div class="roster-grid" id="roster-executors"></div>
+          </div>
+
+          <div class="org-tier">
+            <div class="tier-header" style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+              <h3>IT 유지보수팀 (GM Corp IT · 코딩 · 보안 · QA)</h3>
+              <span class="badge badge-green">자체 앱 보수 · 보안 감사 전담</span>
+            </div>
+            <div class="roster-grid" id="roster-it"></div>
           </div>
         </section>
 
@@ -646,9 +656,56 @@
       </div>
       <form id="hire-agent-form" class="modal-body">
         <div class="form-row-two">
+          <label class="field">
+            <span class="field-label">프로바이더 *</span>
+            <select id="hire-provider">
+              <option value="groq" selected>Groq (무료 API)</option>
+              <option value="openrouter">OpenRouter (무료/크레딧)</option>
+              <option value="gemini">Google Gemini (무료 API)</option>
+              <option value="exaone">LG EXAONE (무료 API)</option>
+              <option value="manus">Manus / Cue (MCP)</option>
+              <option value="custom">직접 연결 · 기타</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">모델 선택 (선택 시 자동완성)</span>
+            <select id="hire-model-select"></select>
+          </label>
+        </div>
+
+        <label class="field" id="hire-custom-model-wrap" style="display:none;">
+          <span class="field-label">모델 ID 직접 입력</span>
+          <input type="text" id="hire-model" placeholder="예: qwen/qwen3.8-27b" />
+        </label>
+
+        <div class="form-row-two">
+          <label class="field">
+            <span class="field-label">소속 팀</span>
+            <select id="hire-team">
+              <option value="core" selected>전략 · 실행 본부</option>
+              <option value="it">IT 유지보수팀 (GM Corp IT)</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">역할 프리셋 (선택 후 수정 가능)</span>
+            <select id="hire-role-preset">
+              <option value="auto" selected>모델 추천 역할 (자동완성)</option>
+              <option value="it_dev">IT · 풀스택 개발 / 버그 보수</option>
+              <option value="it_sec">IT · 보안 감사 / 취약점 리뷰</option>
+              <option value="it_qa">IT · QA / 테스트 / 릴리스 검증</option>
+              <option value="strategy">전략 · 수익 모델 / ROI 분석</option>
+              <option value="marketing">마케팅 · 콘텐츠 / 카피라이팅</option>
+              <option value="docs">한국어 문서 · 법무 / 세무 정리</option>
+              <option value="custom">직접 입력</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="form-row-two">
           <label class="field"><span class="field-label">이름 *</span><input type="text" id="hire-name" required /></label>
           <label class="field"><span class="field-label">역할 *</span><input type="text" id="hire-role" required /></label>
         </div>
+
         <div class="form-row-three">
           <label class="field">
             <span class="field-label">계층</span>
@@ -661,9 +718,9 @@
           <label class="field">
             <span class="field-label">방식</span>
             <select id="hire-mode">
-              <option value="bridge" selected>앱·구독</option>
-              <option value="api">API</option>
+              <option value="api" selected>API 자동</option>
               <option value="mcp">MCP</option>
+              <option value="bridge">앱·구독</option>
             </select>
           </label>
           <label class="field">
@@ -675,21 +732,8 @@
             </select>
           </label>
         </div>
-        <div class="form-row-two">
-          <label class="field">
-            <span class="field-label">프로바이더</span>
-            <select id="hire-provider">
-              <option value="gemini">Google Gemini</option>
-              <option value="groq">Groq (무료 API)</option>
-              <option value="openrouter">OpenRouter</option>
-              <option value="exaone">LG EXAONE</option>
-              <option value="manus">Manus / Cue</option>
-              <option value="custom" selected>기타</option>
-            </select>
-          </label>
-          <label class="field"><span class="field-label">모델 ID</span><input type="text" id="hire-model" /></label>
-        </div>
-        <label class="field"><span class="field-label">강점</span><textarea id="hire-strengths" rows="2"></textarea></label>
+
+        <label class="field"><span class="field-label">강점 (자동완성 · 수정 가능)</span><textarea id="hire-strengths" rows="2"></textarea></label>
         <div class="form-actions">
           <button type="button" class="btn btn-ghost" id="btn-cancel-hire">취소</button>
           <button type="submit" class="btn btn-primary">추가</button>
@@ -719,6 +763,6 @@
   </nav>
 
   <div class="toast-region" id="toast-region" aria-live="polite"></div>
-  <script type="module" src="./app.js?v=20261124w"></script>
+  <script type="module" src="./app.js?v=20261124x"></script>
 </body>
 </html>
