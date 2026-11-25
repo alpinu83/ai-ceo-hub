@@ -1772,6 +1772,18 @@ function renderIntegrationsView() {
   setKeyStatus('status-exaone', p.exaone);
   setKeyStatus('status-exaone-quick', p.exaone);
   setKeyStatus('status-github', p.githubRepo);
+  {
+    const gd = p.googleData || {};
+    const gdEl = document.getElementById('status-googledata');
+    if (gdEl) {
+      gdEl.textContent = gd.hasApiKey ? `키 등록됨${gd.ga4PropertyId ? ` · GA4 ${gd.ga4PropertyId}` : ''}${gd.searchConsoleSite ? ' · 서치콘솔' : ''}` : '미연결';
+      gdEl.classList.toggle('ok', Boolean(gd.hasApiKey));
+    }
+    const gaIdEl = document.getElementById('ga4-property-id');
+    if (gaIdEl && document.activeElement !== gaIdEl) gaIdEl.value = gd.ga4PropertyId || '';
+    const scEl = document.getElementById('sc-site');
+    if (scEl && document.activeElement !== scEl) scEl.value = gd.searchConsoleSite || '';
+  }
   setKeyStatus('status-github-quick', p.githubRepo);
 
   // Live server + Gist cloud sync status
@@ -3131,6 +3143,15 @@ function bindEvents() {
           apiKey: document.getElementById('key-exaone').value.trim(),
           model: document.getElementById('model-exaone').value.trim()
         },
+        ...(document.getElementById('ga4-property-id')
+          ? {
+              googleData: {
+                apiKey: document.getElementById('key-googledata')?.value.trim() || '',
+                ga4PropertyId: document.getElementById('ga4-property-id').value.trim(),
+                searchConsoleSite: document.getElementById('sc-site').value.trim()
+              }
+            }
+          : {}),
         githubRepo: {
           apiKey: document.getElementById('key-github')?.value.trim() || '',
           repo: document.getElementById('repo-github')?.value.trim() || 'alpinu83/ai-ceo-hub',
@@ -3143,7 +3164,7 @@ function bindEvents() {
     try {
       const res = await api('/api/settings', { method: 'PUT', body: JSON.stringify(payload) });
       state = res.state;
-      ['key-gemini', 'key-groq', 'key-openrouter', 'key-exaone', 'key-github', 'tg-bot-token'].forEach((id) => {
+      ['key-gemini', 'key-groq', 'key-openrouter', 'key-exaone', 'key-github', 'key-googledata', 'tg-bot-token'].forEach((id) => {
         const el = document.getElementById(id);
         if (el) el.value = '';
       });

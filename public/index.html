@@ -651,6 +651,25 @@
                   <span class="field-label">권한 부여된 저장소 목록 (쉼표로 구분)</span>
                   <input type="text" id="allowed-repos-github" placeholder="alpinu83/ai-ceo-hub, alpinu83/kr-calc-hub, alpinu83/alpinu83.github.io" />
                 </label>
+                <div class="provider-head" style="margin-top:18px;">
+                  <h3>웹사이트 데이터 조회 — GA4 · 서치콘솔 (읽기 전용)</h3>
+                  <div class="provider-right">
+                    <span class="key-status" id="status-googledata">미연결</span>
+                    <button type="button" class="btn btn-ghost btn-sm" data-ping-provider="googleData">테스트</button>
+                  </div>
+                </div>
+                <p class="form-hint" style="margin-top:8px;">
+                  Google Cloud 서비스 계정 JSON 키를 넣으면 AI 팀원들이 실제 방문자·검색어 수치를 보고 일합니다.
+                  서비스 계정 이메일을 GA4 속성의 <strong>뷰어</strong>, 서치콘솔 속성의 <strong>제한됨</strong> 사용자로 추가해 두어야 합니다.
+                </p>
+                <label class="field" style="margin-top:10px;">
+                  <span class="field-label">서비스 계정 JSON 키 (저장 후 화면에 다시 표시되지 않음)</span>
+                  <textarea id="key-googledata" rows="3" placeholder='{"type": "service_account", ...}' autocomplete="off" style="width:100%;font-family:monospace;font-size:12px;"></textarea>
+                </label>
+                <div class="form-row-two" style="margin-top:10px;">
+                  <label class="field"><span class="field-label">GA4 속성 ID (숫자)</span><input type="text" id="ga4-property-id" placeholder="565386086" /></label>
+                  <label class="field"><span class="field-label">서치콘솔 사이트</span><input type="text" id="sc-site" placeholder="https://korea-tax-cal.com/" /></label>
+                </div>
                 <div class="form-actions">
                   <a class="text-link" href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noreferrer">GitHub 토큰 발급 페이지 열기 ↗</a>
                   <button type="submit" class="btn btn-primary">저장</button>
