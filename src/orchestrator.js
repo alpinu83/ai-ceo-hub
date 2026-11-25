@@ -6,6 +6,8 @@ import { createOpenAI } from '@ai-sdk/openai';
 import { z } from 'zod';
 import { uid } from './store.js';
 import { buildMissionLiveContext } from './live-context.js';
+import { isProviderCooling } from './ai-guard.js';
+import { selectSkills, renderSkills, skillBlock, shouldReview, buildReviewRubric, getSkillSettings } from './skills.js';
 
 // ---- Company context hook (CEO 전역 지침 + 회사 기억 + 업무 상태) ----
 // API로 연결된 모델은 호출마다 기억이 없으므로, 서버가 등록한 provider가 매 호출에 공통 맥락을 붙여 줍니다.
@@ -851,7 +853,9 @@ CEO의 지시를 3~5개 구체적 실무 작업으로 분해하고, 아래 조�
 - GA4·AdSense 등 미연동 외부 API를 "실제 조회 완료"하라는 허위 업무 대신, 실제 코드·SEO·콘텐츠·체크리스트 중심으로 분해하세요.
 
 [활성 AI 조직원]
-${rosterText}`, '', { compact: true });
+${rosterText}
+
+${skillBlock({ agent: leadAgent, mission: { directive, domain }, purpose: 'decompose', settings, compact: true, max: 1 })}`, '', { compact: true });
 
     try {
       const { object } = await generateObject({
@@ -932,8 +936,12 @@ export async function executeAgentTask({ task, mission, agent, settings, priorOu
 5. 아래 [CEO 전역 지침]과 [회사 기억]은 이전 대화·결정의 요약입니다. 이미 결정·반려된 내용을 되풀이하지 말고, 그 결정을 전제로 작업하세요.`;
     const companyCtx = companyContextFor(mission?.id);
     const companyCtxCompact = companyContextFor(mission?.id, { compact: true });
-    const systemFull = companyCtx ? `${system}\n\n${companyCtx}` : system;
-    const systemCompact = companyCtxCompact ? `${system}\n\n${companyCtxCompact}` : system;
+    // 작업 유형에 맞는 스킬(절차·출력 형식·자체 점검표) 주입
+    const skills = selectSkills({ agent, task, mission, purpose: 'task', settings });
+    const skillsFull = renderSkills(skills);
+    const skillsCompact = renderSkills(skills, { compact: true });
+    const systemFull = [system, skillsFull, companyCtx].filter(Boolean).join('\n\n');
+    const systemCompact = [system, skillsCompact, companyCtxCompact].filter(Boolean).join('\n\n');
 
     const prompt = `미션: ${mission.title}
 CEO 원지시: ${mission.directive}
@@ -977,6 +985,28 @@ CEO 원지시: ${String(mission.directive || '').slice(0, 800)}
 상세 요구사항: ${String(task.description || '').slice(0, 1500)}${liveBlock ? `\n\n${liveBlock.slice(0, 2500)}` : ''}${contextBlock ? `\n${contextBlock.slice(0, 1200)}` : ''}`;
     const isSizeError = (err) => /too large|413|context length|maximum context|tokens per mi|reduce the length/i.test(String(err?.message || err));
 
+    // 초안 → (중요 작업이면) 다른 모델의 스킬 점검표 채점 → 기준 미달 시 수정본
+    const finish = async (text, label) => {
+      const refined = await refineDraft({
+        draft: String(text || '').trim(),
+        authorLabel: label,
+        system: systemCompact,
+        taskPrompt: compactPrompt,
+        skills,
+        task,
+        agent,
+        settings
+      });
+      return {
+        output: refined.output,
+        executionModeUsed: `live_sdk:${label}${refined.quality?.revised ? '+review' : ''}`,
+        live: true,
+        quality: refined.quality
+      };
+    };
+
+    let draft = null;
+    let draftLabel = '';
     try {
       const { text } = await generateText({
         model: resolved.model,
@@ -985,17 +1015,20 @@ CEO 원지시: ${String(mission.directive || '').slice(0, 800)}
         maxTokens: 2800,
         maxRetries: 0, abortSignal: AbortSignal.timeout(120000)
       });
-      return { output: text.trim(), executionModeUsed: `live_sdk:${resolved.label}`, live: true };
+      draft = text;
+      draftLabel = resolved.label;
     } catch (primaryErr) {
       const sizeErr = isSizeError(primaryErr);
       if (sizeErr) {
         try {
           const { text } = await generateText({ model: resolved.model, system: systemCompact, prompt: compactPrompt, maxTokens: 2000, maxRetries: 0, abortSignal: AbortSignal.timeout(120000) });
-          return { output: text.trim(), executionModeUsed: `live_sdk:${resolved.label}(compact)`, live: true };
+          draft = text;
+          draftLabel = `${resolved.label}(compact)`;
         } catch {
           // fall through to backups
         }
       }
+      if (draft !== null) return finish(draft, draftLabel);
       for (const backup of buildBackupModels()) {
         try {
           const useCompact = sizeErr || /groq/.test(backup.label);
@@ -1006,13 +1039,14 @@ CEO 원지시: ${String(mission.directive || '').slice(0, 800)}
             maxTokens: 2800,
             maxRetries: 0, abortSignal: AbortSignal.timeout(120000)
           });
-          return { output: text.trim(), executionModeUsed: `live_sdk:${backup.label}`, live: true };
+          return finish(text, backup.label);
         } catch {
           // try next backup
         }
       }
       throw primaryErr;
     }
+    return finish(draft, draftLabel);
   }
 
   // External action bots (Pickle / Cue / Muse / Vooy / Instinct): prepare honest handoff brief without faking phone calls/emails
@@ -1073,7 +1107,9 @@ export async function synthesizeMissionReport({ mission, tasks, agents, settings
       const { text } = await generateText({
         model: resolved.model,
         system: withCompanyContext(
-          `당신은 총괄 팀장(${leadAgent.name})입니다. 팀원 결과를 취합해 CEO가 30초 안에 파악하고 의사결정할 수 있는 최종 임원 보고서(Executive Brief)를 한국어 마크다운(표·체크리스트 포함)으로 작성하세요. 첫 두 줄은 "무엇이 끝났고 무엇이 남았는지"를 한 문장씩 사실대로 쓰고, 대표님이 직접 해야 할 일이 있으면 별도 체크리스트로 분리하세요.`,
+          `당신은 총괄 팀장(${leadAgent.name})입니다. 팀원 결과를 취합해 CEO가 30초 안에 파악하고 의사결정할 수 있는 최종 임원 보고서(Executive Brief)를 한국어 마크다운(표·체크리스트 포함)으로 작성하세요. 첫 두 줄은 "무엇이 끝났고 무엇이 남았는지"를 한 문장씩 사실대로 쓰고, 대표님이 직접 해야 할 일이 있으면 별도 체크리스트로 분리하세요.
+
+${skillBlock({ agent: leadAgent, mission, purpose: 'report', settings, compact: true, max: 1 })}`,
           mission?.id,
           { compact: true }
         ),
@@ -1133,7 +1169,7 @@ export function createApprovalForTask(task, agent, mission, reason, proposedActi
   };
 }
 
-export async function proposeNextProjectPhase({ mission, tasks, agents, settings }) {
+export async function proposeNextProjectPhase({ mission, tasks, agents, settings, leadAssessment = '' }) {
   const currentPhase = Number(mission?.phase) || 1;
   const nextPhase = currentPhase + 1;
   const leadAgent = agents.find((a) => a.id === (mission?.leadAgentId || 'agent_gemini_neon')) || agents[0];
@@ -1164,6 +1200,10 @@ export async function proposeNextProjectPhase({ mission, tasks, agents, settings
 지속 프로젝트의 Phase ${currentPhase} 결과를 분석하고, 목표를 한 단계 더 진전시킬 **Phase ${nextPhase} 후속 추진 제안서**를 작성하세요.
 - 이미 완료된 리서치/초안을 반복하지 말고, 실제 성과·전환·개선·확장으로 이어지는 구체적 다음 단계를 제안하세요.
 - nextDirective는 CEO가 승인하는 즉시 팀원들에게 분배해 자동 실행할 수 있는 명확한 한국어 지시문으로 작성하세요.
+- 대표님만 할 수 있는 일(외부 계정·결제·키 발급)은 nextDirective에 넣지 말고 rationale에 "대표님 요청"으로 분리하세요.
+- 팀원 보고서의 주장과 [회사 기억]이 충돌하면 회사 기억을 따르세요.
+${leadAssessment ? `\n[팀장 사전 검토]\n${String(leadAssessment).slice(0, 1200)}\n` : ''}
+${skillBlock({ agent: leadAgent, mission, task: { title: '다음 단계 전략 제안 Phase 계획' }, purpose: 'lead_plan', settings, compact: true, max: 1 })}
 ${companyContextFor(mission?.id, { compact: true })}`;
 
       const prompt = `프로젝트명: ${mission.title}
@@ -1558,25 +1598,152 @@ export async function generateStandupSession({ mission, tasks, agents, settings 
 
 
 // ================================================================
-// \ud300\uc7a5 \ub2a5\ub3d9 \ucd94\uc9c4: \ubbf8\uc158\uc758 \uc791\uc5c5\uc774 \ubaa8\ub450 \ub05d\ub09c \ub4a4, \ub300\ud45c\ub2d8\uc774 \ubb3c\uc5b4\ubcf4\uae30 \uc804\uc5d0 \ud300\uc7a5\uc774 \uc2a4\uc2a4\ub85c \ub2e4\uc74c \ud589\ub3d9\uc744 \uc815\ud569\ub2c8\ub2e4.
-//  - \ubaa9\ud45c \ub2ec\uc131 \u2192 \uc885\ub8cc \ubcf4\uace0
-//  - \uc790\uccb4 \ucc98\ub9ac \uac00\ub2a5\ud55c \ud6c4\uc18d \uc791\uc5c5 \u2192 \ud300\uc7a5 \uc804\uacb0\ub85c \ubc30\uc815\u00b7\uc790\ub3d9 \uc2e4\ud589
-//  - \ub300\ud45c\ub2d8\ub9cc \ud560 \uc218 \uc788\ub294 \uc77c(\uad8c\ud55c\u00b7\ud0a4\u00b7\uacb0\uc815\u00b7\uc678\ubd80 \uacc4\uc815 \uc791\uc5c5) \u2192 \uad6c\uccb4\uc801\uc73c\ub85c \uc694\uccad
+// 팀장 능동 추진: 미션의 작업이 모두 끝난 뒤, 대표님이 물어보기 전에 팀장이 스스로 다음 행동을 정합니다.
+//  - 목표 달성 → 종료 보고
+//  - 자체 처리 가능한 후속 작업 → 팀장 전결로 배정·자동 실행
+//  - 대표님만 할 수 있는 일(권한·키·결정·외부 계정 작업) → 구체적으로 요청
 // ================================================================
+// ================================================================
+// 교차 검수(리뷰 루프): 초안을 다른 무료 모델이 스킬 점검표로 채점하고, 기준 미달이면 지적사항을 반영해 다시 씁니다.
+// 한 모델의 맹점을 다른 모델이 잡아 주는 방식이라 단일 무료 모델보다 품질이 크게 올라갑니다.
+// Gemini 무료 한도(하루 수십 회)는 팀장용으로 아끼려고 검수는 Groq → OpenRouter → Gemini 순으로 고릅니다.
+// ================================================================
+const ReviewSchema = z.object({
+  score: z.number().describe('0~10점. 점검표를 모두 통과하고 바로 쓸 수 있으면 9~10, 고칠 게 있으면 7 이하'),
+  verdict: z.string().describe('한 줄 총평'),
+  issues: z
+    .array(z.object({ problem: z.string(), fix: z.string() }))
+    .max(8)
+    .describe('구체적인 문제와 고치는 방법. 사실 오류·빠진 요구사항·점검표 위반 위주')
+});
+
+function providerOfLabel(label = '') {
+  const m = String(label).match(/^(gemini|groq|openrouter|exaone|litellm|claude)/i);
+  return m ? m[1].toLowerCase() : '';
+}
+
+function reviewerCandidates(settings, authorLabel = '') {
+  const p = settings?.providers || {};
+  const author = providerOfLabel(authorLabel);
+  const list = [];
+  if (p.groq?.apiKey) {
+    const client = createOpenAI({
+      baseURL: p.groq.baseUrl || 'https://api.groq.com/openai/v1',
+      apiKey: p.groq.apiKey.trim(),
+      compatibility: 'compatible',
+      fetch: createOpenAiModelFallbackFetch(['openai/gpt-oss-20b'])
+    });
+    list.push({ provider: 'groq', model: client('openai/gpt-oss-120b'), label: 'groq:openai/gpt-oss-120b', compact: true });
+  }
+  if (p.openrouter?.apiKey) {
+    const client = createOpenAI({
+      baseURL: p.openrouter.baseUrl || 'https://openrouter.ai/api/v1',
+      apiKey: p.openrouter.apiKey.trim(),
+      compatibility: 'compatible',
+      headers: { 'HTTP-Referer': 'https://ai-ceo-hub.onrender.com', 'X-Title': 'CEO Office' },
+      fetch: createOpenAiModelFallbackFetch(['openrouter/free'])
+    });
+    const name = p.openrouter.model || 'openrouter/free';
+    list.push({ provider: 'openrouter', model: client(name), label: `openrouter:${name}` });
+  }
+  if (p.gemini?.apiKey) {
+    const g = resolveLiveBackendModel({ providers: { gemini: p.gemini } });
+    if (g) list.push({ provider: 'gemini', model: g.model, label: g.label });
+  }
+  const usable = list.filter((c) => !isProviderCooling(c.provider));
+  const others = usable.filter((c) => c.provider !== author);
+  return others.length ? others : usable;
+}
+
+async function generateReview(model, opts) {
+  for (const mode of ['auto', 'json']) {
+    try {
+      const { object } = await generateObject({
+        model,
+        schema: ReviewSchema,
+        maxRetries: 0,
+        abortSignal: AbortSignal.timeout(90000),
+        ...(mode === 'json' ? { mode: 'json' } : {}),
+        ...opts
+      });
+      return object;
+    } catch (err) {
+      if (/quota|rate limit|429|401|403|api key/i.test(String(err?.message || err))) throw err;
+    }
+  }
+  throw new Error('review failed');
+}
+
+/**
+ * Cross-model review + one revision pass. Never throws: on any failure the original draft is kept.
+ * Returns { output, quality: { skills, reviewed, score, revised, reviewer, issues } }
+ */
+export async function refineDraft({ draft, authorLabel = '', system = '', taskPrompt = '', skills = [], task = null, agent = null, settings = null }) {
+  const quality = { skills: skills.map((s) => s.id), reviewed: false, score: null, revised: false, reviewer: '', issues: [] };
+  if (!draft || draft.length < 40 || !shouldReview({ skills, task, agent, settings })) return { output: draft, quality };
+  const cfg = getSkillSettings(settings);
+  const minScore = Math.max(1, Math.min(10, Number(cfg.minScore) || 8));
+  const rubric = buildReviewRubric(skills);
+
+  for (const rv of reviewerCandidates(settings, authorLabel).slice(0, 2)) {
+    let review = null;
+    try {
+      review = await generateReview(rv.model, {
+        system: `당신은 까다로운 수석 검수자입니다. 동료 AI의 결과물을 아래 점검표로 채점하세요.
+- 점수는 버트지 말고 엄격하게: 점검표를 모두 통과하고 대표님이 바로 쓸 수 있을 때만 9점 이상.
+- 작업 지시와 제공 자료에 없는 사실·수치·파일·기능을 지어냈으면 반드시 지적하세요.
+- issues에는 "무엇이 문제이고 어떻게 고치는지"를 구체적으로 쓰세요. 취향 문제는 쓰지 마세요.
+
+[점검표]
+${rubric}`,
+        prompt: `[작업 지시와 자료]\n${String(taskPrompt).slice(0, rv.compact ? 3500 : 6000)}\n\n[검수할 결과물]\n${draft.slice(0, rv.compact ? 5000 : 9000)}`
+      });
+    } catch {
+      continue; // try the next reviewer
+    }
+    quality.reviewed = true;
+    quality.reviewer = rv.label;
+    quality.score = Number(review.score);
+    quality.issues = (review.issues || []).slice(0, 8).map((i) => `${i.problem} → ${i.fix}`);
+    if (!(quality.score < minScore) || !quality.issues.length) return { output: draft, quality };
+
+    // Revise with the reviewer model (it has the clearest view of what is wrong)
+    try {
+      const { text } = await generateText({
+        model: rv.model,
+        system: `${system}\n\n[수정 지시] 아래 초안을 검수 의견을 모두 반영해 고친 "최종본 전체"를 다시 쓰세요. 초안의 맞는 내용은 유지하고, 검수 의견·수정 내역·사과는 출력하지 마세요.`,
+        prompt: `${String(taskPrompt).slice(0, rv.compact ? 3000 : 5000)}\n\n[초안]\n${draft.slice(0, rv.compact ? 5000 : 9000)}\n\n[검수 의견 (${quality.score}점)]\n${quality.issues.map((x, i) => `${i + 1}. ${x}`).join('\n')}`,
+        maxTokens: 3000,
+        maxRetries: 0,
+        abortSignal: AbortSignal.timeout(120000)
+      });
+      const revised = String(text || '').trim();
+      if (revised.length > Math.min(200, draft.length * 0.4)) {
+        quality.revised = true;
+        return { output: revised, quality };
+      }
+    } catch {
+      // keep the draft
+    }
+    return { output: draft, quality };
+  }
+  return { output: draft, quality };
+}
+
 const LeadFollowUpSchema = z.object({
-  goalStatus: z.enum(['done', 'continue', 'blocked']).describe('\uc6d0\ub798 \uc9c0\uc2dc\uac00 \ub05d\ub0ac\uc73c\uba74 done, \ud300\uc774 \ub354 \ud560 \uc77c\uc774 \uc788\uc73c\uba74 continue, \ub300\ud45c\ub2d8 \uc870\uce58 \uc5c6\uc774\ub294 \uc9c4\ud589 \ubd88\uac00\uba74 blocked'),
-  report: z.string().describe('\ub300\ud45c\ub2d8\uaed8 \ub4dc\ub9ac\ub294 2~4\ubb38\uc7a5 \ubcf4\uace0. \uc2e4\uc81c \ud655\uc778\ub41c \uc0ac\uc2e4\ub9cc.'),
+  goalStatus: z.enum(['done', 'continue', 'blocked']).describe('원래 지시가 끝났으면 done, 팀이 더 할 일이 있으면 continue, 대표님 조치 없이는 진행 불가면 blocked'),
+  report: z.string().describe('대표님께 드리는 2~4문장 보고. 실제 확인된 사실만.'),
   nextTasks: z
     .array(
       z.object({
         title: z.string(),
         description: z.string(),
-        assigneeId: z.string().describe('\uc544\ub798 \uc870\uc9c1\uc6d0 \ubaa9\ub85d\uc758 id'),
-        isCodeChange: z.boolean().describe('\uc5f0\ub3d9 \uc800\uc7a5\uc18c \ucf54\ub4dc\u00b7\ubb38\uad6c\u00b7SEO \ud30c\uc77c\uc744 \uc2e4\uc81c\ub85c \uace0\uccd0\uc57c \ud558\ub294 \uc77c\uc774\uba74 true')
+        assigneeId: z.string().describe('아래 조직원 목록의 id'),
+        isCodeChange: z.boolean().describe('연동 저장소 코드·문구·SEO 파일을 실제로 고쳐야 하는 일이면 true')
       })
     )
     .max(3),
-  ceoRequests: z.array(z.string()).max(4).describe('\ub300\ud45c\ub2d8\ub9cc \ud560 \uc218 \uc788\ub294 \uc77c(\uad8c\ud55c\u00b7API \ud0a4\u00b7\uacb0\uc815\u00b7\uc678\ubd80 \uacc4\uc815 \uc791\uc5c5)\uc744 \uad6c\uccb4\uc801\uc73c\ub85c')
+  ceoRequests: z.array(z.string()).max(4).describe('대표님만 할 수 있는 일(권한·API 키·결정·외부 계정 작업)을 구체적으로')
 });
 
 export async function planLeadFollowUp({ mission, digest, agents, settings }) {
@@ -1588,16 +1755,20 @@ export async function planLeadFollowUp({ mission, digest, agents, settings }) {
     .map((a) => `- id: "${a.id}", ${a.name} (${a.roleTitle})`)
     .join('\n');
   const system = withCompanyContext(
-    `\ub2f9\uc2e0\uc740 \ucd1d\uad04 \ud300\uc7a5(${leadAgent.name})\uc785\ub2c8\ub2e4. \ud300\uc6d0\ub4e4\uc758 \uc791\uc5c5\uc774 \ubaa8\ub450 \ub05d\ub09c \uc0c1\ud0dc\uc785\ub2c8\ub2e4. \ub300\ud45c\ub2d8\uc774 \ubb3c\uc5b4\ubcf4\uae30 \uc804\uc5d0 \ub2e4\uc74c \ud589\ub3d9\uc744 \uc2a4\uc2a4\ub85c \uc815\ud558\uc138\uc694.
-\uaddc\uce59:
-- \uc6d0\ub798 \uc9c0\uc2dc\uac00 \uc774\ubbf8 \ub2ec\uc131\ub410\uc73c\uba74 goalStatus=done, nextTasks\ub294 \ube48 \ubc30\uc5f4.
-- \ud300\uc774 \uc9c1\uc811 \ub05d\ub0bc \uc218 \uc788\ub294 \uad6c\uccb4\uc801 \ud6c4\uc18d \uc791\uc5c5\ub9cc nextTasks\uc5d0 \ub123\uc73c\uc138\uc694(\ucd5c\ub300 3\uac1c). \uc774\ubbf8 \ud55c \uc77c\uc744 \ubc18\ubcf5\ud558\uac70\ub098 \ub9c9\uc5f0\ud55c \ub9ac\uc11c\uce58\u00b7\ubcf4\uace0\uc11c\ub9cc \ub298\ub9ac\ub294 \uc791\uc5c5\uc740 \uae08\uc9c0.
-- \uacb0\uc81c\u00b7\uad11\uace0\ube44\u00b7\uc678\ubd80 \ubc1c\uc1a1\u00b7\uc678\ubd80 \uacc4\uc815(\uc560\ub4dc\uc13c\uc2a4\u00b7GA4\u00b7\uc11c\uce58\ucf58\uc194 \ub4f1) \uc870\uc791\uc740 nextTasks\uac00 \uc544\ub2c8\ub77c ceoRequests\uc5d0 \uad6c\uccb4\uc801 \uc808\ucc28\ub85c \uc4f0\uc138\uc694.
-- \uad8c\ud55c\u00b7\ud0a4 \ubd80\uc871 \ub4f1\uc73c\ub85c \ub9c9\ud614\uc73c\uba74 goalStatus=blocked\ub85c \ud558\uace0 \ud544\uc694\ud55c \uc870\uce58\ub97c ceoRequests\uc5d0 \uc4f0\uc138\uc694.
-- report\uc5d0\ub294 \ud655\uc778\ub41c \uc0ac\uc2e4\ub9cc \uc4f0\uace0 \ucd94\uce21 \uc218\uce58\ub97c \uc2e4\uc81c\uac12\ucc98\ub7fc \uc4f0\uc9c0 \ub9c8\uc138\uc694.
+    `당신은 총괄 팀장(${leadAgent.name})입니다. 팀원들의 작업이 모두 끝난 상태입니다. 대표님이 물어보기 전에 다음 행동을 스스로 정하세요.
+규칙:
+- 원래 지시가 이미 달성됐으면 goalStatus=done, nextTasks는 빈 배열.
+- 팀이 직접 끝낼 수 있는 구체적 후속 작업만 nextTasks에 넣으세요(최대 3개). 이미 한 일을 반복하거나 막연한 리서치·보고서만 늘리는 작업은 금지.
+- 결제·광고비·외부 발송·외부 계정(애드센스·GA4·서치콘솔 등) 조작은 nextTasks가 아니라 ceoRequests에 구체적 절차로 쓰세요.
+- 권한·키 부족 등으로 막혔으면 goalStatus=blocked로 하고 필요한 조치를 ceoRequests에 쓰세요.
+- report에는 확인된 사실만 쓰고 추측 수치를 실제값처럼 쓰지 마세요.
 
-[\ubc30\uc815 \uac00\ub2a5\ud55c \ub0b4\ubd80 AI \uc870\uc9c1\uc6d0]
-${roster}`,
+- 팀원 보고서의 주장과 [회사 기억]이 충돌하면 회사 기억을 따르세요.
+
+[배정 가능한 내부 AI 조직원]
+${roster}
+
+${skillBlock({ agent: leadAgent, mission, purpose: 'lead_plan', settings, compact: true, max: 1 })}`,
     mission?.id,
     { compact: true }
   );
