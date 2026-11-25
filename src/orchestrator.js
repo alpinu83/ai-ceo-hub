@@ -1090,9 +1090,10 @@ function pickResponders(text, agents, mission, tasks) {
     { id: 'agent_muse', re: /@?뮤즈|muse/ },
     { id: 'agent_cue', re: /@?큐이|@?큐\b|cue|마누스|manus/ },
     { id: 'agent_vooy', re: /@?부이|vooy/ },
-    { id: 'agent_deepseek', re: /@?딥시크|deepseek/ },
+    { id: 'agent_deepseek', re: /@?네모트론|nemotron|딥시크|deepseek/ },
+    { id: 'agent_gemma', re: /@?젬마|gemma/ },
     { id: 'agent_qwen', re: /@?큐원|qwen/ },
-    { id: 'agent_groq', re: /@?라마|llama|그록|groq/ },
+    { id: 'agent_groq', re: /@?라마|llama|그록|groq|gpt-oss/ },
     { id: 'agent_gemini_neon', re: /@?제미나이|gemini|하이드로젠|hydrogen|네온|neon/ },
     { id: 'agent_instinct', re: /@?인스팅스|인스팅트|instinct/ }
   ];
@@ -1155,7 +1156,7 @@ export async function generateTeamChatReplies({ userMessage, mission, tasks, age
   const responders = pickResponders(userMessage, agents, mission, tasks);
   const ceoName = settings?.ceoName || '대표님';
   const replies = [];
-  const hasExplicitMention = /@(?:엑사원|피클|알렉스|뮤즈|큐|큐이|부이|딥시크|deepseek|큐원|qwen|라마|llama|그록|groq|제미나이|네온|하이드로젠|인스팅스|전체)/i.test(userMessage);
+  const hasExplicitMention = /@(?:엑사원|피클|알렉스|뮤즈|큐|큐이|부이|네모트론|nemotron|젬마|gemma|딥시크|deepseek|큐원|qwen|라마|llama|그록|groq|제미나이|네온|하이드로젠|인스팅스|전체)/i.test(userMessage);
 
   for (const ag of responders) {
     const agTasks = tasks.filter((t) => t.assigneeId === ag.id);

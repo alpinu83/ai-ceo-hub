@@ -1429,8 +1429,13 @@ app.post('/api/missions/:id/deploy-idle', async (c) => {
   const roleTemplates = {
     agent_deepseek: {
       title: '수익 구조·ROI 심층 추론 및 리스크 검증',
-      description: `"${mission.title}"의 수익화 병목, 단위 경제성(ROI), 숨은 리스크를 DeepSeek R1 심층 추론으로 검증하고 우선순위 실행안을 도출합니다.`,
+      description: `"${mission.title}"의 수익화 병목, 단위 경제성(ROI), 숨은 리스크를 Nemotron 3 Ultra 550B 심층 추론으로 검증하고 우선순위 실행안을 도출합니다.`,
       domain: 'business'
+    },
+    agent_gemma: {
+      title: 'UX·사용자 동선 개선 및 설득력 있는 카피·문서 기획',
+      description: `"${mission.title}"의 이탈 구간을 줄이고 전환을 높이는 UX 개선안, 핵심 페이지 카피, 사용자 관점 기획 문서를 작성합니다.`,
+      domain: 'content'
     },
     agent_qwen: {
       title: '웹·SEO·자동화 기술 구현 및 코드 개선안',

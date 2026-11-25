@@ -56,7 +56,7 @@ async function runTests() {
     // 3. Initial state & reset
     const resetRes = await (await fetch(`${BASE}/api/reset`, { method: 'POST' })).json();
     const mcpToken = resetRes.state.settings.mcpToken;
-    assert.equal(resetRes.state.agents.length, 10, 'default org chart has 10 AI agents (Gemini 4 Hydrogen + DeepSeek R1 + Qwen3 + Llama 3.3 + EXAONE + external)');
+    assert.equal(resetRes.state.agents.length, 11, 'default org chart has 11 AI agents (2 Groq + 2 OpenRouter + Gemini + EXAONE + external)');
 
     // 4. Create mission & parallel run-all
     const created = await (

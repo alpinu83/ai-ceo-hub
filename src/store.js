@@ -136,6 +136,26 @@ export function createDefaultState() {
         accent: '#2563EB'
       },
       {
+        id: 'agent_gemma',
+        name: 'Gemma 4 31B (OR)',
+        shortCode: 'G4',
+        roleTitle: '기획·UX·글쓰기·다목적 실무 팀원 (OpenRouter 무료)',
+        tier: 'specialist',
+        reportsTo: 'agent_gemini_neon',
+        provider: 'openrouter',
+        modelId: 'google/gemma-4-31b-it:free',
+        connectionMode: 'api',
+        costTier: 'free',
+        appUrl: 'https://openrouter.ai',
+        monthlyCapKRW: 0,
+        spentKRW: 0,
+        domains: ['content', 'business', 'dev'],
+        strengths: 'Google Gemma 4 31B 무료 모델로 기획안, 사용자 UX 개선, 깔끔한 카피라이팅·문서·코드 보조 수행',
+        bridgeGuide: 'OpenRouter 무료 API 키(sk-or-v1-…)를 공유해 0원으로 자동 실행됩니다. (한도 절약 시 AI 팀에서 비활성 가능)',
+        active: true,
+        accent: '#0891B2'
+      },
+      {
         id: 'agent_qwen',
         name: 'Qwen 3.8 (Groq)',
         shortCode: 'QW',
@@ -379,7 +399,7 @@ export function loadDb() {
           ...a
         };
       });
-    for (const requiredId of ['agent_groq', 'agent_qwen', 'agent_deepseek']) {
+    for (const requiredId of ['agent_groq', 'agent_qwen', 'agent_gemma', 'agent_deepseek']) {
       if (!rawAgents.some((a) => a.id === requiredId)) {
         const defAg = def.agents.find((a) => a.id === requiredId);
         if (defAg) rawAgents.splice(1, 0, defAg);
