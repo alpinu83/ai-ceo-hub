@@ -367,12 +367,24 @@ async function api(url, options = {}) {
     : url.startsWith('/')
       ? `.${url}`
       : url;
+  const adminKey = localStorage.getItem('ceoAdminKey') || '';
   const res = await fetch(targetUrl, {
     ...options,
-    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) }
+    headers: {
+      'Content-Type': 'application/json',
+      ...(adminKey ? { 'x-ceo-key': adminKey } : {}),
+      ...(options.headers || {})
+    }
   });
   const ct = res.headers.get('content-type') || '';
   const data = ct.includes('application/json') ? await res.json().catch(() => ({})) : await res.text();
+  if (res.status === 401 && typeof data === 'object' && data.code === 'CEO_KEY_REQUIRED' && !options._keyRetried) {
+    const entered = window.prompt('CEO 관리자 키를 입력해 주세요 (서버 CEO_ADMIN_KEY):', '');
+    if (entered && entered.trim()) {
+      localStorage.setItem('ceoAdminKey', entered.trim());
+      return api(url, { ...options, _keyRetried: true });
+    }
+  }
   if (!res.ok) {
     throw new Error((typeof data === 'object' && data.error) || `요청 실패 (${res.status})`);
   }
@@ -696,7 +708,7 @@ function renderActiveMission(mission) {
             <span class="badge badge-green">총괄 팀장: ${esc(lead?.name || '팀장')}</span>
             ${
               linkedRepo
-                ? `<span class="badge ${ghHasToken ? 'badge-green' : 'badge-amber'}" title="${ghHasToken ? '실코드 수정 · PR 생성 · 결재 시 자동 배포 가능' : '실제 소스 읽기 가능 · 설정에서 IT팀 GitHub 토큰 등록 시 PR 자동 수정 활성화'}">GitHub: ${esc(linkedRepo)} · ${ghHasToken ? '실수정 가능' : '읽기 전용'}</span>`
+                ? `<span class="badge ${ghHasToken ? 'badge-green' : 'badge-amber'}" title="${ghHasToken ? '팀이 결정한 내용을 IT팀이 실제 코드(PR)로 만들어 결재에 올리고, 승인하면 바로 머지·배포합니다' : '실제 소스 읽기 가능 · 설정에서 IT팀 GitHub 토큰 등록 시 결재 승인 = 실코드 배포 활성화'}">GitHub: ${esc(linkedRepo)} · ${ghHasToken ? '승인 시 자동 배포' : '읽기 전용'}</span>`
                 : ''
             }
             ${
@@ -718,11 +730,6 @@ function renderActiveMission(mission) {
               : isProject
                 ? `<button type="button" class="btn btn-primary btn-sm" id="btn-propose-next-phase" data-mission-id="${esc(mission.id)}">다음 단계 제안</button>`
                 : ''
-          }
-          ${
-            linkedRepo
-              ? `<button type="button" class="btn btn-primary btn-sm" id="btn-trigger-it-pr" data-mission-id="${esc(mission.id)}">실코드 수정 · PR 생성</button>`
-              : ''
           }
           ${
             idleCount > 0
@@ -1130,6 +1137,45 @@ function renderMissionReportAndFlow(mission, lead, tasks) {
   return `${flowHtml}${reportHtml}${historyHtml}`;
 }
 
+const CODE_STATUS_LABELS = {
+  waiting_team: ['badge-amber', '팀 작업 마무리 대기', '팀원들이 작업을 마치면 IT팀이 결정사항을 실제 코드(PR)로 만들어 이 카드에 붙입니다. 지금 승인해도 준비되는 즉시 반영됩니다.'],
+  preparing: ['badge-amber', '실코드 변경안 작성 중', 'IT팀이 실제 저장소 코드를 읽고 변경안과 보안 감사를 진행하고 있습니다.'],
+  ready: ['badge-green', '승인 시 자동 머지 → 라이브 배포', '아래 diff가 승인 즉시 main에 머지되고 배포됩니다. 별도 지시는 필요 없습니다.'],
+  none: ['badge-neutral', '코드 변경 불필요', 'IT팀 검토 결과 이 건은 저장소 코드를 바꿀 내용이 없습니다.'],
+  unavailable: ['badge-neutral', '저장소 미연동', 'GitHub 토큰 또는 저장소 연동이 없어 코드 반영을 하지 않습니다.'],
+  failed: ['badge-amber', '변경안 사전 작성 실패', '승인하면 IT팀이 다시 작성하고, 보안 감사를 통과하면 바로 머지·배포합니다.'],
+  merging: ['badge-blue', 'main 머지 진행 중', 'CI 확인 후 main에 머지하고 있습니다.'],
+  merged: ['badge-green', '머지 완료 · 배포 중', '배포 워크플로 결과를 확인하고 있습니다.'],
+  deployed: ['badge-green', '라이브 배포 완료', '배포 워크플로 성공을 확인했습니다.'],
+  deploy_failed: ['badge-red', '배포 실패', '머지는 됐지만 배포 워크플로가 실패했습니다. GitHub Actions 로그를 확인해 주세요.'],
+  deploy_unknown: ['badge-neutral', '머지 완료 · 배포 확인 불가', '배포 결과를 자동으로 확인하지 못했습니다.'],
+  ci_failed: ['badge-red', 'CI 실패 · 머지 보류', '자동 테스트가 실패해 라이브는 바뀌지 않았습니다. PR은 열려 있습니다.'],
+  merge_failed: ['badge-red', '자동 머지 실패', '오류 내용을 확인해 주세요.'],
+  needs_review: ['badge-amber', '보안 재확인 필요', '보안 감사 주의 판정으로 자동 머지를 멈추고 재확인 결재를 올렸습니다.'],
+  closed: ['badge-neutral', 'PR 닫힘', '반려로 코드 변경을 취소했습니다.'],
+  revision: ['badge-neutral', '수정 지시됨', '수정 지시를 반영해 새 변경안을 다시 올립니다.']
+};
+
+function renderCodeChangeStatus(apr) {
+  const cc = apr?.codeChange;
+  if (!cc?.status) return '';
+  const [cls, label, desc] = CODE_STATUS_LABELS[cc.status] || ['badge-neutral', cc.status, ''];
+  const detail = cc.error || cc.note || '';
+  const sha = cc.mergeSha ? ` · 커밋 ${String(cc.mergeSha).slice(0, 7)}` : '';
+  return `<div class="memo-section">
+      <h4>실코드 반영 상태</h4>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px;">
+        <span class="badge ${cls}">${esc(label)}</span>
+        ${apr.repo ? `<span class="mono" style="color:var(--ink-muted);">${esc(apr.repo)}${esc(sha)}</span>` : ''}
+      </div>
+      <p style="margin:0;font-size:13px;color:var(--ink-secondary);">${esc(desc)}${detail ? `<br><span class="mono">${esc(detail)}</span>` : ''}</p>
+    </div>`;
+}
+
+function isCodeApprovalClient(apr) {
+  return Boolean(apr && (apr.kind === 'it_pr_merge' || apr.prNumber || apr.codeChange?.status));
+}
+
 function renderApprovalsView() {
   const pending = state.approvals.filter((a) => a.status === 'pending');
   const decided = state.approvals.filter((a) => a.status !== 'pending');
@@ -1152,7 +1198,7 @@ function renderApprovalsView() {
         return `<button type="button" class="queue-item ${sel} ${isPending ? 'pending-stripe' : ''}" data-select-approval="${esc(a.id)}">
           <div class="queue-item-meta">
             <span class="badge badge-blue" style="max-width:75%;overflow:hidden;text-overflow:ellipsis;">${esc(msnLabel)}</span>
-            <span class="mono">${a.estimatedCostKRW > 0 ? formatKRW(a.estimatedCostKRW) : '무료'}</span>
+            <span class="mono">${isCodeApprovalClient(a) ? `<span class="badge ${(CODE_STATUS_LABELS[a.codeChange?.status] || ['badge-green'])[0]}">${esc((CODE_STATUS_LABELS[a.codeChange?.status] || ['', '실코드'])[1])}</span>` : a.estimatedCostKRW > 0 ? formatKRW(a.estimatedCostKRW) : '무료'}</span>
           </div>
           <div class="queue-item-title">${esc(a.title)}</div>
           <div class="queue-item-meta">
@@ -1226,6 +1272,8 @@ function renderApprovalsView() {
       <h4>승인 시 실행될 작업</h4>
       <div class="prompt-box">${esc(apr.proposedAction)}</div>
     </div>
+
+    ${renderCodeChangeStatus(apr)}
 
     ${
       apr.prUrl
@@ -1971,7 +2019,7 @@ function bindEvents() {
         });
         state = res.state;
         renderAll();
-        toast('CEO 승인이 즉시 확정되었습니다.');
+        toast(res.codeApply ? '승인 완료. 실코드 머지·배포를 바로 진행합니다.' : 'CEO 승인이 즉시 확정되었습니다.');
       } catch (err) {
         toast(err.message, true);
         target.disabled = false;
@@ -2069,38 +2117,6 @@ function bindEvents() {
         toast(`실연동 저장 완료: ${nextRepo.trim() || '저장소 해제'}`);
       } catch (err) {
         toast(err.message, true);
-      }
-      return;
-    }
-
-    if (target.id === 'btn-trigger-it-pr') {
-      const missionId = target.dataset.missionId;
-      const m = state.missions.find((x) => x.id === missionId);
-      const repoLabel = m?.githubRepo || state.settings?.providers?.githubRepo?.repo || 'alpinu83/ai-ceo-hub';
-      const customInstruction = window.prompt(
-        `[${repoLabel}] 저장소에 실제 코드 수정 PR을 생성합니다.\n구체적인 수정 지시를 입력하거나 그대로 확인을 누르면 프로젝트 지시대로 진행합니다:`,
-        m?.directive || m?.title || ''
-      );
-      if (customInstruction === null) return;
-
-      target.disabled = true;
-      target.textContent = '실소스 분석 · PR 생성 중…';
-      try {
-        const res = await api(`/api/missions/${missionId}/it-pr`, {
-          method: 'POST',
-          body: JSON.stringify({ instruction: customInstruction.trim() })
-        });
-        state = res.state;
-        if (res.approval?.id) selectedApprovalId = res.approval.id;
-        renderAll();
-        switchView('approvals');
-        renderApprovalsView();
-        refreshIcons();
-        toast(`[${res.repo || repoLabel}] PR #${res.prNumber} 생성 완료! 결재함에서 승인하면 자동 머지·배포됩니다.`);
-      } catch (err) {
-        toast(err.message, true);
-        target.disabled = false;
-        target.textContent = '실코드 수정 · PR 생성';
       }
       return;
     }
@@ -2341,7 +2357,9 @@ function bindEvents() {
         renderAll();
         toast(
           decision === 'approved'
-            ? 'CEO 승인이 확정되었습니다.'
+            ? res.codeApply
+              ? '승인 완료. 실코드 머지·배포를 바로 진행합니다.'
+              : 'CEO 승인이 확정되었습니다.'
             : decision === 'revision_requested'
               ? '수정 지시를 담당 팀원에게 전달했습니다.'
               : '안건을 반려했습니다.'
