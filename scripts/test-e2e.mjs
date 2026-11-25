@@ -97,7 +97,11 @@ async function runTests() {
       'get_company_brief',
       'list_my_tasks',
       'submit_task_result',
-      'request_ceo_approval'
+      'request_ceo_approval',
+      'list_outsourcing_requests',
+      'claim_outsourcing_request',
+      'get_outsourcing_request',
+      'submit_outsourcing_result'
     ]);
 
     const briefRes = await (
