@@ -26,3 +26,5 @@ services:
         sync: false
       - key: GIST_BACKUP_ID
         sync: false
+      - key: CEO_ADMIN_KEY
+        sync: false

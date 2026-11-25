@@ -13,6 +13,19 @@
 - **공식 MCP 공유 업무함 서버 (`/api/mcp`)**: `@modelcontextprotocol/sdk` 기반 Streamable HTTP 서버 — **Meta Muse**, **Manus Cue**, **Claude Desktop / Claude Code** 양방향 연동
 - **Render 무료 티어 영구 백업 (GitHub Gist)**: `GITHUB_GIST_TOKEN` + `GIST_BACKUP_ID` 환경변수 설정 시 무료 클라우드 서버가 재시작돼도 미션·결재·설정이 비공개 Gist에서 자동 복구됩니다.
 
+## 결재 승인 = 실코드 반영·배포 (IT 유지보수팀)
+
+GitHub 저장소가 연결된 프로젝트(예: Korea-tax-cal.com → `alpinu83/kr-calc-hub`, CEO Office → `alpinu83/ai-ceo-hub`)는 별도 버튼이나 추가 지시 없이 다음 순서로 돌아갑니다.
+
+1. AI 팀원들이 협업해 작업을 마치면, IT 유지보수팀이 팀 결정사항을 **실제 저장소 코드로 변경한 PR**을 만들고 보안 감사를 합니다.
+2. 배포·코드 관련 결재 카드에는 그 PR(diff)이 붙은 뒤에 결재함·텔레그램으로 올라갑니다. (팀장 전결로 끝난 코드 작업도 PR 결재 카드로 자동 상신)
+3. 대표님이 **승인**하면 CI 확인 → main 머지 → 라이브 배포 → GitHub Actions 결과 확인까지 자동으로 진행되고 결과를 로그·텔레그램으로 보고합니다.
+4. **반려**하면 PR을 닫고, **수정 지시**하면 메모를 반영해 새 PR을 다시 올립니다.
+
+안전장치: CI 실패 시 머지 보류, 보안 감사 high/주의 판정 시 자동 머지 중단 후 재확인 결재, main 충돌 시 최신 코드 기준으로 재작성, `data/db.json`·`.env`·`.github/` 수정 금지. 결제·광고비 집행·예약 확정 같은 결재는 코드 반영 대상에서 제외됩니다.
+
+> 승인이 곧 배포이므로 Render 환경변수에 `CEO_ADMIN_KEY`를 설정해 API를 잠그는 것을 권장합니다. 설정하면 웹앱이 처음 한 번 키를 묻고 브라우저에 저장합니다.
+
 ## 로컬 실행 및 테스트
 
 ```bash
