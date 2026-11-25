@@ -258,6 +258,143 @@ textarea {
   display: inline-flex;
 }
 
+/* Collapsible Sidebar Tree (Projects / General Tasks) */
+.nav-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.nav-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.nav-row .nav-item {
+  flex: 1;
+  min-width: 0;
+  padding-left: 6px;
+}
+
+.nav-toggle-btn {
+  width: 22px;
+  height: 28px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink-muted);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 0;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.nav-toggle-btn:hover {
+  background: var(--bg-hover);
+  color: var(--ink-primary);
+}
+
+.nav-toggle-btn svg {
+  transition: transform 0.16s ease;
+}
+
+.nav-group.expanded .nav-toggle-btn svg {
+  transform: rotate(90deg);
+}
+
+.nav-sublist {
+  display: none;
+  flex-direction: column;
+  gap: 1px;
+  margin: 2px 0 4px 11px;
+  padding-left: 11px;
+  border-left: 1px solid var(--border-hairline);
+}
+
+.nav-group.expanded .nav-sublist {
+  display: flex;
+}
+
+.nav-subitem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink-secondary);
+  font-size: 12.5px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+  overflow: hidden;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.nav-subitem:hover {
+  background: var(--bg-hover);
+  color: var(--ink-primary);
+}
+
+.nav-subitem.active {
+  background: var(--bg-hover);
+  color: var(--ink-primary);
+  font-weight: 650;
+}
+
+.nav-subitem-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.nav-subitem-meta {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-muted);
+  flex-shrink: 0;
+}
+
+.nav-subempty {
+  font-size: 11.5px;
+  color: var(--ink-muted);
+  padding: 4px 8px;
+}
+
+.sheet-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.btn-inline-edit {
+  padding: 2px 7px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-hairline);
+  background: transparent;
+  color: var(--ink-muted);
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+
+.btn-inline-edit:hover {
+  background: var(--bg-subtle);
+  border-color: var(--border-strong);
+  color: var(--ink-primary);
+}
+
 .sidebar-footer {
   margin-top: auto;
   padding-top: 12px;

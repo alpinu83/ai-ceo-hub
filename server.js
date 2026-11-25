@@ -1372,6 +1372,183 @@ app.post('/api/missions/:id/synthesize', async (c) => {
   return c.json({ report, state: sanitizeStateForClient(db) });
 });
 
+app.patch('/api/missions/:id', async (c) => {
+  const missionId = c.req.param('id');
+  const body = await c.req.json().catch(() => ({}));
+  const db = loadDb();
+  const mission = db.missions.find((m) => m.id === missionId);
+  if (!mission) return c.json({ error: '미션을 찾을 수 없습니다.' }, 404);
+
+  const nextTitle = typeof body.title === 'string' ? body.title.trim() : '';
+  if (!nextTitle) return c.json({ error: '새 이름을 입력해 주세요.' }, 400);
+
+  const oldTitle = mission.title;
+  mission.title = nextTitle.slice(0, 120);
+  if (typeof body.directive === 'string' && body.directive.trim()) {
+    mission.directive = body.directive.trim();
+  }
+  appendLog(db, 'CEO', `이름 변경: "${oldTitle}" → "${mission.title}"`, 'info');
+  saveDb(db);
+  await flushCloudBackup(db);
+  return c.json({ mission, state: sanitizeStateForClient(db) });
+});
+
+app.post('/api/missions/:id/deploy-idle', async (c) => {
+  const missionId = c.req.param('id');
+  const db = loadDb();
+  const mission = db.missions.find((m) => m.id === missionId);
+  if (!mission) return c.json({ error: '미션을 찾을 수 없습니다.' }, 404);
+
+  const openStatuses = new Set(['queued', 'running', 'awaiting_bridge', 'awaiting_approval']);
+  const busyAgentIds = new Set(
+    db.tasks
+      .filter((t) => t.missionId === mission.id && openStatuses.has(t.status))
+      .map((t) => t.assigneeId)
+  );
+
+  const idleAgents = db.agents.filter(
+    (a) => a.active && a.tier !== 'lead' && !busyAgentIds.has(a.id)
+  );
+
+  if (idleAgents.length === 0) {
+    return c.json({ deployedCount: 0, tasks: [], state: sanitizeStateForClient(db) });
+  }
+
+  const now = new Date().toISOString();
+  const phase = Number(mission.phase) || 1;
+  const roleTemplates = {
+    agent_deepseek: {
+      title: '수익 구조·ROI 심층 추론 및 리스크 검증',
+      description: `"${mission.title}"의 수익화 병목, 단위 경제성(ROI), 숨은 리스크를 DeepSeek R1 심층 추론으로 검증하고 우선순위 실행안을 도출합니다.`,
+      domain: 'business'
+    },
+    agent_qwen: {
+      title: '웹·SEO·자동화 기술 구현 및 코드 개선안',
+      description: `"${mission.title}" 성과를 높일 핵심 기능·SEO 구조·자동화 스크립트 구현 코드와 적용 가이드를 작성합니다.`,
+      domain: 'dev'
+    },
+    agent_groq: {
+      title: '유입 확대용 콘텐츠·마케팅 카피 및 확산 기획',
+      description: `"${mission.title}" 타깃 고객의 전환율을 높이는 핵심 메시지, 검색·SNS 유입 콘텐츠, AB 테스트 카피 초안을 제작합니다.`,
+      domain: 'content'
+    },
+    agent_exaone: {
+      title: '한국어 실무 문서·규정 점검 및 실행 체크리스트 정리',
+      description: `"${mission.title}"의 국내 시장·세무/법무 유의사항과 즉시 실행 가능한 한국어 체크리스트를 정리합니다.`,
+      domain: 'business'
+    },
+    agent_muse: {
+      title: '개인 컨텍스트 연동 프로젝트 보드 및 마일스톤 정리',
+      description: `"${mission.title}" Phase ${phase}의 핵심 마일스톤과 CEO 일정·리소스 연계 포인트를 프로젝트 보드로 정리합니다.`,
+      domain: 'business'
+    },
+    agent_cue: {
+      title: '외부 제휴·광고·유통 채널 리서치 및 실행안 준비',
+      description: `"${mission.title}"에 연결할 수 있는 외부 파트너·제휴·광고 채널 후보와 접촉 초안을 조사해 보고합니다.`,
+      domain: 'business'
+    },
+    agent_pickle: {
+      title: '시장·현장 실무 확인 및 외부 정보 수집',
+      description: `"${mission.title}"과 관련된 실제 서비스·경쟁사·현장 조건을 확인해 실행 가능한 최신 정보를 보고합니다.`,
+      domain: 'business'
+    },
+    agent_instinct: {
+      title: '외부 연락·실행 리마인드 초안 준비',
+      description: `"${mission.title}" 추진 중 외부 파트너·담당자에게 보낼 간결한 확인 메시지 초안을 준비합니다.`,
+      domain: 'business'
+    }
+  };
+
+  const newTasks = idleAgents.map((ag) => {
+    const tpl = roleTemplates[ag.id] || {
+      title: `${ag.name} 전담 실무 분석 및 실행안 작성`,
+      description: `"${mission.title}" 목표 달성을 위해 ${ag.name}(${ag.roleTitle})의 강점을 활용한 실행안을 작성합니다.`,
+      domain: mission.domain || 'business'
+    };
+    const task = {
+      id: uid('tsk'),
+      missionId: mission.id,
+      phase,
+      title: tpl.title,
+      description: tpl.description,
+      assigneeId: ag.id,
+      domain: tpl.domain,
+      status: ag.connectionMode === 'bridge' ? 'awaiting_bridge' : 'queued',
+      requiresApproval: false,
+      estimatedCostKRW: 0,
+      dispatchPrompt: '',
+      output: '',
+      createdAt: now,
+      updatedAt: now
+    };
+    task.dispatchPrompt = buildDispatchPrompt(task, mission, ag);
+    return task;
+  });
+
+  db.tasks.unshift(...newTasks);
+  const namesList = idleAgents.map((a) => a.name).join(', ');
+  appendLog(db, 'CEO', `"${mission.title}"에 대기 중이던 ${idleAgents.length}명(${namesList})을 전면 투입했습니다.`, 'success');
+  appendMessage(db, {
+    missionId: mission.id,
+    senderId: 'agent_gemini_neon',
+    senderName: 'Gemini 4 Hydrogen',
+    senderRole: '전략·총괄 팀장',
+    senderShortCode: 'GM',
+    senderAccent: '#0E6245',
+    targetAgentId: 'ceo',
+    statusText: '전원 투입',
+    type: 'delegation',
+    text: `대기 중이던 AI 팀원 ${idleAgents.length}명(${namesList})에게 "${mission.title}" 전담 업무를 배정하고 즉시 착수시켰습니다.`
+  });
+  updateMissionStatus(db, mission.id);
+  saveDb(db);
+  await flushCloudBackup(db);
+
+  autoStartLiveMissionTasks(mission.id).catch((err) => {
+    console.warn('Auto-start after deploy-idle error:', err.message);
+  });
+
+  return c.json({ deployedCount: newTasks.length, tasks: newTasks, state: sanitizeStateForClient(db) });
+});
+
+app.delete('/api/missions/:id/completed-tasks', async (c) => {
+  const missionId = c.req.param('id');
+  const db = loadDb();
+  const mission = db.missions.find((m) => m.id === missionId);
+  if (!mission) return c.json({ error: '미션을 찾을 수 없습니다.' }, 404);
+
+  const removedIds = new Set(
+    db.tasks
+      .filter((t) => t.missionId === missionId && (t.status === 'completed' || t.status === 'rejected'))
+      .map((t) => t.id)
+  );
+  if (removedIds.size > 0) {
+    db.tasks = db.tasks.filter((t) => !removedIds.has(t.id));
+    db.approvals = db.approvals.filter((a) => !removedIds.has(a.taskId));
+    updateMissionStatus(db, missionId);
+    appendLog(db, 'CEO', `"${mission.title}"의 종료된 업무 ${removedIds.size}건을 정리했습니다.`, 'info');
+    saveDb(db);
+    await flushCloudBackup(db);
+  }
+  return c.json({ removedCount: removedIds.size, state: sanitizeStateForClient(db) });
+});
+
+app.delete('/api/tasks/:id', async (c) => {
+  const taskId = c.req.param('id');
+  const db = loadDb();
+  const task = db.tasks.find((t) => t.id === taskId);
+  if (!task) return c.json({ error: '업무를 찾을 수 없습니다.' }, 404);
+
+  const missionId = task.missionId;
+  db.tasks = db.tasks.filter((t) => t.id !== taskId);
+  db.approvals = db.approvals.filter((a) => a.taskId !== taskId);
+  if (missionId) updateMissionStatus(db, missionId);
+  appendLog(db, 'CEO', `업무 "${task.title}"을(를) 삭제했습니다.`, 'info');
+  saveDb(db);
+  await flushCloudBackup(db);
+  return c.json({ ok: true, state: sanitizeStateForClient(db) });
+});
+
 app.delete('/api/missions/:id', async (c) => {
   const missionId = c.req.param('id');
   const db = loadDb();

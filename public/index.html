@@ -14,7 +14,7 @@
   <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png" />
   <link rel="apple-touch-icon" href="./icons/icon-192.png" />
   <link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" />
-  <link rel="stylesheet" href="./styles.css?v=20261124u" />
+  <link rel="stylesheet" href="./styles.css?v=20261124v" />
   <script src="./vendor/marked.umd.js" defer></script>
   <script src="./vendor/lucide.min.js" defer></script>
 </head>
@@ -34,12 +34,33 @@
         <button class="nav-item active" data-view="command" id="nav-command">
           <span class="nav-left"><i data-lucide="home" class="icon-sm"></i><span>홈</span></span>
         </button>
-        <button class="nav-item" data-view="projects" id="nav-projects">
-          <span class="nav-left"><i data-lucide="folder" class="icon-sm"></i><span>프로젝트</span></span>
-        </button>
-        <button class="nav-item" data-view="missions" id="nav-missions">
-          <span class="nav-left"><i data-lucide="clipboard-list" class="icon-sm"></i><span>일반 업무</span></span>
-        </button>
+
+        <div class="nav-group expanded" id="nav-group-projects">
+          <div class="nav-row">
+            <button type="button" class="nav-toggle-btn" data-toggle-group="projects" aria-label="프로젝트 목록 접기/펼치기" aria-expanded="true">
+              <i data-lucide="chevron-right" class="icon-xs"></i>
+            </button>
+            <button class="nav-item" data-view="projects" id="nav-projects">
+              <span class="nav-left"><i data-lucide="folder" class="icon-sm"></i><span>프로젝트</span></span>
+              <span class="nav-meta" id="nav-projects-count">0</span>
+            </button>
+          </div>
+          <div class="nav-sublist" id="nav-sublist-projects"></div>
+        </div>
+
+        <div class="nav-group expanded" id="nav-group-missions">
+          <div class="nav-row">
+            <button type="button" class="nav-toggle-btn" data-toggle-group="missions" aria-label="일반 업무 목록 접기/펼치기" aria-expanded="true">
+              <i data-lucide="chevron-right" class="icon-xs"></i>
+            </button>
+            <button class="nav-item" data-view="missions" id="nav-missions">
+              <span class="nav-left"><i data-lucide="clipboard-list" class="icon-sm"></i><span>일반 업무</span></span>
+              <span class="nav-meta" id="nav-missions-count">0</span>
+            </button>
+          </div>
+          <div class="nav-sublist" id="nav-sublist-missions"></div>
+        </div>
+
         <button class="nav-item" data-view="office" id="nav-office">
           <span class="nav-left"><i data-lucide="messages-square" class="icon-sm"></i><span>회의실</span></span>
         </button>
@@ -698,6 +719,6 @@
   </nav>
 
   <div class="toast-region" id="toast-region" aria-live="polite"></div>
-  <script type="module" src="./app.js?v=20261124u"></script>
+  <script type="module" src="./app.js?v=20261124v"></script>
 </body>
 </html>

@@ -357,6 +357,60 @@ function renderChrome() {
   document.getElementById('page-title').textContent = meta.title;
   const sub = document.getElementById('page-subtitle');
   if (sub) sub.textContent = meta.subtitle || '';
+
+  renderSidebarTree();
+}
+
+function getNavGroupExpanded(groupKey) {
+  const saved = localStorage.getItem(`ceo_nav_open_${groupKey}`);
+  return saved === null ? true : saved === '1';
+}
+
+function setNavGroupExpanded(groupKey, isOpen) {
+  localStorage.setItem(`ceo_nav_open_${groupKey}`, isOpen ? '1' : '0');
+  const grp = document.getElementById(`nav-group-${groupKey}`);
+  const btn = grp?.querySelector('.nav-toggle-btn');
+  if (grp) grp.classList.toggle('expanded', isOpen);
+  if (btn) btn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+}
+
+function renderSidebarTree() {
+  if (!state) return;
+  const allMissions = state.missions || [];
+  const projects = allMissions.filter((m) => m.mode === 'project');
+  const oneOffs = allMissions.filter((m) => m.mode !== 'project');
+
+  const pCount = document.getElementById('nav-projects-count');
+  const mCount = document.getElementById('nav-missions-count');
+  if (pCount) pCount.textContent = String(projects.length);
+  if (mCount) mCount.textContent = String(oneOffs.length);
+
+  setNavGroupExpanded('projects', getNavGroupExpanded('projects'));
+  setNavGroupExpanded('missions', getNavGroupExpanded('missions'));
+
+  const renderGroup = (elId, list, viewKey, emptyLabel) => {
+    const el = document.getElementById(elId);
+    if (!el) return;
+    if (list.length === 0) {
+      el.innerHTML = `<div class="nav-subempty">${emptyLabel}</div>`;
+      return;
+    }
+    el.innerHTML = list
+      .map((m) => {
+        const tasks = state.tasks.filter((t) => t.missionId === m.id);
+        const done = tasks.filter((t) => t.status === 'completed').length;
+        const isActive = currentView === viewKey && selectedMissionId === m.id;
+        const prefix = viewKey === 'projects' ? `P${Number(m.phase) || 1} ` : '';
+        return `<button type="button" class="nav-subitem ${isActive ? 'active' : ''}" data-sidebar-mission="${esc(m.id)}" data-sidebar-view="${viewKey}" title="${esc(m.title)}">
+          <span class="nav-subitem-title">${esc(prefix + m.title)}</span>
+          <span class="nav-subitem-meta">${done}/${tasks.length}</span>
+        </button>`;
+      })
+      .join('');
+  };
+
+  renderGroup('nav-sublist-projects', projects, 'projects', '프로젝트 없음');
+  renderGroup('nav-sublist-missions', oneOffs, 'missions', '일반 업무 없음');
 }
 
 function renderHomeView() {
@@ -498,6 +552,9 @@ function renderActiveMission(mission) {
   const pendingNextPhase = state.approvals.find(
     (a) => a.missionId === mission.id && a.kind === 'next_phase' && a.status === 'pending'
   );
+  const openStatuses = new Set(['queued', 'running', 'awaiting_bridge', 'awaiting_approval']);
+  const busyAgentIds = new Set(tasks.filter((t) => openStatuses.has(t.status)).map((t) => t.assigneeId));
+  const idleCount = state.agents.filter((a) => a.active && a.tier !== 'lead' && !busyAgentIds.has(a.id)).length;
 
   const missionHeader = `
     <div class="sheet mission-header-sheet">
@@ -511,7 +568,10 @@ function renderActiveMission(mission) {
             }
             <span class="badge badge-green">총괄 팀장: ${esc(lead?.name || '팀장')}</span>
           </div>
-          <h2 class="sheet-title">${esc(mission.title)}</h2>
+          <div class="sheet-title-row">
+            <h2 class="sheet-title">${esc(mission.title)}</h2>
+            <button type="button" class="btn-inline-edit" id="btn-rename-mission" data-mission-id="${esc(mission.id)}" title="이름 수정">이름 수정</button>
+          </div>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;">
           ${
@@ -520,6 +580,11 @@ function renderActiveMission(mission) {
               : isProject
                 ? `<button type="button" class="btn btn-primary btn-sm" id="btn-propose-next-phase" data-mission-id="${esc(mission.id)}">다음 단계 제안</button>`
                 : ''
+          }
+          ${
+            idleCount > 0
+              ? `<button type="button" class="btn btn-ghost btn-sm" id="btn-deploy-idle" data-mission-id="${esc(mission.id)}">대기 팀원 투입 (${idleCount})</button>`
+              : ''
           }
           ${
             runnableCount > 0
@@ -741,6 +806,7 @@ function renderUnifiedTasksView(tasks, mission = null) {
   const activeFilterObj = filters.find((f) => f.key === missionStatusFilter) || filters[0];
   const filtered = tasks.filter(activeFilterObj.match);
 
+  const finishedCount = tasks.filter((t) => t.status === 'completed' || t.status === 'rejected').length;
   const filterBar = `<div class="task-filter-bar" role="tablist" aria-label="업무 상태 필터">
     ${filters
       .map((f) => {
@@ -752,6 +818,11 @@ function renderUnifiedTasksView(tasks, mission = null) {
         </button>`;
       })
       .join('')}
+    ${
+      finishedCount > 0
+        ? `<button type="button" class="filter-chip" id="btn-clear-completed-tasks" data-mission-id="${esc(mission.id)}" style="margin-left:auto;color:var(--accent-danger);">종료 업무 일괄 삭제 (${finishedCount})</button>`
+        : ''
+    }
   </div>`;
 
   const agentOptions = state.agents
@@ -766,6 +837,7 @@ function renderUnifiedTasksView(tasks, mission = null) {
     .map((t) => {
       const ag = getAgent(t.assigneeId) || state.agents[0];
       const st = STATUS_META[t.status] || { label: t.status, cls: 'badge-neutral' };
+      const isFinished = t.status === 'completed' || t.status === 'rejected';
       const selectOpts = agentOptions
         .map(
           (opt) =>
@@ -797,6 +869,11 @@ function renderUnifiedTasksView(tasks, mission = null) {
             ${
               t.status === 'awaiting_approval'
                 ? `<button type="button" class="btn btn-amber btn-sm" data-jump-approval="${esc(t.id)}">결재하기</button>`
+                : ''
+            }
+            ${
+              isFinished
+                ? `<button type="button" class="btn btn-ghost btn-sm" data-delete-task="${esc(t.id)}" style="color:var(--accent-danger);">삭제</button>`
                 : ''
             }
           </div>
@@ -1545,6 +1622,22 @@ function bindEvents() {
   document.querySelectorAll('.nav-item, .mobile-nav-item, .nav-gear-btn').forEach((btn) => {
     btn.addEventListener('click', () => switchView(btn.dataset.view));
   });
+  document.querySelectorAll('[data-toggle-group]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const groupKey = btn.dataset.toggleGroup;
+      const isOpen = getNavGroupExpanded(groupKey);
+      setNavGroupExpanded(groupKey, !isOpen);
+    });
+  });
+  document.querySelector('.nav-list')?.addEventListener('click', (e) => {
+    const subBtn = e.target.closest('[data-sidebar-mission]');
+    if (!subBtn) return;
+    selectedMissionId = subBtn.dataset.sidebarMission;
+    officeMissionFilter = subBtn.dataset.sidebarMission;
+    const targetView = subBtn.dataset.sidebarView || 'missions';
+    switchView(targetView);
+  });
   document.getElementById('mobile-menu-btn').addEventListener('click', () => {
     const sidebar = document.querySelector('.sidebar');
     const isOpen = sidebar.classList.toggle('mobile-open');
@@ -1717,6 +1810,7 @@ function bindEvents() {
       selectedMissionId = target.dataset.selectMission;
       officeMissionFilter = target.dataset.selectMission;
       renderCommandView();
+      renderSidebarTree();
       refreshIcons();
       return;
     }
@@ -1752,6 +1846,78 @@ function bindEvents() {
 
     if (target.dataset.runTask) {
       await handleRunTask(target.dataset.runTask, target);
+      return;
+    }
+
+    if (target.id === 'btn-rename-mission') {
+      const missionId = target.dataset.missionId;
+      const m = state.missions.find((x) => x.id === missionId);
+      if (!m) return;
+      const nextTitle = window.prompt('새 프로젝트 / 업무 이름을 입력하세요:', m.title);
+      if (nextTitle === null) return;
+      const trimmed = nextTitle.trim();
+      if (!trimmed || trimmed === m.title) return;
+      try {
+        const res = await api(`/api/missions/${missionId}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ title: trimmed })
+        });
+        state = res.state;
+        renderAll();
+        toast('이름을 수정했습니다.');
+      } catch (err) {
+        toast(err.message, true);
+      }
+      return;
+    }
+
+    if (target.id === 'btn-deploy-idle') {
+      const missionId = target.dataset.missionId;
+      target.disabled = true;
+      target.textContent = '팀원 투입 중…';
+      try {
+        const res = await api(`/api/missions/${missionId}/deploy-idle`, { method: 'POST' });
+        state = res.state;
+        renderAll();
+        toast(
+          res.deployedCount > 0
+            ? `대기 중이던 AI 팀원 ${res.deployedCount}명을 투입하고 착수시켰습니다.`
+            : '이미 모든 활성 팀원이 투입되어 있습니다.'
+        );
+      } catch (err) {
+        toast(err.message, true);
+        target.disabled = false;
+      }
+      return;
+    }
+
+    if (target.dataset.deleteTask) {
+      const taskId = target.dataset.deleteTask;
+      if (!confirm('이 종료된 업무를 삭제할까요?')) return;
+      try {
+        const res = await api(`/api/tasks/${taskId}`, { method: 'DELETE' });
+        state = res.state;
+        renderAll();
+        toast('업무를 삭제했습니다.');
+      } catch (err) {
+        toast(err.message, true);
+      }
+      return;
+    }
+
+    if (target.id === 'btn-clear-completed-tasks') {
+      const missionId = target.dataset.missionId;
+      if (!confirm('이 프로젝트/업무의 종료된 업무를 모두 삭제할까요?')) return;
+      target.disabled = true;
+      try {
+        const res = await api(`/api/missions/${missionId}/completed-tasks`, { method: 'DELETE' });
+        state = res.state;
+        renderAll();
+        toast(`종료된 업무 ${res.removedCount}건을 정리했습니다.`);
+      } catch (err) {
+        toast(err.message, true);
+        target.disabled = false;
+      }
       return;
     }
 
