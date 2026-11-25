@@ -756,14 +756,14 @@ function scheduleCodeBundle(missionId, delayMs = 4000) {
     missionId,
     setTimeout(() => {
       codeBundleTimers.delete(missionId);
-      runCodeBundle(missionId).catch((err) => console.warn('code bundle error:', err.message));
+      runCodeBundle(missionId, { retryEmpty: true }).catch((err) => console.warn('code bundle error:', err.message));
     }, delayMs)
   );
 }
 
-function runCodeBundle(missionId) {
+function runCodeBundle(missionId, opts = {}) {
   if (codeBundleLocks.has(missionId)) return codeBundleLocks.get(missionId);
-  const job = runCodeBundleInner(missionId).finally(() => codeBundleLocks.delete(missionId));
+  const job = runCodeBundleInner(missionId, opts).finally(() => codeBundleLocks.delete(missionId));
   codeBundleLocks.set(missionId, job);
   return job;
 }
@@ -793,26 +793,46 @@ function maybeScheduleCodeBundle(db, mission, task) {
  * Turns the team's finished work (and any held deploy approvals) into ONE real PR,
  * attaches it to the approval card, and only then notifies the CEO.
  */
-async function runCodeBundleInner(missionId) {
+async function runCodeBundleInner(missionId, { retryEmpty = false } = {}) {
   await waitForMissionIdle(missionId);
   let db = loadDb();
-  const mission = db.missions.find((m) => m.id === missionId);
+  let mission = db.missions.find((m) => m.id === missionId);
   if (!mission) return null;
 
+  const findWaiting = (d) =>
+    d.approvals.filter(
+      (a) =>
+        a.missionId === missionId &&
+        ['pending', 'approved'].includes(a.status) &&
+        CODE_STATUS_PENDING.has(a.codeChange?.status) &&
+        !a.prNumber
+    );
+  // The caller may still be finishing (e.g. writing a summary) before it saves the held card: wait for it to land.
+  if (retryEmpty) {
+    for (let i = 0; i < 12 && findWaiting(db).length === 0; i++) {
+      await new Promise((r) => setTimeout(r, 5000));
+      await waitForMissionIdle(missionId);
+      db = loadDb();
+    }
+    mission = db.missions.find((m) => m.id === missionId);
+    if (!mission) return null;
+  }
+
   // Cards that were decided as reject/revision while waiting don't need a PR anymore
+  let statusChanged = false;
   for (const a of db.approvals) {
     if (a.missionId === missionId && CODE_STATUS_PENDING.has(a.codeChange?.status) && !a.prNumber) {
-      if (a.status === 'rejected') setCodeStatus(a, 'closed');
-      if (a.status === 'revision_requested') setCodeStatus(a, 'revision');
+      if (a.status === 'rejected') {
+        setCodeStatus(a, 'closed');
+        statusChanged = true;
+      }
+      if (a.status === 'revision_requested') {
+        setCodeStatus(a, 'revision');
+        statusChanged = true;
+      }
     }
   }
-  const waiting = db.approvals.filter(
-    (a) =>
-      a.missionId === missionId &&
-      ['pending', 'approved'].includes(a.status) &&
-      CODE_STATUS_PENDING.has(a.codeChange?.status) &&
-      !a.prNumber
-  );
+  const waiting = findWaiting(db);
 
   const cfg = getMissionRepoCfg(db.settings, mission);
   if (!cfg) {
@@ -836,7 +856,7 @@ async function runCodeBundleInner(missionId) {
     return isCodeTask(t, agentMap[t.assigneeId]);
   });
   if (candidates.length === 0 && waiting.length === 0) {
-    saveDb(db);
+    if (statusChanged) saveDb(db);
     return null;
   }
 
