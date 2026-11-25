@@ -47,7 +47,10 @@ import {
   buildCompletionReport,
   collectFollowUps,
   buildMissionDigest,
-  escapeTelegramHtml
+  escapeTelegramHtml,
+  isStandingOrder,
+  getMissionScope,
+  findScopeViolations
 } from './src/lead-engine.js';
 import { describeSkillsForClient, getSkillSettings, selectSkills, renderSkills } from './src/skills.js';
 import { testGoogleDataConnection, buildAnalyticsContext, describeGoogleDataStatus } from './src/google-data.js';
@@ -447,13 +450,31 @@ async function submitNextPhaseProposal(missionId, { leadAssessment = '' } = {}) 
   }
 
   const missionTasks = db.tasks.filter((t) => t.missionId === missionId);
-  const proposal = await proposeNextProjectPhase({
+  let proposal = await proposeNextProjectPhase({
     mission,
     tasks: missionTasks,
     agents: db.agents,
     settings: db.settings,
     leadAssessment
   });
+  // 제안서가 업무 범위를 벗어나면(대표님이 하지 말라고 한 일) 한 번 다시 쓰고, 그래도 걸리면 해당 단계를 빼고 올림
+  const proposalText = (p) => `${p.nextPhaseTitle} ${p.nextDirective} ${(p.suggestedSteps || []).join(' ')}`;
+  let violations = findScopeViolations(mission, proposalText(proposal));
+  if (violations.length) {
+    const scope = getMissionScope(mission);
+    proposal = await proposeNextProjectPhase({
+      mission,
+      tasks: missionTasks.filter((t) => !findScopeViolations(mission, `${t.title} ${t.description}`).length),
+      agents: db.agents,
+      settings: db.settings,
+      leadAssessment: `${leadAssessment}\n[중요] 이전 제안이 대표님이 금지한 범위(${violations.join(', ')})를 포함해 폐기됐습니다. 해당 내용을 절대 넣지 말고, 집중할 일(${scope.focus || mission.directive})에만 맞춰 다시 제안하세요.`
+    });
+    violations = findScopeViolations(mission, proposalText(proposal));
+    if (violations.length) {
+      proposal.suggestedSteps = (proposal.suggestedSteps || []).filter((s) => !findScopeViolations(mission, s).length);
+      proposal.rationale = `${proposal.rationale}\n(업무 범위 밖 내용 ${violations.join(', ')}은 자동으로 제외함)`;
+    }
+  }
 
   const leadId = mission.leadAgentId || 'agent_gemini_neon';
   const lead = db.agents.find((a) => a.id === leadId) || db.agents[0];
@@ -550,6 +571,16 @@ async function launchNextProjectPhase(missionId, nextDirective, ceoNote = '') {
   });
 
   const agentMap = Object.fromEntries(db.agents.map((a) => [a.id, a]));
+  // 업무 범위 밖(대표님이 하지 말라고 한 일) 작업은 만들지 않음
+  const droppedOutOfScope = [];
+  plan.tasks = plan.tasks.filter((t) => {
+    const hit = findScopeViolations(mission, `${t.title} ${t.description}`);
+    if (hit.length) droppedOutOfScope.push(`${t.title}(${hit.join(',')})`);
+    return !hit.length;
+  });
+  if (droppedOutOfScope.length) {
+    appendLog(db, '총괄 팀장', `"${mission.title}" 업무 범위 밖 작업 ${droppedOutOfScope.length}건 제외: ${droppedOutOfScope.join(' / ')}`.slice(0, 600), 'warning');
+  }
   const newTasks = plan.tasks.map((t) => {
     const ag = agentMap[t.assigneeId] || db.agents[0];
     const taskObj = {
@@ -661,6 +692,16 @@ function applyApprovalDecisionInDb(aprId, decision, ceoNote = '') {
     source: 'approval'
   });
   if (apr.missionId) markCeoActivity(db, apr.missionId);
+  // 결재 메모에 담긴 상시 지침("앞으로 여기서 … 하지 말 것")은 그 업무의 고정 지침으로 저장
+  if (apr.ceoNote && !autoNote && isStandingOrder(apr.ceoNote)) {
+    rememberFact(db, {
+      kind: 'directive',
+      missionId: apr.missionId || '',
+      pinned: true,
+      text: `대표님 상시 지침(결재 메모): ${apr.ceoNote}`,
+      source: 'approval'
+    });
+  }
 
   saveDb(db);
   return { ok: true, approval: apr, title: apr.title, db };
@@ -1053,6 +1094,7 @@ function createLeadTasks(db, mission, specs = [], source = 'lead_followup') {
   const created = [];
   for (const spec of specs) {
     if (!spec?.title || existing.has(spec.title)) continue;
+    if (findScopeViolations(mission, `${spec.title} ${spec.description || ''}`).length) continue; // 업무 범위 밖
     let assigneeId = spec.assigneeId;
     if (spec.isCodeChange && repoLinked && agentMap.agent_it_dev?.active) assigneeId = 'agent_it_dev';
     const ag = agentMap[assigneeId] || agentMap[mission.leadAgentId] || db.agents[0];
@@ -2605,7 +2647,6 @@ app.post('/api/telegram/webhook', async (c) => {
 
 // Live Team Lounge Chat — CEO talks to AI employees
 // CEO가 "앞으로/항상/기억해" 같은 상시 지침을 말하면 고정 기억으로 저장해 모든 AI 호출에 계속 적용
-const STANDING_ORDER_RE = /(기억해|기억하고|명심해|앞으로는?|항상|절대|매번|잊지\s*마)/;
 
 app.post('/api/chat/send', async (c) => {
   const body = await c.req.json();
@@ -2646,9 +2687,12 @@ async function processCeoChat(text, reqMissionIdRaw = '', { channel = 'web' } = 
   db.leadState.lastCeoMissionId = mission?.id || '';
   db.leadState.lastCeoAt = new Date().toISOString();
   let memoryNote = '';
-  if (STANDING_ORDER_RE.test(text) && !/[?？]\s*$/.test(text)) {
-    rememberFact(db, { kind: 'directive', missionId: '', pinned: true, text: `CEO 상시 지침: ${text}`, source: channel });
-    memoryNote = '이 발언을 회사 기억(고정 지침)에 저장해 앞으로 모든 AI 팀원에게 적용합니다.';
+  if (isStandingOrder(text)) {
+    // 업무 채널에서 말한 지침은 그 업무에만, 전체 채널에서 말한 지침은 회사 전체에 고정
+    rememberFact(db, { kind: 'directive', missionId: mission?.id || '', pinned: true, text: `대표님 상시 지침: ${text}`, source: channel });
+    memoryNote = mission
+      ? `이 발언을 "${mission.title}" 업무의 고정 지침으로 저장해, 이 업무의 모든 작업·제안에 항상 적용합니다.`
+      : '이 발언을 회사 기억(고정 지침)에 저장해 앞으로 모든 AI 팀원에게 적용합니다.';
   }
   saveDb(db);
 
@@ -3388,9 +3432,15 @@ app.patch('/api/missions/:id', async (c) => {
     typeof body.githubBranch === 'string' ||
     typeof body.siteUrl === 'string' ||
     Array.isArray(body.extraRepos);
+  const hasScope = body.scope && typeof body.scope === 'object';
 
-  if (!hasTitle && !hasBindingUpdate && typeof body.directive !== 'string') {
+  if (!hasTitle && !hasBindingUpdate && !hasScope && typeof body.directive !== 'string') {
     return c.json({ error: '수정할 내용을 입력해 주세요.' }, 400);
+  }
+  if (hasScope) {
+    // 업무 범위: 집중할 일 / 하지 말 일(키워드). 모든 AI 호출에 최우선 지침으로 들어가고, 범위 밖 작업은 자동 제외
+    mission.scope = getMissionScope({ scope: body.scope });
+    appendLog(db, 'CEO', `"${mission.title}" 업무 범위 설정: 집중=${mission.scope.focus || '-'} / 제외=${mission.scope.exclude.join(', ') || '-'}`, 'info');
   }
 
   const oldTitle = mission.title;
