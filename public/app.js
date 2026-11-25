@@ -1232,7 +1232,8 @@ function renderCodeChangeStatus(apr) {
   const cc = apr?.codeChange;
   if (!cc?.status) return '';
   const [cls, label, desc] = CODE_STATUS_LABELS[cc.status] || ['badge-neutral', cc.status, ''];
-  const detail = cc.error || cc.note || '';
+  const showError = ['failed', 'ci_failed', 'merge_failed', 'deploy_failed', 'needs_review'].includes(cc.status);
+  const detail = (showError ? cc.error : '') || cc.note || '';
   const sha = cc.mergeSha ? ` · 커밋 ${String(cc.mergeSha).slice(0, 7)}` : '';
   return `<div class="memo-section">
       <h4>실코드 반영 상태</h4>
