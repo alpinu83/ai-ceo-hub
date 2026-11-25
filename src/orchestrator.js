@@ -92,7 +92,7 @@ function createOpenAiModelFallbackFetch(fallbackModels = []) {
   return async (url, init) => {
     const withTimeout = (opts) => ({
       ...opts,
-      signal: opts?.signal || AbortSignal.timeout(60000)
+      signal: opts?.signal || AbortSignal.timeout(22000)
     });
     let res;
     try {
@@ -176,12 +176,14 @@ function createOpenAiModelFallbackFetch(fallbackModels = []) {
           'HTTP-Referer': 'https://ai-ceo-hub.onrender.com',
           'X-Title': 'CEO Office'
         },
-        fetch: createOpenAiModelFallbackFetch(['openrouter/free', 'nvidia/nemotron-3.5-super-vl:free'])
+        fetch: createOpenAiModelFallbackFetch(['nvidia/nemotron-3.5-super-vl:free', 'openrouter/free'])
       });
       const rawModel = agent.modelId || orCfg.model || 'openrouter/free';
       const modelName =
-        rawModel === 'deepseek/deepseek-r1:free' || rawModel === 'qwen/qwen3-coder:free'
-          ? 'nvidia/nemotron-3-ultra-550b-a55b:free'
+        rawModel === 'deepseek/deepseek-r1:free' ||
+        rawModel === 'qwen/qwen3-coder:free' ||
+        rawModel === 'nvidia/nemotron-3-ultra-550b-a55b:free'
+          ? 'nvidia/nemotron-3.5-lightning:free'
           : rawModel;
       return { model: client(modelName), label: `openrouter:${modelName}` };
     }
@@ -880,12 +882,62 @@ CEO 원지시: ${mission.directive}
 담당 작업: ${task.title}
 상세 요구사항: ${task.description}${contextBlock}`;
 
-    const { text } = await generateText({
-      model: resolved.model,
-      system,
-      prompt
-    });
-    return { output: text.trim(), executionModeUsed: `live_sdk:${resolved.label}`, live: true };
+    const buildBackupModels = () => {
+      const backups = [];
+      const p = settings?.providers || {};
+      if (agent.provider !== 'groq' && p.groq?.apiKey) {
+        const client = createOpenAI({
+          baseURL: p.groq.baseUrl || 'https://api.groq.com/openai/v1',
+          apiKey: p.groq.apiKey.trim(),
+          compatibility: 'compatible',
+          fetch: createOpenAiModelFallbackFetch(['openai/gpt-oss-20b'])
+        });
+        backups.push({ model: client('openai/gpt-oss-120b'), label: 'groq-backup:openai/gpt-oss-120b' });
+      }
+      if (agent.provider !== 'exaone' && p.exaone?.apiKey) {
+        const client = createOpenAI({
+          baseURL: p.exaone.baseUrl || 'https://api.exaone.ai/v1',
+          apiKey: p.exaone.apiKey.trim(),
+          compatibility: 'compatible'
+        });
+        backups.push({ model: client(p.exaone.model || 'k-exaone_v2.5'), label: 'exaone-backup:k-exaone_v2.5' });
+      }
+      if (agent.provider !== 'gemini' && p.gemini?.apiKey) {
+        const google = createGoogleGenerativeAI({
+          apiKey: p.gemini.apiKey.trim(),
+          fetch: createGeminiResilientFetch('gemini-3.8-flash')
+        });
+        backups.push({ model: google('gemini-3.8-flash'), label: 'gemini-backup:gemini-3.8-flash' });
+      }
+      return backups;
+    };
+
+    try {
+      const { text } = await generateText({
+        model: resolved.model,
+        system,
+        prompt,
+        maxTokens: 2800,
+        maxRetries: 0
+      });
+      return { output: text.trim(), executionModeUsed: `live_sdk:${resolved.label}`, live: true };
+    } catch (primaryErr) {
+      for (const backup of buildBackupModels()) {
+        try {
+          const { text } = await generateText({
+            model: backup.model,
+            system,
+            prompt,
+            maxTokens: 2800,
+            maxRetries: 0
+          });
+          return { output: text.trim(), executionModeUsed: `live_sdk:${backup.label}`, live: true };
+        } catch {
+          // try next backup
+        }
+      }
+      throw primaryErr;
+    }
   }
 
   // External action bots (Pickle / Cue / Muse / Vooy / Instinct): prepare honest handoff brief without faking phone calls/emails

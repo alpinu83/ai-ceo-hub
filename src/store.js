@@ -452,13 +452,24 @@ export function loadDb() {
             modelId: 'qwen/qwen3.8-27b'
           };
         }
-        if (a.id === 'agent_deepseek' && a.modelId === 'deepseek/deepseek-r1:free') {
+        if (
+          a.id === 'agent_deepseek' &&
+          (a.modelId === 'deepseek/deepseek-r1:free' || a.modelId === 'nvidia/nemotron-3-ultra-550b-a55b:free')
+        ) {
           return {
             ...a,
-            name: 'Nemotron 3 Ultra (OR)',
+            name: 'Nemotron 3.5 (OR)',
             shortCode: 'NM',
-            roleTitle: '심층 추론·전략·수익 분석 팀원 (OpenRouter 무료 550B)',
-            modelId: 'nvidia/nemotron-3-ultra-550b-a55b:free'
+            roleTitle: '심층 추론·전략·수익 분석 팀원 (OpenRouter 무료 1M)',
+            modelId: 'nvidia/nemotron-3.5-lightning:free'
+          };
+        }
+        if (a.id === 'agent_it_sec' && a.modelId === 'nvidia/nemotron-3-ultra-550b-a55b:free') {
+          return {
+            ...a,
+            name: 'IT 보안 · Nemotron',
+            roleTitle: 'IT팀 보안 감사·아키텍처 리뷰 (OR 무료 · 자동 백업)',
+            modelId: 'nvidia/nemotron-3.5-lightning:free'
           };
         }
         return {
