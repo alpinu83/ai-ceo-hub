@@ -820,6 +820,68 @@ export function resolveLiveBackendModel(settings) {
   return null;
 }
 
+/**
+ * 팀장 판단(업무 분해·다음 단계 제안)용 모델 체인.
+ * Gemini 무료 한도(하루 20회)가 바닥나도 Groq → OpenRouter → Gemini Flash → 기본 엔진 순으로 이어서 판단합니다.
+ * (예전에는 팀장 모델 하나만 쓰다가 실패하면 '고도화 · 실행 확장' 같은 일반 템플릿으로 채워 같은 결재가 반복됨)
+ */
+function buildLeadModelChain(leadAgent, settings) {
+  const p = settings?.providers || {};
+  const chain = [];
+  const push = (m) => {
+    if (m && m.model && !chain.some((c) => c.label === m.label)) chain.push(m);
+  };
+  if (leadAgent) push(resolveLanguageModel(leadAgent, settings));
+  if (p.groq?.apiKey) {
+    const client = createOpenAI({
+      baseURL: p.groq.baseUrl || 'https://api.groq.com/openai/v1',
+      apiKey: p.groq.apiKey.trim(),
+      compatibility: 'compatible'
+    });
+    push({ model: client('openai/gpt-oss-120b'), label: 'groq:openai/gpt-oss-120b' });
+    push({ model: client('openai/gpt-oss-20b'), label: 'groq:openai/gpt-oss-20b' });
+  }
+  if (p.openrouter?.apiKey) {
+    const client = createOpenAI({
+      baseURL: p.openrouter.baseUrl || 'https://openrouter.ai/api/v1',
+      apiKey: p.openrouter.apiKey.trim(),
+      compatibility: 'compatible'
+    });
+    push({ model: client('openrouter/free'), label: 'openrouter:openrouter/free' });
+  }
+  if (p.gemini?.apiKey) {
+    const google = createGoogleGenerativeAI({ apiKey: p.gemini.apiKey.trim() });
+    push({ model: google('gemini-3.8-flash'), label: 'gemini:gemini-3.8-flash' });
+  }
+  push(resolveLiveBackendModel(settings));
+  return chain;
+}
+
+async function generateObjectChain(models, opts) {
+  const errors = [];
+  for (const m of models) {
+    for (const mode of ['auto', 'json']) {
+      try {
+        const { object } = await generateObject({
+          ...opts,
+          model: m.model,
+          maxRetries: 0,
+          abortSignal: AbortSignal.timeout(90000),
+          ...(mode === 'json' ? { mode: 'json' } : {})
+        });
+        return { object, label: m.label };
+      } catch (err) {
+        const msg = String(err?.message || err).replace(/\s+/g, ' ').slice(0, 120);
+        errors.push(`${m.label}${mode === 'json' ? '(json)' : ''}: ${msg}`);
+        if (/quota|cooldown|429|rate limit|401|403|api key/i.test(msg)) break;
+      }
+    }
+  }
+  const e = new Error(`모든 AI 엔진 호출 실패 → ${errors.slice(0, 4).join(' | ')}`);
+  e.errors = errors;
+  throw e;
+}
+
 export async function decomposeDirective({
   directive,
   title,
@@ -834,9 +896,9 @@ export async function decomposeDirective({
 }) {
   const leadAgent = selectLeadAgent(agents, costPolicy, settings);
   const activeAgents = agents.filter((a) => a.active);
-  const resolved = resolveLanguageModel(leadAgent, settings) || resolveLiveBackendModel(settings);
+  const chain = buildLeadModelChain(leadAgent, settings);
 
-  if (resolved) {
+  if (chain.length) {
     const rosterText = activeAgents
       .map(
         (a) =>
@@ -869,11 +931,9 @@ ${rosterText}
 ${skillBlock({ agent: leadAgent, mission: { directive, domain }, purpose: 'decompose', settings, compact: true, max: 1 })}`, '', { compact: true });
 
     try {
-      const { object } = await generateObject({
-        model: resolved.model,
+      const { object } = await generateObjectChain(chain, {
         schema: PlanSchema,
         system,
-        maxRetries: 0,
         prompt: `미션 제목: ${title || '(자동)'}\n업무 영역: ${domain}\nCEO 지시:\n${directive}${
           liveContext ? `\n\n${liveContext}` : ''
         }`
@@ -903,12 +963,21 @@ ${skillBlock({ agent: leadAgent, mission: { directive, domain }, purpose: 'decom
         usedLiveApi: true,
         tasks: normalized
       };
-    } catch {
-      return heuristicDecompose({ directive, domain, costPolicy, agents, leadAgent });
+    } catch (err) {
+      const fb = heuristicDecompose({ directive, domain, costPolicy, agents, leadAgent });
+      return { ...fb, usedLiveApi: false, aiFailed: true, fallbackReason: String(err?.message || err).slice(0, 300) };
     }
   }
 
-  return heuristicDecompose({ directive, domain, costPolicy, agents, leadAgent });
+  return { ...heuristicDecompose({ directive, domain, costPolicy, agents, leadAgent }), usedLiveApi: false, fallbackReason: '사용 가능한 AI 엔진 없음' };
+}
+
+// 빈 응답(예: EXAONE이 200 OK로 빈 문자열을 돌려줌)을 '완료'로 처리하지 않도록 실패로 취급해 다음 엔진으로 넘깁니다.
+function assertUsableOutput(text, label = '') {
+  const t = String(text || '').trim();
+  if (t.length < 80) {
+    throw new Error(`${label || 'AI'} 응답이 비어 있거나 너무 짧음(${t.length}자)`);
+  }
 }
 
 export async function executeAgentTask({ task, mission, agent, settings, priorOutputs = [] }) {
@@ -1039,6 +1108,7 @@ CEO 원지시: ${String(mission.directive || '').slice(0, 800)}
         maxTokens: 2800,
         maxRetries: 0, abortSignal: AbortSignal.timeout(120000)
       });
+      assertUsableOutput(text, resolved.label);
       draft = text;
       draftLabel = resolved.label;
     } catch (primaryErr) {
@@ -1046,6 +1116,7 @@ CEO 원지시: ${String(mission.directive || '').slice(0, 800)}
       if (sizeErr) {
         try {
           const { text } = await generateText({ model: resolved.model, system: systemCompact, prompt: compactPrompt, maxTokens: 2000, maxRetries: 0, abortSignal: AbortSignal.timeout(120000) });
+          assertUsableOutput(text, resolved.label);
           draft = text;
           draftLabel = `${resolved.label}(compact)`;
         } catch {
@@ -1063,6 +1134,7 @@ CEO 원지시: ${String(mission.directive || '').slice(0, 800)}
             maxTokens: 2800,
             maxRetries: 0, abortSignal: AbortSignal.timeout(120000)
           });
+          assertUsableOutput(text, backup.label);
           return finish(text, backup.label);
         } catch {
           // try next backup
@@ -1209,8 +1281,9 @@ export async function proposeNextProjectPhase({ mission, tasks, agents, settings
     })
     .join('\n');
 
-  const resolved = resolveLanguageModel(leadAgent, settings) || resolveLiveBackendModel(settings);
-  if (resolved) {
+  const chain = buildLeadModelChain(leadAgent, settings);
+  let lastError = '사용 가능한 AI 엔진 없음';
+  if (chain.length) {
     try {
       const schema = z.object({
         nextPhaseTitle: z.string().min(4),
@@ -1237,8 +1310,7 @@ ${companyContextFor(mission?.id, { compact: true })}`;
 ${digest}
 ${mission.finalReport ? `\n[임원 보고서 발췌]\n${mission.finalReport.slice(0, 700)}` : ''}`;
 
-      const { object } = await generateObject({
-        model: resolved.model,
+      const { object } = await generateObjectChain(chain, {
         schema,
         system,
         prompt
@@ -1253,26 +1325,25 @@ ${mission.finalReport ? `\n[임원 보고서 발췌]\n${mission.finalReport.slic
         suggestedSteps: object.suggestedSteps.map((s) => s.trim()).filter(Boolean),
         usedLiveApi: true
       };
-    } catch {
-      // Fall through to deterministic next-phase proposal
+    } catch (err) {
+      lastError = String(err?.message || err).slice(0, 300);
     }
   }
 
-  const nextPhaseTitle = `Phase ${nextPhase}: ${mission.title} 고도화 · 실행 확장`;
-  const suggestedSteps = [
-    `Phase ${currentPhase} 산출물 기반 핵심 개선점 및 우선순위 3가지 확정`,
-    `실제 트래픽·성과·전환을 끌어올릴 실행 콘텐츠 및 기능 구체화`,
-    `성과 측정 지표(KPI) 점검 및 다음 라운드 자동화 루틴 설계`
-  ];
-  return {
-    nextPhase,
-    nextPhaseTitle,
-    rationale: `Phase ${currentPhase} 기본 작업(${targetTasks.length}건)이 마무리되었습니다. 일회성으로 끝내지 않고 실제 성과로 연결하기 위해 검증·고도화 단계(Phase ${nextPhase}) 추진을 제안합니다.`,
-    expectedImpact: `Phase ${currentPhase} 초안을 실행 가능한 개선안과 성과 측정 체계로 연결해 프로젝트 완성도를 높입니다.`,
-    nextDirective: `[${mission.title} — Phase ${nextPhase}] 이전 단계 결과를 바탕으로 ① 핵심 병목·개선 과제 3건 도출, ② 바로 적용 가능한 실행안·콘텐츠 고도화, ③ 성과 지표(KPI) 추적 및 후속 확장 전략을 수립해줘.`,
-    suggestedSteps,
-    usedLiveApi: false
-  };
+  if (!chain.length) {
+    // AI 키가 하나도 없는 체험(데모) 모드에서만 기본 템플릿을 씁니다.
+    return {
+      nextPhase,
+      nextPhaseTitle: `Phase ${nextPhase}: ${mission.title} 고도화 · 실행 확장`,
+      rationale: `Phase ${currentPhase} 기본 작업(${targetTasks.length}건)이 마무리되었습니다. (AI 엔진 미연결 체험 모드 기본 제안)`,
+      expectedImpact: `Phase ${currentPhase} 초안을 실행 가능한 개선안으로 연결합니다.`,
+      nextDirective: `[${mission.title} — Phase ${nextPhase}] 이전 단계 결과를 바탕으로 핵심 개선 과제 3건을 도출하고 실행안을 만들어줘.`,
+      suggestedSteps: [`Phase ${currentPhase} 산출물 기반 핵심 개선점 3가지 확정`, '실행 콘텐츠 및 기능 구체화'],
+      usedLiveApi: false
+    };
+  }
+  // AI 엔진은 있는데 모두 실패: '고도화 · 실행 확장' 같은 일반 템플릿을 올리면 같은 결재만 반복되므로 실패를 그대로 알립니다.
+  return { nextPhase, failed: true, error: lastError, usedLiveApi: false };
 }
 
 /**

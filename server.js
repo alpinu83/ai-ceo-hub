@@ -449,6 +449,84 @@ async function autoStartLiveMissionTasks(missionId, { proposeNext = true } = {})
   }
 }
 
+const stripPhaseLabel = (s = '') => String(s).replace(/\[Phase\s*\d+\s*제안\]/gi, ' ').replace(/Phase\s*\d+\s*:?/gi, ' ');
+
+function isRepeatOfRecentProposal(db, missionId, proposal) {
+  const prev = db.approvals
+    .filter((a) => a.missionId === missionId && a.kind === 'next_phase')
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+    .slice(0, 3);
+  const steps = (proposal.suggestedSteps || []).map(stripPhaseLabel);
+  return prev.some((p) => {
+    const sameTitle = isNearDuplicate(stripPhaseLabel(p.title), stripPhaseLabel(proposal.nextPhaseTitle));
+    const prevSteps = (p.proposedSteps || []).map(stripPhaseLabel);
+    const overlap = steps.filter((s) => prevSteps.some((x) => isNearDuplicate(s, x))).length;
+    return sameTitle && steps.length > 0 && overlap >= Math.ceil(steps.length * 0.6);
+  });
+}
+
+function leadSay(db, mission, statusText, text) {
+  const lead = db.agents.find((a) => a.id === (mission.leadAgentId || 'agent_gemini_neon')) || db.agents[0];
+  appendMessage(db, {
+    missionId: mission.id,
+    senderId: lead?.id || 'agent_gemini_neon',
+    senderName: lead?.name || '총괄 팀장',
+    senderRole: lead?.roleTitle || '총괄 팀장',
+    senderShortCode: lead?.shortCode || 'GN',
+    senderAccent: lead?.accent || '#0E6245',
+    targetAgentId: 'ceo',
+    statusText,
+    type: 'work',
+    text
+  });
+  return lead;
+}
+
+/** AI 엔진 한도로 제안서를 못 썼을 때: 템플릿으로 채우지 않고 30분 뒤 재시도(최대 4회) */
+async function deferNextPhaseProposal(missionId, note, reason) {
+  const db = loadDb();
+  const mission = db.missions.find((m) => m.id === missionId);
+  if (!mission) return { ok: false, error: reason };
+  const retries = Number(mission.pendingProposalRetries || 0) + 1;
+  if (retries > 4) {
+    delete mission.pendingProposalRetryAt;
+    delete mission.pendingProposalNote;
+    delete mission.pendingProposalRetries;
+    leadSay(db, mission, '제안 보류', `다음 단계 제안서를 4번 시도했지만 AI 엔진 한도로 작성하지 못했습니다. 일반 문구로 채운 제안은 올리지 않았습니다. 한도가 풀리면(보통 다음 날 오전) 다시 쓰겠습니다. 급하면 회의실에 방향을 말씀해 주세요.`);
+    notifyTelegramAnomaly(db.settings, '다음 단계 제안서 작성 실패', `${mission.title}: AI 엔진 한도로 4회 실패`);
+  } else {
+    mission.pendingProposalRetryAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+    mission.pendingProposalNote = String(note || '').slice(0, 1500);
+    mission.pendingProposalRetries = retries;
+    leadSay(db, mission, '제안 보류', `다음 단계 제안서를 지금은 AI 엔진 한도 때문에 쓰지 못했습니다. 똑같은 일반 제안으로 채워 올리지 않고 30분 뒤 다시 쓰겠습니다. (${retries}/4회)`);
+  }
+  if (mission.status === 'waiting_approval' && !db.approvals.some((a) => a.missionId === mission.id && a.status === 'pending')) {
+    mission.status = 'in_progress';
+  }
+  appendLog(db, '총괄 팀장', `"${mission.title}" 다음 단계 제안 보류: ${String(reason || '').slice(0, 300)}`, 'warning');
+  saveDb(db);
+  await flushCloudBackup(db);
+  return { ok: false, deferred: true, error: '다음 단계 제안서를 AI 엔진 한도로 작성하지 못해 30분 뒤 다시 시도합니다.', db };
+}
+
+/** 같은 제안이 반복될 때: 결재를 올리지 않고 대표님께 방향을 여쭘 */
+async function holdRepeatedProposal(missionId, reason) {
+  const db = loadDb();
+  const mission = db.missions.find((m) => m.id === missionId);
+  if (!mission) return { ok: false, error: reason };
+  delete mission.pendingProposalRetryAt;
+  delete mission.pendingProposalNote;
+  delete mission.pendingProposalRetries;
+  if (mission.status === 'waiting_approval' && !db.approvals.some((a) => a.missionId === mission.id && a.status === 'pending')) {
+    mission.status = 'in_progress';
+  }
+  leadSay(db, mission, '제안 보류', `다음 단계 제안이 직전 제안과 사실상 같아서 결재에 올리지 않았습니다. 지금 결과만으로는 새로 진전할 일이 뚜렷하지 않습니다. 다음 목표(예: 특정 계산기 추가, 광고 배치 변경, 검색 유입 키워드)를 회의실에 한 줄로 말씀해 주시면 그 방향으로 제안하겠습니다.`);
+  appendLog(db, '총괄 팀장', `"${mission.title}" 반복 제안 차단: ${String(reason || '').slice(0, 200)}`, 'info');
+  saveDb(db);
+  await flushCloudBackup(db);
+  return { ok: false, held: true, error: '직전 제안과 같은 내용이라 결재에 올리지 않았습니다.', db };
+}
+
 async function submitNextPhaseProposal(missionId, { leadAssessment = '' } = {}) {
   const db = loadDb();
   const mission = db.missions.find((m) => m.id === missionId);
@@ -475,18 +553,20 @@ async function submitNextPhaseProposal(missionId, { leadAssessment = '' } = {}) 
     settings: db.settings,
     leadAssessment
   });
+  if (proposal.failed) return deferNextPhaseProposal(mission.id, leadAssessment, proposal.error);
   // 제안서가 업무 범위를 벗어나면(대표님이 하지 말라고 한 일) 한 번 다시 쓰고, 그래도 걸리면 해당 단계를 빼고 올림
   const proposalText = (p) => `${p.nextPhaseTitle} ${p.nextDirective} ${(p.suggestedSteps || []).join(' ')}`;
   let violations = findScopeViolations(mission, proposalText(proposal));
   if (violations.length) {
     const scope = getMissionScope(mission);
-    proposal = await proposeNextProjectPhase({
+    const rewritten = await proposeNextProjectPhase({
       mission,
       tasks: missionTasks.filter((t) => !findScopeViolations(mission, `${t.title} ${t.description}`).length),
       agents: db.agents,
       settings: db.settings,
       leadAssessment: `${leadAssessment}\n[중요] 이전 제안이 대표님이 금지한 범위(${violations.join(', ')})를 포함해 폐기됐습니다. 해당 내용을 절대 넣지 말고, 집중할 일(${scope.focus || mission.directive})에만 맞춰 다시 제안하세요.`
     });
+    if (!rewritten.failed) proposal = rewritten;
     violations = findScopeViolations(mission, proposalText(proposal));
     if (violations.length) {
       proposal.suggestedSteps = (proposal.suggestedSteps || []).filter((s) => !findScopeViolations(mission, s).length);
@@ -509,23 +589,41 @@ async function submitNextPhaseProposal(missionId, { leadAssessment = '' } = {}) 
   };
   let proposalIssues = checkProposal(proposal);
   if (proposalIssues.length) {
-    proposal = await proposeNextProjectPhase({
+    const rewritten2 = await proposeNextProjectPhase({
       mission,
       tasks: missionTasks,
       agents: db.agents,
       settings: db.settings,
       leadAssessment: `${leadAssessment}\n[중요] 직전 제안에 다음 문제가 있어 폐기했습니다. 같은 실수를 하지 말고, 실제 파일·새로운 일만 담아 다시 제안하세요:\n${proposalIssues.map((x, i) => `${i + 1}. ${x}`).join('\n')}`
     });
+    if (!rewritten2.failed) proposal = rewritten2;
     proposalIssues = checkProposal(proposal);
     if (proposalIssues.length) {
       proposal.rationale = `${proposal.rationale}\n\n⚠️ 자동 사실 확인 경고(결재 전 확인 필요):\n${proposalIssues.map((x, i) => `${i + 1}. ${x}`).join('\n')}`;
     }
   }
 
+  // 직전 제안과 사실상 같은 제안(예: 수정 지시 직후 같은 내용 재상신)은 올리지 않습니다.
+  if (isRepeatOfRecentProposal(db, mission.id, proposal)) {
+    const again = await proposeNextProjectPhase({
+      mission,
+      tasks: missionTasks,
+      agents: db.agents,
+      settings: db.settings,
+      leadAssessment: `${leadAssessment}\n[중요] 직전 제안과 제목·단계가 사실상 같아 폐기했습니다. 대표님이 "맨날 똑같은 일"이라고 지적하셨습니다. 이번 단계에서 실제로 바뀐 것(배포·데이터·결과물)을 근거로, 이전과 다른 구체적 진전안만 제안하세요. 진전할 것이 없으면 그렇다고 쓰세요.`
+    });
+    if (again.failed) return deferNextPhaseProposal(mission.id, leadAssessment, again.error);
+    if (isRepeatOfRecentProposal(db, mission.id, again)) return holdRepeatedProposal(mission.id, '직전 제안과 같은 내용');
+    proposal = again;
+  }
+
   const leadId = mission.leadAgentId || 'agent_gemini_neon';
   const lead = db.agents.find((a) => a.id === leadId) || db.agents[0];
   const now = new Date().toISOString();
   const stepsText = (proposal.suggestedSteps || []).map((s, i) => `${i + 1}. ${s}`).join('\n');
+  delete mission.pendingProposalRetryAt;
+  delete mission.pendingProposalNote;
+  delete mission.pendingProposalRetries;
 
   const apr = {
     id: uid('apr'),
@@ -603,6 +701,21 @@ async function launchNextProjectPhase(missionId, nextDirective, ceoNote = '') {
     ? `${nextDirective}\n[CEO 승인 메모 반영] ${ceoNote}`
     : nextDirective;
 
+  saveDb(db);
+  return decomposeIntoPhaseTasks(mission.id, combinedDirective);
+}
+
+/**
+ * 승인된 단계 지시를 실제 작업으로 분해해 착수합니다.
+ * AI 엔진이 모두 실패하면 '핵심 자료 조사…' 같은 일반 작업으로 채우지 않고 30분 뒤 다시 분해합니다(최대 4회).
+ */
+async function decomposeIntoPhaseTasks(missionId, combinedDirective) {
+  const db = loadDb();
+  const mission = db.missions.find((m) => m.id === missionId);
+  if (!mission) return null;
+  const nextPhase = Number(mission.phase) || 1;
+  const now = new Date().toISOString();
+
   const plan = await decomposeDirective({
     directive: combinedDirective,
     title: `${mission.title} (Phase ${nextPhase})`,
@@ -615,6 +728,29 @@ async function launchNextProjectPhase(missionId, nextDirective, ceoNote = '') {
     siteUrl: mission.siteUrl || '',
     extraRepos: Array.isArray(mission.extraRepos) ? mission.extraRepos : []
   });
+
+  if (plan.aiFailed) {
+    const retries = Number(mission.pendingPhaseRetries || 0) + 1;
+    if (retries > 4) {
+      delete mission.pendingPhaseDirective;
+      delete mission.pendingPhaseRetryAt;
+      delete mission.pendingPhaseRetries;
+      leadSay(db, mission, '착수 보류', `Phase ${nextPhase} 작업 분해를 4번 시도했지만 AI 엔진 한도로 실패했습니다. 의미 없는 일반 작업으로 채우지 않았습니다. 한도가 풀리면 다시 시도하겠습니다.`);
+      notifyTelegramAnomaly(db.settings, '단계 착수 실패', `${mission.title} Phase ${nextPhase}: AI 엔진 한도로 작업 분해 4회 실패`);
+    } else {
+      mission.pendingPhaseDirective = combinedDirective;
+      mission.pendingPhaseRetryAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+      mission.pendingPhaseRetries = retries;
+      leadSay(db, mission, '착수 보류', `Phase ${nextPhase} 작업 분해를 지금은 AI 엔진 한도 때문에 못 했습니다. 일반 작업으로 채우지 않고 30분 뒤 다시 나누겠습니다. (${retries}/4회)`);
+    }
+    appendLog(db, '총괄 팀장', `"${mission.title}" Phase ${nextPhase} 작업 분해 보류: ${String(plan.fallbackReason || '').slice(0, 300)}`, 'warning');
+    saveDb(db);
+    await flushCloudBackup(db);
+    return { mission, newTasks: [], deferred: true, db };
+  }
+  delete mission.pendingPhaseDirective;
+  delete mission.pendingPhaseRetryAt;
+  delete mission.pendingPhaseRetries;
 
   const agentMap = Object.fromEntries(db.agents.map((a) => [a.id, a]));
   // 업무 범위 밖(대표님이 하지 말라고 한 일) 작업은 만들지 않음
@@ -2239,9 +2375,53 @@ async function runWatchdog() {
     }
   }
 
+  const relaunch = new Set();
+  // 외부 봇(Muse·Cue 등)이 6시간 넘게 안 가져간 업무: 대표님 범위 밖이면 보류, 실제 전화·결제·발송이 아니면 내부 AI로 재배정
+  const EXTERNAL_BOTS = new Set(['pickle', 'manus', 'muse', 'vooy', 'instinct']);
+  const fallbackAgent =
+    (agentMap.agent_groq?.active && agentMap.agent_groq) ||
+    db.agents.find((a) => a.active && INTERNAL_AI_PROVIDERS.has(a.provider) && a.tier !== 'lead' && a.provider !== 'exaone');
+  for (const t of db.tasks) {
+    if (t.status !== 'awaiting_bridge') continue;
+    const ag = agentMap[t.assigneeId];
+    if (!ag || !EXTERNAL_BOTS.has(ag.provider) || ageMin(t.updatedAt) < 6 * 60) continue;
+    const mission = db.missions.find((m) => m.id === t.missionId);
+    const text = `${t.title} ${t.description || ''}`;
+    const outOfScope = mission ? findScopeViolations(mission, text) : [];
+    if (outOfScope.length) {
+      t.status = 'rejected';
+      t.updatedAt = nowIso;
+      t.output = `${t.output || ''}\n\n[자동 보류] 대표님이 정한 업무 범위 밖(${outOfScope.join(', ')})이라 진행하지 않습니다.`.trim();
+      actions.push(`범위 밖 외부 업무 보류 "${t.title}"`);
+      continue;
+    }
+    if (/전화|예약\s*확정|결제|송금|대외\s*발송|방문/.test(text) || !fallbackAgent || !mission) continue;
+    t.description = `${t.description || ''}\n[자동 재배정] ${ag.name} 앱이 6시간 동안 가져가지 않아 내부 AI가 대신 처리합니다. 외부 앱에서만 할 수 있는 일은 대표님 실행 가이드로 정리하세요.`;
+    t.assigneeId = fallbackAgent.id;
+    t.status = 'queued';
+    t.updatedAt = nowIso;
+    t.dispatchPrompt = buildDispatchPrompt(fallbackAgent, t, mission);
+    relaunch.add(t.missionId);
+    actions.push(`외부 봇 무응답 → 재배정 "${t.title}" (${ag.name} → ${fallbackAgent.name})`);
+  }
+
+  // 결재 대기 상태인데 실제 대기 결재가 없는 업무는 상태를 바로잡음
+  for (const m of db.missions) {
+    if (m.status === 'waiting_approval' && !db.approvals.some((a) => a.missionId === m.id && a.status === 'pending')) {
+      updateMissionStatus(db, m.id);
+      if (m.status === 'waiting_approval') m.status = 'in_progress';
+      actions.push(`업무 상태 정정 "${m.title}"`);
+    }
+  }
+
+  // AI 한도로 미뤄 둔 제안서 작성·단계 착수 재시도
+  const duePhase = db.missions.filter((m) => m.pendingPhaseDirective && Date.parse(m.pendingPhaseRetryAt || 0) <= now);
+  const dueProposal = db.missions.filter((m) => m.pendingProposalRetryAt && Date.parse(m.pendingProposalRetryAt) <= now);
+  for (const m of duePhase) actions.push(`단계 착수 재시도 "${m.title}"`);
+  for (const m of dueProposal) actions.push(`다음 단계 제안 재시도 "${m.title}"`);
+
   const cooling = new Set(getAiProviderHealth().cooldowns.map((c) => c.provider));
   const allAiCooling = ['gemini', 'groq', 'openrouter'].every((p) => cooling.has(p));
-  const relaunch = new Set();
   if (!allAiCooling) {
     for (const t of db.tasks) {
       if (t.status !== 'queued') continue;
@@ -2273,6 +2453,10 @@ async function runWatchdog() {
   saveDb(db);
   if (actions.length) flushCloudBackup(db).catch(() => {});
   for (const missionId of relaunch) autoStartLiveMissionTasks(missionId, { proposeNext: false }).catch(() => {});
+  if (!allAiCooling) {
+    for (const m of duePhase) decomposeIntoPhaseTasks(m.id, m.pendingPhaseDirective).catch((err) => console.warn('phase retry failed:', err.message));
+    for (const m of dueProposal) submitNextPhaseProposal(m.id, { leadAssessment: m.pendingProposalNote || '' }).catch((err) => console.warn('proposal retry failed:', err.message));
+  }
   if (exhausted.length) {
     notifyTelegramAnomaly(db.settings, '자동 재시도 한계 도달', `${exhausted.slice(0, 3).join(', ')} — AI 엔진 한도나 지시 내용을 확인해 주세요.`);
   }
