@@ -1657,6 +1657,7 @@ function reviewerCandidates(settings, authorLabel = '') {
 }
 
 async function generateReview(model, opts) {
+  let lastErr = null;
   for (const mode of ['auto', 'json']) {
     try {
       const { object } = await generateObject({
@@ -1669,10 +1670,11 @@ async function generateReview(model, opts) {
       });
       return object;
     } catch (err) {
-      if (/quota|rate limit|429|401|403|api key/i.test(String(err?.message || err))) throw err;
+      lastErr = err;
+      if (/quota|rate limit|429|401|403|api key|too large|tokens per/i.test(String(err?.message || err))) throw err;
     }
   }
-  throw new Error('review failed');
+  throw lastErr || new Error('review failed');
 }
 
 /**
@@ -1686,7 +1688,9 @@ export async function refineDraft({ draft, authorLabel = '', system = '', taskPr
   const minScore = Math.max(1, Math.min(10, Number(cfg.minScore) || 8));
   const rubric = buildReviewRubric(skills);
 
-  for (const rv of reviewerCandidates(settings, authorLabel).slice(0, 3)) {
+  const candidates = reviewerCandidates(settings, authorLabel).slice(0, 3);
+  if (!candidates.length) quality.reviewError = '사용 가능한 검수 모델 없음(한도 소진/키 없음)';
+  for (const rv of candidates) {
     let review = null;
     try {
       review = await generateReview(rv.model, {
@@ -1700,7 +1704,8 @@ export async function refineDraft({ draft, authorLabel = '', system = '', taskPr
 ${rubric}${references ? `\n\n[참고 자료: 회사 기억·전역 지침]\n${String(references).slice(0, 1400)}` : ''}`,
         prompt: `[작업 지시와 자료]\n${String(taskPrompt).slice(0, rv.compact ? 3500 : 6000)}\n\n[검수할 결과물]\n${draft.slice(0, rv.compact ? 5000 : 9000)}`
       });
-    } catch {
+    } catch (err) {
+      quality.reviewError = `${rv.label}: ${String(err?.message || err).replace(/\s+/g, ' ').slice(0, 160)}`;
       continue; // try the next reviewer
     }
     quality.reviewed = true;

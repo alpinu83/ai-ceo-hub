@@ -1,3 +1,5 @@
+import { buildAnalyticsContext, getGoogleDataConfig } from './google-data.js';
+
 const CACHE_TTL_MS = 2 * 60 * 1000;
 const siteCache = new Map();
 const repoCache = new Map();
@@ -244,8 +246,23 @@ export async function buildMissionLiveContext({ mission, settings }) {
           : '저장소 미지정'
     }`
   );
+  const gd = getGoogleDataConfig(settings);
   lines.push(
-    '- 미연동 외부 시스템 (절대 접속·조회·집행했다고 거짓 보고 금지): Google Analytics(GA4) 실시간 수치 API, Google AdSense 수익 API, 네이버/구글 서치콘솔 API, 유료 광고 결제/집행, 외부 이메일·전화 자동 발송'
+    `- Google Analytics(GA4) 데이터 조회: ${gd.gaEnabled ? `연동됨 (읽기 전용, 속성 ${gd.ga4PropertyId}) — 아래 실제 수치만 인용` : '미연동'}`
+  );
+  lines.push(
+    `- Google 서치콘솔 데이터 조회: ${gd.scEnabled ? `연동됨 (읽기 전용, ${gd.searchConsoleSite}) — 아래 실제 수치만 인용` : '미연동'}`
+  );
+  lines.push(
+    `- 미연동 외부 시스템 (절대 접속·조회·집행했다고 거짓 보고 금지): ${[
+      gd.gaEnabled ? '' : 'GA4 수치 API',
+      'Google AdSense 수익 API',
+      gd.scEnabled ? '네이버 서치어드바이저' : '네이버/구글 서치콘솔 API',
+      '유료 광고 결제/집행',
+      '외부 이메일·전화 자동 발송'
+    ]
+      .filter(Boolean)
+      .join(', ')}`
   );
 
   if (siteInfo?.ok) {
@@ -279,6 +296,15 @@ export async function buildMissionLiveContext({ mission, settings }) {
       lines.push('');
       lines.push(`[연관 보조 저장소: ${ex.repo}]`);
       lines.push(`- 파일: ${ex.files.join(', ')}`);
+    }
+  }
+
+  // 웹사이트 실제 성과 데이터(GA4·서치콘솔) — 미션 사이트가 연동된 사이트일 때만
+  if ((gd.gaEnabled || gd.scEnabled) && targetSite) {
+    const analytics = await buildAnalyticsContext(settings, { siteUrl: targetSite }).catch(() => '');
+    if (analytics) {
+      lines.push('');
+      lines.push(analytics);
     }
   }
 
