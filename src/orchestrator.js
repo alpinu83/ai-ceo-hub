@@ -1,3 +1,4 @@
+import './ai-guard.js';
 import { generateText, generateObject } from 'ai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createAnthropic } from '@ai-sdk/anthropic';
@@ -945,24 +946,40 @@ CEO 원지시: ${mission.directive}
       return backups;
     };
 
+    // Compact variant for free tiers with small per-minute token budgets (e.g. Groq "Request too large")
+    const compactPrompt = `미션: ${mission.title}
+CEO 원지시: ${String(mission.directive || '').slice(0, 800)}
+담당 작업: ${task.title}
+상세 요구사항: ${String(task.description || '').slice(0, 1500)}${liveBlock ? `\n\n${liveBlock.slice(0, 2500)}` : ''}${contextBlock ? `\n${contextBlock.slice(0, 1200)}` : ''}`;
+    const isSizeError = (err) => /too large|413|context length|maximum context|tokens per mi|reduce the length/i.test(String(err?.message || err));
+
     try {
       const { text } = await generateText({
         model: resolved.model,
         system,
         prompt,
         maxTokens: 2800,
-        maxRetries: 0
+        maxRetries: 0, abortSignal: AbortSignal.timeout(120000)
       });
       return { output: text.trim(), executionModeUsed: `live_sdk:${resolved.label}`, live: true };
     } catch (primaryErr) {
+      const sizeErr = isSizeError(primaryErr);
+      if (sizeErr) {
+        try {
+          const { text } = await generateText({ model: resolved.model, system, prompt: compactPrompt, maxTokens: 2000, maxRetries: 0, abortSignal: AbortSignal.timeout(120000) });
+          return { output: text.trim(), executionModeUsed: `live_sdk:${resolved.label}(compact)`, live: true };
+        } catch {
+          // fall through to backups
+        }
+      }
       for (const backup of buildBackupModels()) {
         try {
           const { text } = await generateText({
             model: backup.model,
             system,
-            prompt,
+            prompt: sizeErr || /groq/.test(backup.label) ? compactPrompt : prompt,
             maxTokens: 2800,
-            maxRetries: 0
+            maxRetries: 0, abortSignal: AbortSignal.timeout(120000)
           });
           return { output: text.trim(), executionModeUsed: `live_sdk:${backup.label}`, live: true };
         } catch {
