@@ -196,6 +196,7 @@ const VIEW_META = {
   approvals: { title: '결재함', subtitle: '' },
   roster: { title: 'AI 팀', subtitle: '' },
   routines: { title: '루틴 업무', subtitle: '' },
+  outsourcing: { title: '외부 협업', subtitle: '' },
   integrations: { title: '설정', subtitle: '' }
 };
 
@@ -230,6 +231,7 @@ const STATUS_META = {
   queued: { label: '팀장 추진 중', cls: 'badge-neutral' },
   running: { label: '자동 작업 중', cls: 'badge-blue' },
   awaiting_bridge: { label: '외부 봇 위임됨', cls: 'badge-blue' },
+  outsourced: { label: '외주 진행 중', cls: 'badge-blue' },
   awaiting_approval: { label: 'CEO 결재 대기', cls: 'badge-amber' },
   completed: { label: '완료', cls: 'badge-green' },
   rejected: { label: '반려', cls: 'badge-red' }
@@ -516,6 +518,7 @@ function renderAll() {
   renderApprovalsView();
   renderRosterView();
   renderRoutinesView();
+  renderOutsourcingView();
   renderIntegrationsView();
 
   if (openDrawerTaskId) {
@@ -1351,6 +1354,8 @@ function renderApprovalsView() {
 
     ${renderCodeChangeStatus(apr)}
 
+    ${renderConsultSection(apr)}
+
     ${
       apr.prUrl
         ? `<div class="memo-section">
@@ -1402,6 +1407,162 @@ function renderApprovalsView() {
           </div>`
     }
   `;
+}
+
+/* ==================== OUTSOURCING (외부 협업: Antigravity · Aside) ==================== */
+const OUT_KIND_LABELS = { task: '실무 작업', code: '코드 수정', consult: '외부 자문', browser: '브라우저·계정', research: '심층 리서치' };
+const OUT_WORKER_LABELS = { antigravity: 'Antigravity', aside: 'Aside', any: '먼저 잡는 쪽' };
+const OUT_STATUS = {
+  open: ['badge-amber', '대기'],
+  claimed: ['badge-blue', '작업 중'],
+  submitted: ['badge-blue', '결과 접수'],
+  accepted: ['badge-green', '반영 완료'],
+  cancelled: ['badge-neutral', '취소'],
+  rejected: ['badge-red', '반려']
+};
+let outSubmitOpenId = null;
+
+function outsourcingSettingsClient() {
+  const o = state?.settings?.outsourcing || {};
+  return {
+    enabled: o.enabled !== false,
+    autoOnFailure: o.autoOnFailure !== false,
+    autoForBrowser: o.autoForBrowser !== false,
+    consultMode: o.consultMode || 'proposals'
+  };
+}
+
+function mcpConfigSnippet() {
+  const url = `${getPublicServerOrigin()}/api/mcp?token=${encodeURIComponent(state?.settings?.mcpToken || '')}`;
+  return JSON.stringify({ mcpServers: { 'ceo-office': { serverUrl: url } } }, null, 2);
+}
+
+function renderOutsourcingView() {
+  if (!state) return;
+  const list = Array.isArray(state.outsourcing) ? state.outsourcing : [];
+  const active = list.filter((r) => ['open', 'claimed'].includes(r.status));
+  const countEl = document.getElementById('nav-outsourcing-count');
+  if (countEl) countEl.textContent = active.length;
+  const root = document.getElementById('outsourcing-root');
+  if (!root) return;
+  const cfg = outsourcingSettingsClient();
+  const missions = state.missions.filter((m) => !m.isRoutineHub);
+
+  const cards = list.slice(0, 40).map((r) => {
+    const [cls, label] = OUT_STATUS[r.status] || ['badge-neutral', r.status];
+    const mission = state.missions.find((m) => m.id === r.missionId);
+    const res = r.result;
+    const open = ['open', 'claimed'].includes(r.status);
+    return `<div class="sheet out-card">
+        <div class="routine-head">
+          <div style="min-width:0;">
+            <div class="routine-meta">
+              <span class="badge badge-neutral mono">${esc(r.id)}</span>
+              <span class="badge badge-neutral">${esc(OUT_KIND_LABELS[r.kind] || r.kind)}</span>
+              <span class="badge ${cls}">${esc(label)}${r.claimedBy && r.status === 'claimed' ? ` · ${esc(r.claimedBy)}` : ''}</span>
+            </div>
+            <h3 class="routine-title">${esc(r.title)}</h3>
+            <div class="routine-sub">권장: ${esc(OUT_WORKER_LABELS[r.worker] || r.worker)}${mission ? ` · ${esc(mission.title)}` : ''}${r.repo ? ` · ${esc(r.repo)}` : ''} · ${esc(formatTime(r.createdAt))}</div>
+          </div>
+          <div class="routine-actions">
+            <button type="button" class="btn btn-ghost btn-sm" data-out-copy="${esc(r.id)}">요청서 복사</button>
+            ${open ? `<button type="button" class="btn btn-ghost btn-sm" data-out-submit-toggle="${esc(r.id)}">결과 붙여넣기</button>` : ''}
+            ${open ? `<button type="button" class="btn btn-ghost btn-sm" data-out-cancel="${esc(r.id)}">취소</button>` : ''}
+          </div>
+        </div>
+        ${r.reason ? `<p class="routine-desc">사유: ${esc(r.reason)}</p>` : ''}
+        ${
+          outSubmitOpenId === r.id && open
+            ? `<div class="out-submit">
+                <label class="field"><span class="field-label">작업한 AI</span>
+                  <select id="out-submit-worker"><option value="antigravity">Antigravity</option><option value="aside">Aside</option><option value="manual">기타 (직접/다른 AI)</option></select></label>
+                <label class="field"><span class="field-label">요약</span><input type="text" id="out-submit-summary" placeholder="결과 핵심 2~3문장" /></label>
+                <label class="field"><span class="field-label">결과 문서 (마크다운)</span><textarea id="out-submit-doc" rows="6" placeholder="외부 AI가 만든 결과를 그대로 붙여넣으세요"></textarea></label>
+                <label class="field"><span class="field-label">PR 주소 (코드 작업일 때)</span><input type="text" id="out-submit-pr" placeholder="https://github.com/alpinu83/.../pull/12" /></label>
+                <div class="routine-form-actions"><button type="button" class="btn btn-primary btn-sm" data-out-submit="${esc(r.id)}">제출</button></div>
+              </div>`
+            : ''
+        }
+        ${
+          res
+            ? `<details class="routine-result"><summary>결과 · ${esc(res.by || '')} · ${esc(formatTime(res.submittedAt))}${res.prUrl ? ' · PR 있음' : ''}</summary>
+                ${res.prUrl ? `<a class="btn btn-ghost btn-sm" href="${esc(res.prUrl)}" target="_blank" rel="noreferrer">PR 보기 ↗</a>` : ''}
+                ${res.summary ? `<p class="routine-desc"><strong>요약</strong> ${esc(res.summary)}</p>` : ''}
+                <div class="markdown-body">${renderMarkdown(res.document || '')}</div>
+              </details>`
+            : ''
+        }
+      </div>`;
+  });
+
+  root.innerHTML = `
+    <div class="sheet out-guide">
+      <div class="out-guide-grid">
+        <div>
+          <h4>어떻게 돌아가나요</h4>
+          <p class="routine-desc">무료 API 팀이 할 수 없는 일(로그인이 필요한 콘솔 작업, 큰 코드 수정, 3번 실패한 작업, 팀원이 [외주 필요]라고 표시한 일)과 팀장 결재안에 대한 외부 자문을 이 창구에 요청서로 올립니다. Antigravity나 Aside가 가져가서 결과 문서나 PR을 제출하면, 결과가 업무·결재 카드에 붙고 코드 PR은 결재 승인 시 자동 머지·배포됩니다.</p>
+        </div>
+        <div>
+          <h4>Antigravity 연결 (노트북·이동 중)</h4>
+          <p class="routine-desc">Antigravity → MCP Servers → Manage → View raw config 에 아래를 넣고, 에이전트에게 "CEO Office 외주 처리해줘"라고 하세요. 코드 작업은 저장소에 out/요청ID 브랜치로 PR을 엽니다.</p>
+          <button type="button" class="btn btn-ghost btn-sm" data-out-copy-mcp="1">MCP 설정 복사</button>
+        </div>
+        <div>
+          <h4>Aside 연결 (회사 PC)</h4>
+          <p class="routine-desc">Aside 정기 루틴이 주기적으로 대기 요청을 확인해 브라우저·계정 작업과 자문을 처리합니다. 바로 시키려면 Aside에 "CEO Office 외주 처리해줘"라고 하세요.</p>
+        </div>
+      </div>
+      <div class="out-settings">
+        <label class="out-check"><input type="checkbox" id="out-cfg-enabled" ${cfg.enabled ? 'checked' : ''} /> 외부 협업 사용</label>
+        <label class="out-check"><input type="checkbox" id="out-cfg-browser" ${cfg.autoForBrowser ? 'checked' : ''} /> 계정·콘솔 작업은 자동 외주</label>
+        <label class="out-check"><input type="checkbox" id="out-cfg-failure" ${cfg.autoOnFailure ? 'checked' : ''} /> 반복 실패·코드 변경 실패 시 자동 외주</label>
+        <label class="out-check">외부 자문
+          <select id="out-cfg-consult">
+            <option value="off" ${cfg.consultMode === 'off' ? 'selected' : ''}>끄기</option>
+            <option value="proposals" ${cfg.consultMode === 'proposals' ? 'selected' : ''}>다음 단계 제안서만</option>
+            <option value="proposals_and_reports" ${cfg.consultMode === 'proposals_and_reports' ? 'selected' : ''}>제안서 + 완료 보고</option>
+          </select>
+        </label>
+        <button type="button" class="btn btn-primary btn-sm" data-out-settings-save="1">설정 저장</button>
+      </div>
+    </div>
+
+    <details class="sheet out-new">
+      <summary>새 외주 요청 직접 만들기</summary>
+      <div class="form-row-two" style="margin-top:12px;">
+        <label class="field"><span class="field-label">제목 *</span><input type="text" id="out-new-title" maxlength="120" placeholder="예: 연말정산 계산기 페이지 새로 만들기" /></label>
+        <label class="field"><span class="field-label">종류</span>
+          <select id="out-new-kind"><option value="task">실무 작업</option><option value="code">코드 수정</option><option value="research">심층 리서치</option><option value="browser">브라우저·계정 작업</option><option value="consult">외부 자문</option></select></label>
+      </div>
+      <label class="field" style="margin-top:12px;"><span class="field-label">해야 할 일 *</span><textarea id="out-new-goal" rows="4" placeholder="무엇을, 어떤 기준으로 끝내면 되는지 적어 주세요."></textarea></label>
+      <div class="form-row-two" style="margin-top:12px;">
+        <label class="field"><span class="field-label">관련 프로젝트</span><select id="out-new-mission"><option value="">없음</option>${missions.map((m) => `<option value="${esc(m.id)}">${esc(m.title)}</option>`).join('')}</select></label>
+        <label class="field"><span class="field-label">권장 작업자</span><select id="out-new-worker"><option value="any">먼저 잡는 쪽</option><option value="antigravity">Antigravity</option><option value="aside">Aside</option></select></label>
+      </div>
+      <div class="routine-form-actions"><button type="button" class="btn btn-primary btn-sm" data-out-create="1">요청 올리기</button></div>
+    </details>
+
+    <div class="routine-list">${cards.join('') || '<div class="empty-state">아직 외주 요청이 없습니다.</div>'}</div>`;
+}
+
+function renderConsultSection(apr) {
+  if (apr?.consult) {
+    const c = apr.consult;
+    return `<div class="memo-section">
+        <h4>외부 자문 · ${esc(c.by || '')} <span class="mono" style="color:var(--ink-muted);font-weight:400;">${esc(c.requestId || '')}</span></h4>
+        ${c.summary ? `<p style="margin:0 0 8px;font-size:13.5px;"><strong>요약</strong> ${esc(c.summary)}</p>` : ''}
+        <details><summary style="cursor:pointer;font-size:12.5px;color:var(--ink-secondary);">자문 전문 보기</summary><div class="markdown-body">${renderMarkdown(c.document || '')}</div></details>
+      </div>`;
+  }
+  const reqId = apr?.consultRequestId;
+  const req = reqId ? (state.outsourcing || []).find((r) => r.id === reqId) : null;
+  if (req && ['open', 'claimed'].includes(req.status)) {
+    return `<div class="memo-section"><h4>외부 자문</h4><p class="routine-desc" style="margin:0;">${esc(req.id)} 요청 중 (${req.status === 'claimed' ? `${esc(req.claimedBy)} 작업 중` : '대기'}). 자문을 기다리지 않고 결재해도 됩니다.</p></div>`;
+  }
+  if (apr?.status === 'pending') {
+    return `<div class="memo-section"><button type="button" class="btn btn-ghost btn-sm" data-consult-approval="${esc(apr.id)}">상위 AI에 외부 자문 요청</button></div>`;
+  }
+  return '';
 }
 
 /* ==================== ROUTINES (루틴 업무) ==================== */
@@ -2323,6 +2484,122 @@ function bindEvents() {
 
     const target = e.target.closest('button');
     if (!target) return;
+
+    if (target.dataset.outCopy) {
+      try {
+        const res = await api(`/api/outsourcing/${target.dataset.outCopy}`);
+        await copyText(res.packet || '', '요청서를 복사했습니다. 외부 AI에 그대로 붙여넣으세요.');
+      } catch (err) {
+        toast(err.message, true);
+      }
+      return;
+    }
+    if (target.dataset.outCopyMcp) {
+      await copyText(mcpConfigSnippet(), 'Antigravity MCP 설정을 복사했습니다 (토큰 포함, 외부 공유 금지).');
+      return;
+    }
+    if (target.dataset.outSubmitToggle) {
+      outSubmitOpenId = outSubmitOpenId === target.dataset.outSubmitToggle ? null : target.dataset.outSubmitToggle;
+      renderOutsourcingView();
+      return;
+    }
+    if (target.dataset.outSubmit) {
+      const id = target.dataset.outSubmit;
+      target.disabled = true;
+      try {
+        const res = await api(`/api/outsourcing/${id}/submit`, {
+          method: 'POST',
+          body: JSON.stringify({
+            worker: document.getElementById('out-submit-worker')?.value || 'manual',
+            summary: document.getElementById('out-submit-summary')?.value || '',
+            document: document.getElementById('out-submit-doc')?.value || '',
+            prUrl: document.getElementById('out-submit-pr')?.value || ''
+          })
+        });
+        outSubmitOpenId = null;
+        if (res.state) applyStateKeepingHealth(res.state);
+        renderAll();
+        refreshIcons();
+        toast('외주 결과를 반영했습니다.');
+      } catch (err) {
+        toast(err.message, true);
+        target.disabled = false;
+      }
+      return;
+    }
+    if (target.dataset.outCancel) {
+      if (!window.confirm('이 외주 요청을 취소할까요? 연결된 업무는 내부 AI가 다시 시도합니다.')) return;
+      try {
+        const res = await api(`/api/outsourcing/${target.dataset.outCancel}/cancel`, { method: 'POST' });
+        applyStateKeepingHealth(res.state);
+        renderAll();
+        refreshIcons();
+        toast('외주 요청을 취소했습니다.');
+      } catch (err) {
+        toast(err.message, true);
+      }
+      return;
+    }
+    if (target.dataset.outCreate) {
+      try {
+        const res = await api('/api/outsourcing', {
+          method: 'POST',
+          body: JSON.stringify({
+            title: document.getElementById('out-new-title')?.value || '',
+            kind: document.getElementById('out-new-kind')?.value || 'task',
+            goal: document.getElementById('out-new-goal')?.value || '',
+            missionId: document.getElementById('out-new-mission')?.value || '',
+            worker: document.getElementById('out-new-worker')?.value || 'any'
+          })
+        });
+        applyStateKeepingHealth(res.state);
+        renderAll();
+        refreshIcons();
+        toast(`외주 요청 ${res.request.id}를 올렸습니다.`);
+      } catch (err) {
+        toast(err.message, true);
+      }
+      return;
+    }
+    if (target.dataset.outSettingsSave) {
+      try {
+        const res = await api('/api/settings', {
+          method: 'PUT',
+          body: JSON.stringify({
+            outsourcing: {
+              enabled: document.getElementById('out-cfg-enabled')?.checked,
+              autoForBrowser: document.getElementById('out-cfg-browser')?.checked,
+              autoOnFailure: document.getElementById('out-cfg-failure')?.checked,
+              consultMode: document.getElementById('out-cfg-consult')?.value
+            }
+          })
+        });
+        if (res.state) applyStateKeepingHealth(res.state);
+        renderAll();
+        refreshIcons();
+        toast('외부 협업 설정을 저장했습니다.');
+      } catch (err) {
+        toast(err.message, true);
+      }
+      return;
+    }
+    if (target.dataset.consultApproval) {
+      target.disabled = true;
+      try {
+        const res = await api('/api/outsourcing', {
+          method: 'POST',
+          body: JSON.stringify({ kind: 'consult', approvalId: target.dataset.consultApproval })
+        });
+        applyStateKeepingHealth(res.state);
+        renderAll();
+        refreshIcons();
+        toast(`외부 자문 ${res.request.id}를 요청했습니다.`);
+      } catch (err) {
+        toast(err.message, true);
+        target.disabled = false;
+      }
+      return;
+    }
 
     if (target.dataset.routineRun) {
       const id = target.dataset.routineRun;

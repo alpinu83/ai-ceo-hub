@@ -6,6 +6,7 @@ import { notifyWebhook } from './orchestrator.js';
 import { sendTelegramApprovalCard } from './telegram.js';
 import { sendWebPushNotification } from './push.js';
 import { buildCompanyContext } from './lead-engine.js';
+import { listRequests, summarizeRequest, claimRequest, findRequest, buildPacket, submitResult } from './outsourcing.js';
 
 export const MCP_TOOL_CATALOG = [
   {
@@ -23,7 +24,11 @@ export const MCP_TOOL_CATALOG = [
   {
     name: 'request_ceo_approval',
     description: '결제, 예약 확정, 외부 발송 등 중요 의사결정에 대해 즉시 CEO 결재 안건을 상신합니다.'
-  }
+  },
+  { name: 'list_outsourcing_requests', description: '외부 AI 외주·자문 요청 목록 조회 (Antigravity·Aside용)' },
+  { name: 'claim_outsourcing_request', description: '외주 요청을 잡고 요청서 전문 받기' },
+  { name: 'get_outsourcing_request', description: '외주 요청서 전문 조회' },
+  { name: 'submit_outsourcing_result', description: '외주 결과 문서·PR 제출' }
 ];
 
 /**
@@ -268,6 +273,81 @@ export function createCeoMcpServer() {
       return {
         content: [{ type: 'text', text: JSON.stringify({ ok: true, approval_id: apr.id, status: 'pending' }, null, 2) }]
       };
+    }
+  );
+
+  // ---- 외부 AI 외주 · 자문 (Antigravity 등 상위 AI가 직접 가져가서 처리) ----
+  server.tool(
+    'list_outsourcing_requests',
+    'CEO Office가 외부 AI에 맡긴 외주·자문 요청 목록을 조회합니다. 무료 AI 팀이 할 수 없는 일(코드 대규모 수정, 계정·콘솔 작업, 반복 실패 작업)과 팀장 결과물 자문이 올라옵니다.',
+    {
+      worker: z.string().optional().describe('작업자 이름 (antigravity, aside 등). 권장 작업자가 맞는 것 + 아무나 가능한 것만 보여줌'),
+      status: z.string().optional().describe('active(기본: 대기·진행) / open / claimed / submitted / accepted / all')
+    },
+    async ({ worker = '', status = 'active' }) => {
+      const db = loadDb();
+      const list = listRequests(db, { status, worker });
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              { count: list.length, requests: list.map(summarizeRequest), next: '처리할 요청을 claim_outsourcing_request로 잡고 요청서 지시대로 작업 후 submit_outsourcing_result로 제출' },
+              null,
+              2
+            )
+          }
+        ]
+      };
+    }
+  );
+
+  server.tool(
+    'claim_outsourcing_request',
+    '외주 요청을 내가 처리하겠다고 잡습니다(다른 작업자와 중복 방지, 몇 시간 뒤 자동 해제). 요청서 전문(마크다운)을 돌려줍니다.',
+    {
+      request_id: z.string().describe('요청 ID (예: OUT-261126-AB12)'),
+      worker: z.string().describe('작업자 이름 (antigravity 또는 aside 등)')
+    },
+    async ({ request_id, worker }) => {
+      try {
+        const req = claimRequest(request_id, worker);
+        return { content: [{ type: 'text', text: buildPacket(loadDb(), req) }] };
+      } catch (err) {
+        return { isError: true, content: [{ type: 'text', text: err.message }] };
+      }
+    }
+  );
+
+  server.tool(
+    'get_outsourcing_request',
+    '외주 요청서 전문(배경, 해야 할 일, 제출물, 회사 지침, 제출 방법)을 마크다운으로 받습니다.',
+    { request_id: z.string().describe('요청 ID') },
+    async ({ request_id }) => {
+      const db = loadDb();
+      const req = findRequest(db, request_id);
+      if (!req) return { isError: true, content: [{ type: 'text', text: `요청을 찾을 수 없습니다: ${request_id}` }] };
+      return { content: [{ type: 'text', text: buildPacket(db, req) }] };
+    }
+  );
+
+  server.tool(
+    'submit_outsourcing_result',
+    '외주 결과를 제출합니다. 코드 작업이면 저장소에 브랜치 out/{요청ID}로 PR을 열고 pr_url을 함께 보내세요(대표님 결재 후 자동 머지·배포). 자문이면 document에 검토 의견을 쓰세요.',
+    {
+      request_id: z.string().describe('요청 ID'),
+      worker: z.string().describe('작업자 이름 (antigravity, aside 등)'),
+      summary: z.string().describe('결과 요약 2~4문장'),
+      document: z.string().describe('결과 문서 전문 (마크다운). 실제 확인한 사실과 추정을 구분'),
+      pr_url: z.string().optional().describe('코드 작업 PR 주소 (https://github.com/owner/repo/pull/번호)')
+    },
+    async ({ request_id, worker, summary, document, pr_url = '' }) => {
+      try {
+        const req = await submitResult(request_id, { worker, summary, document, prUrl: pr_url });
+        return { content: [{ type: 'text', text: `제출 완료: ${req.id} (${req.status}). 대표님께 보고됐습니다.` }] };
+      } catch (err) {
+        return { isError: true, content: [{ type: 'text', text: err.message }] };
+      }
     }
   );
 

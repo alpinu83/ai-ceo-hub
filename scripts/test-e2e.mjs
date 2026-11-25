@@ -97,7 +97,11 @@ async function runTests() {
       'get_company_brief',
       'list_my_tasks',
       'submit_task_result',
-      'request_ceo_approval'
+      'request_ceo_approval',
+      'list_outsourcing_requests',
+      'claim_outsourcing_request',
+      'get_outsourcing_request',
+      'submit_outsourcing_result'
     ]);
 
     const briefRes = await (
@@ -345,6 +349,40 @@ async function runTests() {
       (t) => t.missionId === projCreated.mission.id && Number(t.phase) === 2
     );
     assert.ok(phase2Tasks.length >= 2, 'Phase 2 must automatically create follow-up tasks');
+
+    // 외부 AI 외주 창구: 요청 → 목록 → 잡기 → 요청서 → 결과 제출 → 반영
+    const outCreated = await (
+      await fetch(`${BASE}/api/outsourcing`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: '외주 테스트 리서치', kind: 'research', goal: '테스트용 외주 요청입니다. 결과 문서를 제출해 주세요.', worker: 'any' })
+      })
+    ).json();
+    assert.ok(/^OUT-/.test(outCreated.request?.id || ''), 'outsourcing request id should start with OUT-');
+    const outId = outCreated.request.id;
+    const tokQ = `token=${encodeURIComponent(mcpToken)}`;
+    const outDenied = await fetch(`${BASE}/api/outsourcing`);
+    assert.equal(outDenied.status, 401, 'outsourcing list must require a token');
+    const outList = await (await fetch(`${BASE}/api/outsourcing?${tokQ}&worker=antigravity`)).json();
+    assert.ok(outList.requests.some((r) => r.id === outId), 'open request should be listed for any worker');
+    const claimed = await (
+      await fetch(`${BASE}/api/outsourcing/${outId}/claim?${tokQ}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ worker: 'antigravity' }) })
+    ).json();
+    assert.equal(claimed.ok, true, 'claim should succeed');
+    assert.ok(claimed.packet.includes(outId) && claimed.packet.includes('제출 방법'), 'packet should include id and submit instructions');
+    const doubleClaim = await fetch(`${BASE}/api/outsourcing/${outId}/claim?${tokQ}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ worker: 'aside' }) });
+    assert.equal(doubleClaim.status, 409, 'another worker must not claim a leased request');
+    const submitted = await (
+      await fetch(`${BASE}/api/outsourcing/${outId}/submit?${tokQ}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ worker: 'antigravity', summary: '테스트 결과', document: '# 결과\n외주 테스트 결과 문서입니다. 확인한 사실과 추정을 구분했습니다.' })
+      })
+    ).json();
+    assert.equal(submitted.ok, true, 'submit should succeed');
+    const afterOut = await (await fetch(`${BASE}/api/state`)).json();
+    const outRow = (afterOut.outsourcing || []).find((r) => r.id === outId);
+    assert.equal(outRow?.status, 'accepted', 'submitted outsourcing result should be accepted');
 
     // Clean reset after tests
     await fetch(`${BASE}/api/reset`, { method: 'POST' });

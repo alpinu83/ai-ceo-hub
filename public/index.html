@@ -65,6 +65,10 @@
           <span class="nav-left"><i data-lucide="calendar-clock" class="icon-sm"></i><span>루틴 업무</span></span>
           <span class="nav-meta" id="nav-routines-count">0</span>
         </button>
+        <button class="nav-item" data-view="outsourcing" id="nav-outsourcing">
+          <span class="nav-left"><i data-lucide="handshake" class="icon-sm"></i><span>외부 협업</span></span>
+          <span class="nav-meta" id="nav-outsourcing-count">0</span>
+        </button>
         <button class="nav-item" data-view="office" id="nav-office">
           <span class="nav-left"><i data-lucide="messages-square" class="icon-sm"></i><span>회의실</span></span>
         </button>
@@ -308,6 +312,13 @@
 
           <div id="routine-ops-status"></div>
           <div class="routine-list" id="routine-list"></div>
+        </section>
+
+        <section class="view" id="view-outsourcing" aria-label="외부 협업">
+          <div class="section-intro">
+            <h2 class="section-heading">외부 협업 · 외주 창구</h2>
+          </div>
+          <div id="outsourcing-root"></div>
         </section>
 
         <section class="view" id="view-office" aria-label="회의실">
