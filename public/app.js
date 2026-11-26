@@ -855,7 +855,11 @@ function renderActiveMission(mission) {
 }
 
 function formatMentions(text = '') {
-  return esc(text).replace(/(@[^\s,!?]+)/g, '<span class="mention-tag">$1</span>');
+  return esc(text)
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|\n)- \[ \] /g, '$1☐ ')
+    .replace(/(^|\n)- \[[xX]\] /g, '$1☑ ')
+    .replace(/(@[^\s,!?<]+)/g, '<span class="mention-tag">$1</span>');
 }
 
 function renderOfficeView() {
@@ -1346,8 +1350,19 @@ function renderApprovalsView() {
 
     <div class="memo-section">
       <h4>상신 배경 및 요약</h4>
-      <p style="margin:0;font-size:14px;">${esc(apr.summary)}</p>
+      <p style="margin:0;font-size:14px;white-space:pre-line;line-height:1.6;">${esc(apr.summary)}</p>
     </div>
+
+    ${
+      Array.isArray(apr.checklist) && apr.checklist.length
+        ? `<div class="memo-section">
+            <h4>☑️ 대표님 확인 · 실행 체크리스트 (${apr.checklist.length}건)</h4>
+            <ul style="margin:0;padding-left:18px;display:flex;flex-direction:column;gap:6px;font-size:13.5px;line-height:1.55;">
+              ${apr.checklist.map((item) => `<li style="list-style:'☐  ';">${esc(item)}</li>`).join('')}
+            </ul>
+          </div>`
+        : ''
+    }
 
     <div class="memo-section">
       <h4>승인 시 실행될 작업</h4>
@@ -1371,16 +1386,33 @@ function renderApprovalsView() {
         : ''
     }
 
-    ${
-      task?.output
-        ? `<div class="memo-section">
-            <h4>팀원 제출 산출물 미리보기</h4>
-            <div class="sheet" style="padding:14px 16px;background:var(--bg-subtle);box-shadow:none;">
-              <div class="markdown-body">${renderMarkdown(task.output)}</div>
-            </div>
-          </div>`
-        : ''
-    }
+    ${(() => {
+      const idSet = new Set();
+      if (apr.taskId) idSet.add(apr.taskId);
+      for (const id of Array.isArray(apr.taskIds) ? apr.taskIds : []) if (id) idSet.add(id);
+      if (apr.kind === 'stage_gate' && msn?.deliverables) {
+        for (const d of msn.deliverables.slice(0, 6)) if (d?.taskId) idSet.add(d.taskId);
+      }
+      const attachedTasks = [...idSet]
+        .map((id) => state.tasks.find((t) => t.id === id))
+        .filter((t) => t && String(t.output || '').trim());
+      if (!attachedTasks.length) return '';
+      return `<div class="memo-section">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
+            <h4 style="margin:0;">📎 첨부 성과품 · 시안 (${attachedTasks.length}건)</h4>
+            <button type="button" class="btn btn-ghost btn-sm" data-download-deliverable="${esc(apr.id)}">성과품·체크리스트(.md) 다운로드</button>
+          </div>
+          ${attachedTasks
+            .map((t, idx) => {
+              const tAg = state.agents.find((a) => a.id === t.assigneeId);
+              return `<details ${idx === 0 ? 'open' : ''} style="margin-bottom:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg-subtle);padding:10px 14px;">
+                <summary style="cursor:pointer;font-weight:600;font-size:13.5px;">${esc(t.title)} <span style="font-weight:400;color:var(--ink-muted);">(${esc(tAg?.name || '팀원')})</span></summary>
+                <div class="markdown-body" style="margin-top:10px;">${renderMarkdown(t.output)}</div>
+              </details>`;
+            })
+            .join('')}
+        </div>`;
+    })()}
 
     ${
       apr.status === 'pending'
@@ -3611,6 +3643,26 @@ function bindEvents() {
       refreshIcons();
       if (window.innerWidth <= 980) {
         document.getElementById('approval-detail-pane')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+      return;
+    }
+
+    if (target.dataset.downloadDeliverable) {
+      const aprId = target.dataset.downloadDeliverable;
+      try {
+        const doc = await api(`/api/approvals/${encodeURIComponent(aprId)}/deliverable?format=json`);
+        const blob = new Blob([doc.markdown || ''], { type: 'text/markdown; charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = doc.filename || `deliverable-${aprId}.md`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        toast('성과품·체크리스트(.md) 파일을 내려받았습니다.');
+      } catch (err) {
+        toast(err.message || '성과품 다운로드 실패', true);
       }
       return;
     }

@@ -6,7 +6,8 @@ import { getGithubRepoConfig } from '../it-devops.js';
 import { getMissionGoal, getMissionScope, rememberFact } from '../lead-engine.js';
 import { applyApprovalDecisionInDb, autoStartLiveMissionTasks, createMissionInDb, updateMissionStatus } from '../hub/missions.js';
 import { handleCodeDecision, isCodeApproval, triggerItPrForMission } from '../hub/code-pipeline.js';
-import { handleStageGateDecision, isOpsMission, opsCycle, replanMission } from '../hub/lead-ops.js';
+import { handleDeliverableReviewDecision, handleStageGateDecision, isOpsMission, opsCycle, replanMission } from '../hub/lead-ops.js';
+import { buildApprovalDeliverable } from '../hub/deliverables.js';
 import { isCeoRequest } from '../hub/outsourcing-bridge.js';
 import { notifyAllApprovalChannels } from '../hub/notify.js';
 import { processTaskResult } from '../hub/task-results.js';
@@ -627,6 +628,18 @@ export function registerMissionsRoutes(app) {
     return c.json({ task, state: sanitizeStateForClient(db) });
   });
 
+  // Approval Deliverable (.md) download / preview
+  app.get('/api/approvals/:id/deliverable', (c) => {
+    const aprId = c.req.param('id');
+    const db = loadDb();
+    const doc = buildApprovalDeliverable(db, aprId);
+    if (!doc) return c.json({ error: '결재 안건을 찾을 수 없습니다.' }, 404);
+    if (c.req.query('format') === 'json') return c.json(doc);
+    c.header('Content-Type', 'text/markdown; charset=utf-8');
+    c.header('Content-Disposition', `attachment; filename="${doc.filename}"`);
+    return c.body(doc.markdown);
+  });
+
   // CEO Approval Decision
   app.post('/api/approvals/:id/decide', async (c) => {
     const aprId = c.req.param('id');
@@ -637,6 +650,9 @@ export function registerMissionsRoutes(app) {
     let latestDb = res.db;
     if (res.approval?.kind === 'stage_gate') {
       const handled = await handleStageGateDecision(res.approval, body.decision, body.ceoNote);
+      latestDb = handled?.db || loadDb();
+    } else if (res.approval?.kind === 'deliverable_review') {
+      const handled = await handleDeliverableReviewDecision(res.approval, body.decision, body.ceoNote);
       latestDb = handled?.db || loadDb();
     }
     let codeApply = false;

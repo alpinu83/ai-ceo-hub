@@ -329,6 +329,38 @@ async function runTests() {
     assert.equal(buildApprovalDeliverable(fakeDb, 'apr_t4').sectionCount, 0, 'summary-only approval has nothing to attach');
     assert.equal(buildApprovalDeliverable(fakeDb, 'nope'), null);
 
+    // 9-2. 팀장 완료 보고 가독성 + 체크리스트 인라인 추출 + 성과품 번들 검증
+    const { buildCompletionReport, extractChecklistItems } = await import('../src/lead-engine.js');
+    const { buildReportDeliverableBundle } = await import('../src/hub/deliverables.js');
+    const sampleShortsOutput = [
+      '# 유튜브 쇼츠 제작 프로세스 내재화 기획',
+      '외주 편집비 0원을 전제로 AI 3단계 파이프라인을 구축합니다.',
+      '',
+      '## 대표님 실행 체크리스트',
+      '- [ ] 유튜브 채널 개설 및 업로드 권한 확인',
+      '- [ ] AI 영상 편집 도구 계정 연결 확정',
+      '- [ ] 첫 주 쇼츠 주제 3건 승인'
+    ].join('\n');
+    const extractedCk = extractChecklistItems(sampleShortsOutput);
+    assert.equal(extractedCk.length, 3, 'should extract all 3 checklist items');
+    const repDb = {
+      missions: [{ id: 'msn_s', title: '유튜브 쇼츠', finalReport: '가이드라인 수립이 완료되었습니다.\n실행 환경 확정이 필요합니다.' }],
+      agents: [{ id: 'ag_q', name: 'Qwen 3.8 (Groq)' }],
+      tasks: [{ id: 'tsk_s1', missionId: 'msn_s', assigneeId: 'ag_q', title: '유튜브 쇼츠 제작 프로세스 내재화 기획', status: 'completed', output: sampleShortsOutput, updatedAt: new Date().toISOString() }],
+      approvals: []
+    };
+    const rep = buildCompletionReport(repDb, 'msn_s', ['tsk_s1'], {
+      attachedApprovalTitle: '[성과품·체크리스트 확인] 유튜브 쇼츠',
+      telegramDocIncluded: true
+    });
+    assert.ok(rep.text.includes('☑️ 대표님 확인 · 실행 체크리스트'), 'report should include checklist heading');
+    assert.ok(rep.text.includes('- [ ] 유튜브 채널 개설 및 업로드 권한 확인'), 'report should inline checklist items');
+    assert.ok(rep.text.includes('결재함 첨부 완료'), 'report should mention approval attachment');
+    assert.ok(rep.telegramHtml.includes('<b>📌 완료된 작업</b>') && rep.telegramHtml.includes('☐ 유튜브 채널 개설'), 'telegramHtml should format bold headings and checkboxes');
+    assert.equal(rep.reviewTasks.length, 1, 'deliverable task should be flagged for CEO review');
+    const bundle = buildReportDeliverableBundle(repDb, repDb.missions[0], rep.reviewTasks, rep.checklistItems);
+    assert.ok(bundle && bundle.markdown.includes('유튜브 채널 개설') && bundle.markdown.includes('AI 3단계 파이프라인'), 'report deliverable bundle should include checklist and full draft');
+
     // 10. Async External Agent HTTPS Inbox (Pickle / Vooy real pull, flexible POST, & heartbeat tracking)
     const inboxRes = await fetch(`${BASE}/api/agent-inbox/pickle?token=${encodeURIComponent(mcpToken)}`);
     const inbox = await inboxRes.json();

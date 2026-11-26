@@ -11,6 +11,7 @@ import { autoStartLiveMissionTasks, leadSay } from './missions.js';
 import { getMissionRepoCfg } from './code-pipeline.js';
 import { notifyAllApprovalChannels } from './notify.js';
 import { requestConsultForApproval, requestConsultForReport } from './outsourcing-bridge.js';
+import { buildReportDeliverableBundle } from './deliverables.js';
 
 export function leadAgentFor(db, mission) {
   return (
@@ -38,10 +39,10 @@ export function leadMessage(db, missionId, statusText, text, type = 'plan') {
 }
 
 /** Team-lead report to Telegram. 보고 켜기/끄기·방해금지 시간은 telegram.js의 알림 권한(gate)에서 처리 */
-export function leadTelegram(db, title, body, key = '') {
+export function leadTelegram(db, title, body, key = '', opts = {}) {
   const cfg = getLeadSettings(db.settings);
   if (!cfg.enabled) return;
-  sendTelegramReport(db.settings, title, body, key).catch(() => {});
+  sendTelegramReport(db.settings, title, body, key, opts).catch(() => {});
 }
 
 // 현 단계가 끝나면(작업 완료·배포 완료 후) 팀장이 스스로 다음 단계 제안서를 결재에 올리도록 점검 예약
@@ -66,17 +67,86 @@ export function scheduleLeadAdvanceCheck(missionId, delayMs = 6 * 60 * 1000) {
   );
 }
 
+function attachReviewDeliverablesToApproval(db, mission, reviewTasks = [], checklistItems = [], reportKey = '') {
+  if (!reviewTasks.length) return { approval: null, created: false };
+  const reviewIds = reviewTasks.map((t) => t.id);
+
+  // 1) 이미 이 업무에 대기 중인 결재가 있으면 그 결재에 성과품·시안·체크리스트를 바로 첨부
+  const existingPending = (db.approvals || []).find((a) => a.missionId === mission.id && a.status === 'pending');
+  if (existingPending) {
+    const mergedIds = [...new Set([...(existingPending.taskId ? [existingPending.taskId] : []), ...(Array.isArray(existingPending.taskIds) ? existingPending.taskIds : []), ...reviewIds])];
+    existingPending.taskIds = mergedIds;
+    const mergedCk = [...new Set([...(Array.isArray(existingPending.checklist) ? existingPending.checklist : []), ...checklistItems])].slice(0, 12);
+    if (mergedCk.length) existingPending.checklist = mergedCk;
+    return { approval: existingPending, created: false };
+  }
+
+  // 2) 대기 결재가 없으면 별도 확인이 필요한 성과품·시안·체크리스트 확인 결재를 자동 생성
+  const alreadyMade = (db.approvals || []).some((a) => a.kind === 'deliverable_review' && a.reportKey === reportKey);
+  if (alreadyMade) return { approval: null, created: false };
+
+  const reviewTitles = reviewTasks.slice(0, 3).map((t) => t.title).join(', ');
+  const summaryLines = [
+    `별도 확인이 필요한 성과품·시안 ${reviewTasks.length}건이 완료되어 첨부합니다: ${reviewTitles}${reviewTasks.length > 3 ? ' 등' : ''}`
+  ];
+  if (checklistItems.length) {
+    summaryLines.push('');
+    summaryLines.push('대표님 확인·실행 체크리스트:');
+    for (const c of checklistItems.slice(0, 5)) summaryLines.push(`- [ ] ${c}`);
+    if (checklistItems.length > 5) summaryLines.push(`- … 외 ${checklistItems.length - 5}개 항목 (첨부 성과품 전문 확인)`);
+  }
+
+  const apr = {
+    id: uid('apr'),
+    missionId: mission.id,
+    taskId: reviewIds[0] || '',
+    taskIds: reviewIds,
+    kind: 'deliverable_review',
+    reportKey,
+    agentId: mission.leadAgentId || 'agent_gemini_neon',
+    title: `[성과품·체크리스트 확인] ${mission.title}`,
+    category: '성과품 · 시안 · 체크리스트 확인',
+    riskLevel: 'low',
+    estimatedCostKRW: 0,
+    depositKRW: 0,
+    checklist: checklistItems.slice(0, 12),
+    summary: summaryLines.join('\n'),
+    proposedAction: '승인(확인 완료)하시면 해당 시안·기획안과 체크리스트를 확정으로 기록하고 다음 단계를 진행합니다. 수정이 필요하면 메모를 남겨 주세요.',
+    status: 'pending',
+    ceoNote: '',
+    createdAt: new Date().toISOString(),
+    decidedAt: null
+  };
+  db.approvals.unshift(apr);
+  return { approval: apr, created: true };
+}
+
 export async function leadReportAfterRun(missionId, taskIds = [], { codeResult = null } = {}) {
   const db = loadDb();
   const cfg = getLeadSettings(db.settings);
   const mission = db.missions.find((m) => m.id === missionId);
   if (!cfg.enabled || !mission || mission.isRoutineHub || !taskIds.length) return null;
-  const report = buildCompletionReport(db, missionId, taskIds, { codeResult });
-  if (!report) return null;
+  const probe = buildCompletionReport(db, missionId, taskIds, { codeResult });
+  if (!probe) return null;
   const st = missionLeadState(db, missionId);
-  if (st.lastReportKey === report.reportKey) return null;
-  st.lastReportKey = report.reportKey;
+  if (st.lastReportKey === probe.reportKey) return null;
+  st.lastReportKey = probe.reportKey;
   st.lastReportAt = new Date().toISOString();
+
+  // 성과품·시안·체크리스트가 있으면 결재 안건에 첨부(없으면 확인 결재 생성) + 텔레그램 문서(.md) 준비
+  const attached = attachReviewDeliverablesToApproval(db, mission, probe.reviewTasks || [], probe.checklistItems || [], probe.reportKey);
+  const reportBundle =
+    (probe.reviewTasks || []).length || (probe.checklistItems || []).length
+      ? buildReportDeliverableBundle(db, mission, probe.reviewTasks || [], probe.checklistItems || [])
+      : null;
+  const hasTelegram = Boolean(db.settings?.telegram?.botToken && db.settings?.telegram?.chatId);
+
+  const report = buildCompletionReport(db, missionId, taskIds, {
+    codeResult,
+    attachedApprovalTitle: attached.approval?.title || '',
+    telegramDocIncluded: Boolean(reportBundle && hasTelegram)
+  });
+
   const lead = leadAgentFor(db, mission);
   leadMessage(db, missionId, report.needsCeo.length ? '완료 보고 · 확인 요청' : '완료 보고', report.text, report.needsCeo.length ? 'approval' : 'plan');
   const titles = db.tasks
@@ -90,12 +160,29 @@ export async function leadReportAfterRun(missionId, taskIds = [], { codeResult =
     text: `작업 결과: ${titles}${report.needsCeo.length ? ` — 대표님 확인 필요: ${report.needsCeo[0]}` : ''}`,
     source: 'lead_report'
   });
-  appendLog(db, `${lead?.name || '총괄 팀장'} (총괄 팀장)`, `"${mission.title}" 완료 보고를 올렸습니다.`, 'success');
+  appendLog(db, `${lead?.name || '총괄 팀장'} (총괄 팀장)`, `"${mission.title}" 완료 보고를 올렸습니다.${attached.approval ? ` (성과품 결재 첨부: ${attached.approval.title})` : ''}`, 'success');
   const osCfgR = getOutsourcingSettings(db.settings);
   if (osCfgR.enabled && osCfgR.consultMode === 'proposals_and_reports') requestConsultForReport(db, mission, report.text);
   saveDb(db);
   await flushCloudBackup(db);
-  leadTelegram(db, report.title, report.telegram, report.reportKey);
+
+  // 새로 생성된 성과품 확인 결재가 있으면 결재 알림(웹 푸시·텔레그램 결재 카드) 전송
+  if (attached.created && attached.approval) {
+    notifyAllApprovalChannels(db.settings, attached.approval, `${lead?.name || '총괄 팀장'} (총괄 팀장)`);
+  }
+
+  // 텔레그램 팀장 보고 + 성과품·체크리스트 .md 파일 자동 첨부 전송
+  leadTelegram(db, report.title, report.telegram, report.reportKey, {
+    htmlBody: report.telegramHtml,
+    document: reportBundle
+      ? {
+          title: reportBundle.title,
+          filename: reportBundle.filename,
+          markdown: reportBundle.markdown,
+          caption: `📎 <b>성과품 · 체크리스트</b> · ${mission.title} (산출물 ${reportBundle.taskCount}건 · 체크리스트 ${reportBundle.checklistCount}개)`
+        }
+      : null
+  });
   return report;
 }
 
@@ -239,6 +326,46 @@ export async function handleStageGateDecision(apr, decision, note = '') {
   saveDb(db);
   await flushCloudBackup(db);
   setTimeout(() => opsCycle(m.id).catch((err) => console.warn('ops cycle after gate failed:', err.message)), 1500);
+  return { db };
+}
+
+/** 성과품·시안·체크리스트 확인 결재 처리 */
+export async function handleDeliverableReviewDecision(apr, decision, note = '') {
+  if (!apr || apr.kind !== 'deliverable_review') return null;
+  const db = loadDb();
+  const m = db.missions.find((x) => x.id === apr.missionId);
+  if (!m) return null;
+  const memo = String(note || '').trim();
+  if (decision === 'approved') {
+    rememberFact(db, {
+      kind: 'decision',
+      missionId: m.id,
+      pinned: true,
+      text: `[성과품·체크리스트 확인 승인] ${apr.title}${memo ? ` — 대표님: ${memo}` : ''}`,
+      source: 'deliverable_review'
+    });
+  } else if (decision === 'revision_requested') {
+    rememberFact(db, {
+      kind: 'directive',
+      missionId: m.id,
+      pinned: true,
+      text: `[성과품·시안 수정 지시] ${apr.title}${memo ? `: ${memo}` : ''}`,
+      source: 'deliverable_review'
+    });
+  } else {
+    rememberFact(db, {
+      kind: 'decision',
+      missionId: m.id,
+      text: `[성과품·시안 반려] ${apr.title}${memo ? ` — ${memo}` : ''}`,
+      source: 'deliverable_review'
+    });
+  }
+  markCeoActivity(db, m.id);
+  saveDb(db);
+  await flushCloudBackup(db);
+  if (decision === 'approved' && isOpsMission(m)) {
+    setTimeout(() => opsCycle(m.id).catch((err) => console.warn('ops cycle after deliverable review failed:', err.message)), 1500);
+  }
   return { db };
 }
 

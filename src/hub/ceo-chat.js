@@ -6,7 +6,7 @@ import { applyApprovalDecisionInDb, autoStartLiveMissionTasks, createMissionInDb
 import { getMissionRepoCfg, handleCodeDecision, isCodeApproval } from './code-pipeline.js';
 import { handleNotifyCommand } from './notify.js';
 import { handleOutsourceTelegramCallback, handleOutsourceTelegramCommand } from './outsourcing-bridge.js';
-import { handleStageGateDecision } from './lead-ops.js';
+import { handleDeliverableReviewDecision, handleStageGateDecision } from './lead-ops.js';
 import { buildApprovalDeliverable } from './deliverables.js';
 
 export function getTelegramCallbacks() {
@@ -22,8 +22,11 @@ export function getTelegramCallbacks() {
     },
     onDecision: async (aprId, decision, note) => {
       const res = applyApprovalDecisionInDb(aprId, decision, note);
+      const cleanNote = note === 'Telegram 모바일 원터치 결재' ? '' : note;
       if (res.ok && res.approval?.kind === 'stage_gate') {
-        await handleStageGateDecision(res.approval, decision, note === 'Telegram 모바일 원터치 결재' ? '' : note);
+        await handleStageGateDecision(res.approval, decision, cleanNote);
+      } else if (res.ok && res.approval?.kind === 'deliverable_review') {
+        await handleDeliverableReviewDecision(res.approval, decision, cleanNote);
       } else if (res.ok && isCodeApproval(res.db, res.approval)) {
         res.codeApply = decision === 'approved';
         handleCodeDecision(res.approval.id, decision).catch((err) => {

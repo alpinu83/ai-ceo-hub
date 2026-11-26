@@ -162,7 +162,9 @@ export function findScopeViolations(mission, text = '') {
 
 const MAX_FACTS = 150;
 const MAX_PINNED = 20;
-const EXTERNAL_ACTION_RE = /외부 권한 미연동|대표님 실행 가이드|대표님이 직접/;
+const EXTERNAL_ACTION_RE = /외부 권한 미연동|대표님 실행 가이드|대표님이 직접|체크리스트|승인 전 확인/;
+const DELIVERABLE_HINT_RE = /(시안|기획안|기획서|초안|대본|카피|프로세스|가이드라인|체크리스트|제안서|템플릿|매뉴얼)/;
+const CHECKLIST_HEAD_RE = /(체크리스트|대표님\s*(확인|실행|직접|조치)|외부\s*(권한|작업)|실행\s*가이드|승인\s*전\s*확인|확정\s*항목)/;
 // 보고서 머리말(수신·발신·담당·인사말 등)은 요약에서 제외
 const BOILERPLATE_RE = /^(\(?\s*)?(수신|발신|담당|작성자?|위임자|날짜|일시|주제|목표|미션|대상 저장소|참고|to|from)\s*[:：–-]|^안녕하세요|^대표님,?\s*$|^총괄 팀장\(?.*\)?입니다|^모든 내용은 실제|기준\s*[–-]\s*실제/i;
 
@@ -181,13 +183,30 @@ export function kstShort(iso) {
   return `${mm}/${dd} ${hh}:${mi}`;
 }
 
-function oneLine(text, max = 200) {
-  return String(text || '')
-    .replace(/[>*`|]/g, ' ')
+function cleanSnippet(text, max = 160) {
+  const s = String(text || '')
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/__(.+?)__/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/[>*|]/g, ' ')
     .replace(/(^|\s)#{1,6}\s/g, ' ')
     .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, max);
+    .trim();
+  if (s.length <= max) return s;
+  const slice = s.slice(0, max);
+  // Prefer ending cleanly at a sentence boundary
+  const sentEnd = Math.max(slice.lastIndexOf('다.'), slice.lastIndexOf('요.'), slice.lastIndexOf('. '), slice.lastIndexOf('! '), slice.lastIndexOf('? '));
+  if (sentEnd >= Math.floor(max * 0.55)) {
+    const endOffset = slice.slice(sentEnd, sentEnd + 2) === '다.' || slice.slice(sentEnd, sentEnd + 2) === '요.' ? 2 : 1;
+    return slice.slice(0, sentEnd + endOffset).trim();
+  }
+  const wordEnd = slice.lastIndexOf(' ');
+  const cut = wordEnd >= Math.floor(max * 0.65) ? slice.slice(0, wordEnd).trim() : slice.trim();
+  return `${cut.replace(/[,·:;-]+$/, '')}…`;
+}
+
+function oneLine(text, max = 200) {
+  return cleanSnippet(text, max);
 }
 
 /** First meaningful line(s) of a markdown output (skips headings, tables, quotes). */
@@ -196,9 +215,88 @@ export function leadLines(markdown, count = 2, max = 160) {
     .split('\n')
     .map((l) => l.trim())
     .filter((l) => l && !/^(#|\||>|---|```)/.test(l))
-    .map((l) => oneLine(l.replace(/^[-*\d.)\s]+/, ''), max))
+    .map((l) => cleanSnippet(l.replace(/^([-*•]\s*\[[ xX]\]\s*|[-*•]\s*|\d+[.)]\s*)/, ''), max))
     .filter((l) => l.length > 3 && !BOILERPLATE_RE.test(l.replace(/^\*+|\*+$/g, '').trim()))
     .slice(0, count);
+}
+
+/**
+ * Extract concrete CEO checklist items from a task's markdown output:
+ *  1) Explicit checkboxes (- [ ], * [ ], □, ☐)
+ *  2) Bullet/numbered items under a checklist / CEO action heading
+ */
+export function extractChecklistItems(markdown = '', maxItems = 8) {
+  const lines = String(markdown || '').split('\n');
+  const explicit = [];
+  const underHeading = [];
+  let inChecklistSection = false;
+
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+
+    // Detect headings (markdown # or bold section headers)
+    if (/^#{1,6}\s+/.test(line) || (/^\*\*[^*]{2,60}\*\*$/.test(line) && !/^[-*•\d]/.test(line))) {
+      inChecklistSection = CHECKLIST_HEAD_RE.test(line);
+      continue;
+    }
+    if (/^(---|```)/.test(line)) {
+      if (line.startsWith('---')) inChecklistSection = false;
+      continue;
+    }
+
+    // 1) Explicit checkbox item anywhere in the document
+    const cb = line.match(/^(?:[-*•]\s*)?(\[[ xX]\]|☐|□|☑️)\s+(.+)$/);
+    if (cb) {
+      const cleaned = cleanSnippet(cb[2], 140);
+      if (cleaned.length >= 4) explicit.push(cleaned);
+      continue;
+    }
+
+    // 2) Bullet/numbered item inside a checklist or CEO action section
+    if (inChecklistSection) {
+      const bullet = line.match(/^(?:[-*•]|\d+[.)])\s+(.+)$/);
+      if (bullet) {
+        const cleaned = cleanSnippet(bullet[1], 140);
+        if (cleaned.length >= 4 && !BOILERPLATE_RE.test(cleaned)) underHeading.push(cleaned);
+      } else if (/^\|/.test(line)) {
+        // Table row inside a checklist section (skip separator/header rows)
+        if (!/^\|[\s:-]+\|/.test(line)) {
+          const cells = line.split('|').map((c) => c.trim()).filter(Boolean);
+          if (cells.length >= 2 && !/^(항목|번호|구분|단계|no\.?|#)$/i.test(cells[0])) {
+            const joined = cleanSnippet(cells.slice(0, 2).join(' — '), 140);
+            if (joined.length >= 6) underHeading.push(joined);
+          }
+        }
+      }
+    }
+  }
+
+  const seen = new Set();
+  const merged = [];
+  for (const item of [...explicit, ...underHeading]) {
+    const key = item.toLowerCase().replace(/\s+/g, '');
+    if (!seen.has(key)) {
+      seen.add(key);
+      merged.push(item);
+      if (merged.length >= maxItems) break;
+    }
+  }
+  return merged;
+}
+
+/**
+ * Determine whether a completed task contains a deliverable, draft, or checklist
+ * that should be attached to an approval or delivered as a file to the CEO.
+ */
+export function needsDeliverableReview(task) {
+  if (!task) return false;
+  const output = String(task.output || '').trim();
+  if (!output) return false;
+  if (extractChecklistItems(output, 1).length > 0) return true;
+  if (EXTERNAL_ACTION_RE.test(output)) return true;
+  if (output.length >= 180 && DELIVERABLE_HINT_RE.test(`${task.title || ''} ${output.slice(0, 240)}`)) return true;
+  return false;
 }
 
 export function ensureLeadDefaults(db) {
@@ -745,9 +843,14 @@ export function buildCompanyContext(db, missionId = '', { compact = false } = {}
 
 /**
  * Build the Team Lead's completion report for a batch of tasks that just finished.
- * Returns { title, text (meeting room markdown), telegram (HTML-safe plain lines), needsCeo: string[] }
+ * Returns { title, text, telegram, telegramHtml, needsCeo, checklistGroups, checklistItems, reviewTasks, reportKey }
  */
-export function buildCompletionReport(db, missionId, taskIds = [], { codeResult = null } = {}) {
+export function buildCompletionReport(
+  db,
+  missionId,
+  taskIds = [],
+  { codeResult = null, attachedApprovalTitle = '', telegramDocIncluded = false } = {}
+) {
   const mission = (db.missions || []).find((m) => m.id === missionId);
   if (!mission) return null;
   const agentMap = Object.fromEntries((db.agents || []).map((a) => [a.id, a]));
@@ -760,17 +863,62 @@ export function buildCompletionReport(db, missionId, taskIds = [], { codeResult 
   const notDone = batch.filter((t) => !['completed', 'awaiting_approval', 'rejected'].includes(t.status));
   const needsCeo = [];
 
+  const doneSorted = [...done].sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+
+  // Collect extracted checklists & deliverable/draft tasks needing CEO review
+  const checklistGroups = [];
+  const allChecklistItems = [];
+  const seenCheckKeys = new Set();
+  for (const t of [...doneSorted, ...waitingApproval]) {
+    const items = extractChecklistItems(t.output, 6);
+    if (items.length) {
+      checklistGroups.push({ taskId: t.id, taskTitle: t.title, items });
+      for (const it of items) {
+        const k = it.toLowerCase().replace(/\s+/g, '');
+        if (!seenCheckKeys.has(k)) {
+          seenCheckKeys.add(k);
+          allChecklistItems.push(it);
+        }
+      }
+    }
+  }
+  const reviewTasks = doneSorted.filter((t) => needsDeliverableReview(t));
+
   const lines = [];
   lines.push(`**[팀장 완료 보고] ${mission.title}**`);
-  lines.push(`이번 작업 ${batch.length}건: 완료 ${done.length} · 결재 대기 ${waitingApproval.length} · 미완료 ${notDone.length}`);
+  lines.push(`이번 작업 ${batch.length}건 · 완료 ${done.length} · 결재 대기 ${waitingApproval.length} · 미완료 ${notDone.length}`);
 
-  // 최신 작업부터 보여 주고, 나머지는 개수만
-  const doneSorted = [...done].sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
-  for (const t of doneSorted.slice(0, 5)) {
-    const first = leadLines(t.output, 1, 120)[0];
-    lines.push(`- 완료: ${t.title} (${agentMap[t.assigneeId]?.name || '팀원'})${first ? ` — ${first}` : ''}`);
+  // 1) 완료된 작업 (제목 + 담당자 + 깔끔한 줄바꿈 요약)
+  if (doneSorted.length) {
+    lines.push('');
+    lines.push('**📌 완료된 작업**');
+    for (const [idx, t] of doneSorted.slice(0, 5).entries()) {
+      const first = leadLines(t.output, 1, 180)[0];
+      const agName = agentMap[t.assigneeId]?.name || '팀원';
+      lines.push(`${idx + 1}. **${t.title}** (${agName})`);
+      if (first) lines.push(`   ${first}`);
+    }
+    if (doneSorted.length > 5) lines.push(`- 외 완료 ${doneSorted.length - 5}건`);
   }
-  if (doneSorted.length > 5) lines.push(`- 외 완료 ${doneSorted.length - 5}건`);
+
+  // 결재 대기 / 미완료
+  if (waitingApproval.length) {
+    lines.push('');
+    lines.push('**⏳ 결재 대기 작업**');
+    for (const t of waitingApproval.slice(0, 4)) {
+      lines.push(`- ${t.title}`);
+      needsCeo.push(`결재함에서 "${t.title}" 승인 여부를 결정해 주세요.`);
+    }
+  }
+  if (notDone.length) {
+    lines.push('');
+    lines.push('**⚠️ 미완료 작업**');
+    for (const t of notDone.slice(0, 4)) {
+      lines.push(`- ${t.title} (상태: ${t.status}${t.autoRetryExhausted ? ', 자동 재시도 소진' : ''})`);
+    }
+  }
+
+  // 품질·사실 검증 메모
   const warned = batch.filter((t) => (t.quality?.factIssuesAfter || []).length);
   if (warned.length) {
     needsCeo.push(
@@ -781,53 +929,98 @@ export function buildCompletionReport(db, missionId, taskIds = [], { codeResult 
     );
   }
   const fixedCount = batch.filter((t) => (t.quality?.factIssues || []).length && !(t.quality?.factIssuesAfter || []).length).length;
-  if (fixedCount) lines.push(`- 자동 사실 확인: ${fixedCount}건의 결과에서 없는 파일·지어낸 수치 등을 찾아 고쳤습니다.`);
-  const externalTitles = done.filter((t) => EXTERNAL_ACTION_RE.test(String(t.output || ''))).map((t) => `"${t.title}"`);
-  if (externalTitles.length) {
-    needsCeo.push(
-      `대표님이 직접 하셔야 할 외부 작업 체크리스트가 있는 결과 ${externalTitles.length}건: ${externalTitles.slice(0, 3).join(', ')}${externalTitles.length > 3 ? ' 등' : ''}`
-    );
-  }
-  for (const t of waitingApproval.slice(0, 4)) {
-    lines.push(`- 결재 대기: ${t.title}`);
-    needsCeo.push(`결재함에서 "${t.title}" 승인 여부를 정해 주세요.`);
-  }
-  for (const t of notDone.slice(0, 4)) {
-    lines.push(`- 미완료: ${t.title} (상태 ${t.status}${t.autoRetryExhausted ? ', 자동 재시도 소진' : ''})`);
+  if (fixedCount) {
+    lines.push('');
+    lines.push(`- 자동 사실 확인: ${fixedCount}건의 결과에서 없는 파일·지어낸 수치를 바로잡았습니다.`);
   }
 
-  // Code/PR outcome for repo-linked missions
+  // 코드/PR 결과
   const st = db.leadState?.missions?.[missionId];
   const codeApr = (db.approvals || [])
     .filter((a) => a.missionId === missionId && (a.prNumber || a.codeChange))
     .sort((a, b) => String(b.codeChange?.updatedAt || b.createdAt || '').localeCompare(String(a.codeChange?.updatedAt || a.createdAt || '')))[0];
   if (codeResult?.prNumber) {
-    lines.push(`- 코드 반영: [${codeResult.repo}] PR #${codeResult.prNumber} 작성 완료 (${(codeResult.changedFiles || []).join(', ')}). 승인하시면 머지·배포까지 자동 진행합니다.`);
+    lines.push('');
+    lines.push('**💻 코드 반영 (GitHub PR)**');
+    lines.push(`- [${codeResult.repo}] PR #${codeResult.prNumber} 작성 완료 (${(codeResult.changedFiles || []).join(', ')})`);
+    lines.push('- 승인하시면 main 머지 및 라이브 배포까지 자동 진행합니다.');
     needsCeo.push(`PR #${codeResult.prNumber} 결재(승인/수정/반려)가 필요합니다.`);
   } else if (st?.lastCodeNote && Date.now() - new Date(st.lastCodeNote.at).getTime() < 30 * 60 * 1000) {
     if (st.lastCodeNote.status === 'failed') {
+      lines.push('');
       lines.push(`- 코드 반영 실패: ${oneLine(st.lastCodeNote.message, 200)}`);
       needsCeo.push(codeFailureHelp(st.lastCodeNote.message));
     } else if (st.lastCodeNote.status === 'none') {
+      lines.push('');
       lines.push(`- 코드 반영: IT팀 판단으로 저장소 수정 없음 — ${oneLine(st.lastCodeNote.message, 160)}`);
     }
   } else if (codeApr?.codeChange?.status === 'failed') {
+    lines.push('');
     lines.push(`- 코드 반영 실패: ${oneLine(codeApr.codeChange.error, 200)}`);
     needsCeo.push(codeFailureHelp(codeApr.codeChange.error));
   }
 
-  const summary = leadLines(mission.finalReport, 2, 160);
-  if (summary.length) lines.push(`핵심 요약: ${summary.join(' / ')}`);
-
-  if (needsCeo.length) {
+  // 2) 핵심 요약 (줄바꿈 불릿으로 가독성 개선)
+  const summary = leadLines(mission.finalReport, 3, 180);
+  if (summary.length) {
     lines.push('');
-    lines.push('**대표님 확인이 필요한 일**');
-    for (const n of [...new Set(needsCeo)].slice(0, 5)) lines.push(`- ${n}`);
-  } else if (!notDone.length) {
+    lines.push('**📝 핵심 요약**');
+    for (const s of summary) lines.push(`- ${s}`);
+  }
+
+  // 3) 대표님 확인 · 실행 체크리스트 (실제 항목을 본문에 직접 표시!)
+  if (allChecklistItems.length) {
+    lines.push('');
+    lines.push('**☑️ 대표님 확인 · 실행 체크리스트**');
+    for (const item of allChecklistItems.slice(0, 7)) {
+      lines.push(`- [ ] ${item}`);
+    }
+    if (allChecklistItems.length > 7) {
+      lines.push(`- … 외 ${allChecklistItems.length - 7}개 항목 (첨부 성과품 문서에 전문 수록)`);
+    }
+  }
+
+  // 4) 성과품·시안·체크리스트 첨부 / 텔레그램 전송 안내
+  if (reviewTasks.length) {
+    const reviewTitles = reviewTasks.slice(0, 3).map((t) => `"${t.title}"`).join(', ');
+    lines.push('');
+    lines.push('**📎 별도 확인 성과품 · 시안**');
+    lines.push(`- 대상 (${reviewTasks.length}건): ${reviewTitles}${reviewTasks.length > 3 ? ' 등' : ''}`);
+    if (attachedApprovalTitle) {
+      lines.push(`- 결재함 첨부 완료: "${attachedApprovalTitle}" 안건에서 성과품·시안·체크리스트 전문을 바로 확인하고 승인/수정 지시하실 수 있습니다.`);
+    }
+    if (telegramDocIncluded) {
+      lines.push('- 텔레그램으로도 성과품·체크리스트 마크다운 문서(.md)를 함께 전송했습니다.');
+    }
+    if (!attachedApprovalTitle && !allChecklistItems.length) {
+      needsCeo.push(`성과품·시안 ${reviewTasks.length}건(${reviewTitles}) 확인이 필요합니다.`);
+    } else if (attachedApprovalTitle) {
+      needsCeo.push(`결재함 "${attachedApprovalTitle}"에서 성과품·체크리스트 확인 후 승인 여부를 결정해 주세요.`);
+    }
+  }
+
+  // 5) 대표님 확인이 필요한 일
+  const uniqueNeeds = [...new Set(needsCeo)].slice(0, 5);
+  if (uniqueNeeds.length) {
+    lines.push('');
+    lines.push('**👉 대표님 확인이 필요한 일**');
+    for (const n of uniqueNeeds) lines.push(`- ${n}`);
+  } else if (!notDone.length && !allChecklistItems.length) {
+    lines.push('');
     lines.push('대표님이 따로 처리하실 일은 없습니다. 필요한 후속 작업은 팀장이 이어서 검토합니다.');
   }
 
   const text = lines.join('\n');
+  // Telegram HTML version: bold headings + clean checkboxes
+  const telegramHtml = lines
+    .map((line) => {
+      if (line.startsWith('**- [ ] ')) return `☐ ${escapeTelegramHtml(line.slice(8))}`;
+      if (line.startsWith('- [ ] ')) return `☐ ${escapeTelegramHtml(line.slice(6))}`;
+      const escaped = escapeTelegramHtml(line);
+      return escaped.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+    })
+    .join('\n');
+
   const reportKey = `${missionId}:${batch
     .map((t) => `${t.id}:${t.status}`)
     .sort()
@@ -835,8 +1028,12 @@ export function buildCompletionReport(db, missionId, taskIds = [], { codeResult 
   return {
     title: `완료 보고: ${mission.title}`,
     text,
-    telegram: text.replace(/\*\*/g, ''),
-    needsCeo: [...new Set(needsCeo)],
+    telegram: text.replace(/\*\*/g, '').replace(/^- \[ \] /gm, '☐ '),
+    telegramHtml,
+    needsCeo: uniqueNeeds,
+    checklistGroups,
+    checklistItems: allChecklistItems,
+    reviewTasks,
     reportKey
   };
 }

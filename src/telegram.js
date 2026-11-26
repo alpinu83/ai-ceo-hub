@@ -203,16 +203,26 @@ function shouldThrottleTelegram(dedupKey) {
 /**
  * 팀장 보고(완료 보고·후속 추진·배포 결과). 특이점 알림과 달리 "필요한 보고"이므로 본문을 더 길게 보냅니다.
  * dedupKey가 같으면 10분 안에 다시 보내지 않습니다.
+ * htmlBody가 있으면 굵은 소제목/체크리스트로 가독성 있게 보내고, document가 있으면 .md 성과품 파일도 바로 첨부합니다.
  */
-export async function sendTelegramReport(settings, title, body, dedupKey = '') {
+export async function sendTelegramReport(settings, title, body, dedupKey = '', { htmlBody = '', document = null } = {}) {
   const tg = settings?.telegram;
   if (!isValidBotToken(tg?.botToken) || !isNumericChatId(tg?.chatId)) return { ok: false, skipped: true };
   const g = gateTelegram(settings, 'report', { title, body: String(body || '').slice(0, 600) });
   if (g !== 'send') return { ok: true, [g === 'skip' ? 'skipped' : 'deferred']: true };
   if (shouldThrottleTelegram(`report:${dedupKey || String(title || '').slice(0, 60)}`)) return { ok: true, deduplicated: true };
-  const text = [`<b>📋 [팀장 보고] ${escapeHtml(title)}</b>`, '', escapeHtml(String(body || '').slice(0, 3200))].join('\n');
+
+  const rawBody = htmlBody ? String(htmlBody).slice(0, 3500) : escapeHtml(String(body || '').slice(0, 3500));
+  const text = htmlBody ? rawBody : [`<b>📋 [팀장 보고] ${escapeHtml(title)}</b>`, '', rawBody].join('\n');
   try {
-    return await sendTelegramText(tg.botToken, tg.chatId, text);
+    const sent = await sendTelegramText(tg.botToken, tg.chatId, text);
+    if (document?.markdown) {
+      const cap =
+        document.caption ||
+        `📎 <b>성과품 · 체크리스트</b> · ${escapeHtml(String(document.title || title).slice(0, 180))}`;
+      await sendTelegramDocument(tg.botToken, tg.chatId, document.filename || 'deliverables.md', document.markdown, cap).catch(() => {});
+    }
+    return sent;
   } catch (err) {
     return { ok: false, error: err.message };
   }
@@ -258,6 +268,16 @@ export async function sendTelegramApprovalCard(settings, approval, agentName, mi
       ? `${Number(approval.estimatedCostKRW).toLocaleString('ko-KR')}원`
       : '비용 없음';
 
+  const checklistBlock =
+    Array.isArray(approval.checklist) && approval.checklist.length
+      ? [
+          ``,
+          `<b>☑️ 확인 · 실행 체크리스트:</b>`,
+          ...approval.checklist.slice(0, 5).map((c) => `☐ ${escapeHtml(String(c).slice(0, 140))}`),
+          ...(approval.checklist.length > 5 ? [`… 외 ${approval.checklist.length - 5}건 (아래 📎 버튼으로 전문 확인)`] : [])
+        ]
+      : [];
+
   const text = [
     `<b>[CEO 결재 요청] ${escapeHtml(settings.companyName || 'CEO Office')}</b>`,
     ``,
@@ -268,12 +288,14 @@ export async function sendTelegramApprovalCard(settings, approval, agentName, mi
     `<b>예상 비용:</b> ${costText}`,
     ``,
     `<b>요약:</b>`,
-    escapeHtml(approval.summary || ''),
+    escapeHtml(String(approval.summary || '').slice(0, 1200)),
+    ...checklistBlock,
     ``,
     `<b>승인 시 실행:</b> ${escapeHtml(approval.proposedAction || '')}`
   ]
     .filter((line, idx, arr) => !(line === '' && arr[idx - 1] === ''))
-    .join('\n');
+    .join('\n')
+    .slice(0, 3900);
 
   const keyboard = {
     inline_keyboard: [
@@ -282,7 +304,7 @@ export async function sendTelegramApprovalCard(settings, approval, agentName, mi
         { text: '✏️ 수정 지시', callback_data: `decide:revision_requested:${approval.id}` },
         { text: '❌ 반려', callback_data: `decide:rejected:${approval.id}` }
       ],
-      [{ text: '📎 성과품(시안·계획서) 받기', callback_data: `doc:${approval.id}` }]
+      [{ text: '📎 성과품(시안·체크리스트) 받기', callback_data: `doc:${approval.id}` }]
     ]
   };
 
