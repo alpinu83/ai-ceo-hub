@@ -34,7 +34,10 @@ import {
   generateStandupSession,
   classifyChatDirective,
   setCompanyContextProvider,
-  planLeadFollowUp
+  planLeadFollowUp,
+  leadReviewDeliverable,
+  draftMissionPlan,
+  planMilestoneWork
 } from './src/orchestrator.js';
 import {
   ensureLeadDefaults,
@@ -78,7 +81,7 @@ async function runWithConcurrency(items, limit, fn) {
   });
   await Promise.all(workers);
 }
-import { handleOfficialMcpHttp, MCP_TOOL_CATALOG } from './src/mcp.js';
+import { handleOfficialMcpHttp, MCP_TOOL_CATALOG, setTaskResultHandler } from './src/mcp.js';
 import {
   sendTelegramAlert,
   sendTelegramReport,
@@ -183,7 +186,8 @@ async function createMissionInDb({
   githubRepo = '',
   githubBranch = 'main',
   siteUrl = '',
-  extraRepos = []
+  extraRepos = [],
+  opsMode = 'v3'
 }) {
   const db = loadDb();
   const safeDomain = ['business', 'life', 'content', 'dev', 'it_ops'].includes(domain) ? domain : 'business';
@@ -234,6 +238,7 @@ async function createMissionInDb({
     domain: safeDomain,
     costPolicy: safePolicy,
     mode: safeMode,
+    ...(safeMode === 'project' ? { opsMode: opsMode === 'legacy' ? 'legacy' : 'v3' } : {}),
     githubRepo: draftBindings.githubRepo || '',
     githubBranch: draftBindings.githubBranch || 'main',
     siteUrl: draftBindings.siteUrl || '',
@@ -393,65 +398,8 @@ async function autoStartLiveMissionTasks(missionId, { proposeNext = true, priorR
         const fresh = loadDb();
         const taskRow = fresh.tasks.find((x) => x.id === target.id);
         if (!taskRow) return;
-        const doneIso = new Date().toISOString();
-        taskRow.output = res.output;
-        taskRow.executionModeUsed = res.executionModeUsed;
-        if (res.quality) taskRow.quality = res.quality;
-        taskRow.updatedAt = doneIso;
-
-        // 팀원이 "[외주 필요: 사유]"라고 판단하면 억지 결과 대신 외부 AI에 맡김
-        // 외주를 끈(취소한) 작업도 "[외주 필요]"만 쓴 결과는 결과물이 아니므로 팀장 검토 대상 (외주로는 보내지 않음)
-        const osFlag = extractOutsourceFlag(res.output);
-        // 팀장 검토: "못 한다/정보 달라"뿐인 결과는 완료로 치지 않고 다시 맡기거나(내부 우선), 진짜 계정 작업만 외주
-        const triage = leadTriageResult(fresh, taskRow, ag, mission, res.output, osFlag);
-        if (triage.handled) {
-          if (triage.requeued) requeuedIds.add(taskRow.id);
-          updateMissionStatus(fresh, mission.id);
-          saveDb(fresh);
-          await flushCloudBackup(fresh);
-          return;
-        }
-
-        // 빈 결재 방지: 결과물 스스로 "할 일 없음/이미 완료"라고 하면 대표님께 결재를 올리지 않고 팀장 전결 종료
-        if (taskRow.requiresApproval && saysNothingToDo(res.output)) {
-          taskRow.requiresApproval = false;
-          taskRow.output = `> 팀장 판단: 실행할 변경이 없어 결재 없이 종료합니다.\n\n${taskRow.output}`;
-          appendLog(fresh, '총괄 팀장', `"${taskRow.title}" — 실행할 변경이 없다고 보고돼 빈 결재를 올리지 않고 종료했습니다.`, 'info');
-        }
-        if (taskRow.requiresApproval) {
-          taskRow.status = 'awaiting_approval';
-          const existing = fresh.approvals.find((a) => a.taskId === taskRow.id && a.status === 'pending');
-          if (!existing) {
-            const apr = createApprovalForTask(taskRow, ag, mission);
-            fresh.approvals.unshift(apr);
-            const leadAg = fresh.agents.find((a) => a.id === (mission.leadAgentId || 'agent_gemini_neon'));
-            notifyAllApprovalChannels(fresh.settings, apr, leadAg?.name || 'Gemini 4 Hydrogen');
-          }
-          appendLog(fresh, 'Gemini 4 Hydrogen (총괄 팀장)', `"${taskRow.title}" 검토 완료 → 중요 의사결정으로 CEO 결재 상신.`, 'approval');
-        } else {
-          taskRow.status = 'completed';
-          appendLog(fresh, ag.name, `"${taskRow.title}" 팀장 전결 자동 완료.`, 'success');
-          notifyTaskCompleted(fresh.settings, taskRow, ag.name);
-        }
-
-        const firstLine = (res.output || '')
-          .split('\n')
-          .find((l) => l.trim() && !l.startsWith('#') && !l.startsWith('|') && !l.startsWith('>'))
-          ?.replace(/^[-*]\s*/, '')
-          .slice(0, 140);
-        appendMessage(fresh, {
-          missionId: mission.id,
-          senderId: ag.id,
-          senderName: ag.name,
-          senderRole: ag.roleTitle,
-          senderShortCode: ag.shortCode,
-          senderAccent: ag.accent,
-          targetAgentId: taskRow.requiresApproval ? 'ceo' : (mission.leadAgentId || 'agent_gemini_neon'),
-          statusText: taskRow.requiresApproval ? '결재 상신' : '자동 완료',
-          type: taskRow.requiresApproval ? 'approval' : 'work',
-          text: `[팀장 위임 완료] "${taskRow.title}" ${taskRow.requiresApproval ? '검토를 마쳐 CEO 결재함에 올렸습니다.' : '완료했습니다.'}${firstLine ? ` — ${firstLine}` : ''}`
-        });
-
+        const out = await processTaskResult(fresh, taskRow, ag, mission, res);
+        if (out.requeued) requeuedIds.add(taskRow.id);
         updateMissionStatus(fresh, mission.id);
         saveDb(fresh);
         await flushCloudBackup(fresh);
@@ -517,7 +465,11 @@ async function autoStartLiveMissionTasks(missionId, { proposeNext = true, priorR
 
   // Continuous Project mode: Team Lead automatically analyzes results and proposes the next phase for CEO approval
   try {
-    if (isProjectMission && proposeNext) {
+    const mNow = loadDb().missions.find((x) => x.id === missionId);
+    if (isOpsV3(mNow)) {
+      // 운영 사이클: 작업이 끝나면 팀장이 마일스톤을 판정하고 다음 작업을 바로 배정 (결재 대기 없음)
+      setTimeout(() => opsCycle(missionId).catch((err) => console.warn('ops cycle failed:', err.message)), 20 * 1000);
+    } else if (isProjectMission && proposeNext) {
       await submitNextPhaseProposal(missionId);
     } else {
       // 그 외(회의실 지시·단건 업무): 단계가 끝나면 팀장이 스스로 검토해 제안서를 올림
@@ -610,6 +562,7 @@ async function submitNextPhaseProposal(missionId, { leadAssessment = '' } = {}) 
   const db = loadDb();
   const mission = db.missions.find((m) => m.id === missionId);
   if (!mission) return { ok: false, error: '미션을 찾을 수 없습니다.' };
+  if (isOpsV3(mission)) return { ok: false, skipped: true, error: '운영 사이클(v3) 프로젝트는 단계 제안서 대신 작전 계획으로 진행합니다.' };
 
   const currentPhase = Number(mission.phase) || 1;
   const nextPhase = currentPhase + 1;
@@ -932,6 +885,8 @@ function applyApprovalDecisionInDb(aprId, decision, ceoNote = '') {
   const db = loadDb();
   const apr = db.approvals.find((a) => a.id === aprId);
   if (!apr) return { ok: false, status: 404, error: '결재 안건을 찾을 수 없습니다.' };
+  // 이미 결정된 안건은 다시 처리하지 않음 (중복 승인으로 단계가 두 번 시작되거나 비용이 두 번 잡히는 것 방지)
+  if (apr.status !== 'pending') return { ok: false, status: 409, error: `이미 처리된 결재입니다 (${apr.status}).` };
 
   const now = new Date().toISOString();
   apr.status = decision;
@@ -1440,6 +1395,8 @@ function createLeadTasks(db, mission, specs = [], source = 'lead_followup') {
       output: '',
       executionModeUsed: '',
       source,
+      ...(spec.milestoneId ? { milestoneId: spec.milestoneId } : {}),
+      ...(Array.isArray(spec.acceptance) && spec.acceptance.length ? { acceptance: spec.acceptance } : {}),
       createdAt: now,
       updatedAt: now
     };
@@ -1452,11 +1409,208 @@ function createLeadTasks(db, mission, specs = [], source = 'lead_followup') {
   return created;
 }
 
+// ======================================================================
+// 운영 사이클 v3 (작전 계획 → 마일스톤 → 작업 → 검수 → 마일스톤 판정 → 다음)
+//   · 단계마다 제안서 결재를 받지 않음. 팀장이 마일스톤을 스스로 굴리고
+//   · 대표님 결정이 꼭 필요한 마일스톤(gate)에서만 "관문 결재"를 올림
+// ======================================================================
+const MAX_MILESTONE_ROUNDS = 3;
+const opsCycleRunning = new Set();
+
+function isOpsV3(mission) {
+  return Boolean(mission) && mission.mode === 'project' && mission.opsMode === 'v3';
+}
+
+function currentMilestone(plan) {
+  return (plan?.milestones || []).find((m) => m.status !== 'done') || null;
+}
+
+function deliverablesTextFor(mission, limit = 10) {
+  return (mission.deliverables || [])
+    .slice(0, limit)
+    .map((d) => `- ${d.title} (${d.agentName || '팀원'}): ${d.summary || ''}${d.gaps?.length ? ` [부족: ${d.gaps.join(', ')}]` : ''}`)
+    .join('\n');
+}
+
+function createStageGate(db, mission, ms, { reason = '', report = '' } = {}) {
+  const pending = db.approvals.find((a) => a.missionId === mission.id && a.kind === 'stage_gate' && a.status === 'pending');
+  if (pending) return pending;
+  const apr = {
+    id: uid('apr'),
+    missionId: mission.id,
+    taskId: '',
+    kind: 'stage_gate',
+    milestoneId: ms.id,
+    agentId: mission.leadAgentId || 'agent_gemini_neon',
+    title: `[관문 결재] ${ms.title}`,
+    category: '관문 결재',
+    riskLevel: 'low',
+    estimatedCostKRW: 0,
+    depositKRW: 0,
+    summary: [
+      reason ? `왜 결재가 필요한가: ${reason}` : '',
+      ms.decision ? `결정할 것: ${ms.decision}` : '',
+      `완료 기준: ${ms.doneWhen}`,
+      report ? `지금까지: ${report}` : '',
+      deliverablesTextFor(mission, 6) ? `관련 결과물:\n${deliverablesTextFor(mission, 6)}` : ''
+    ]
+      .filter(Boolean)
+      .join('\n\n'),
+    proposedAction: '승인하면 이 관문을 통과한 것으로 보고 팀장이 다음 마일스톤을 바로 진행합니다. 수정 지시를 주시면 메모대로 계획을 고쳐 다시 진행합니다.',
+    status: 'pending',
+    ceoNote: '',
+    createdAt: new Date().toISOString(),
+    decidedAt: null
+  };
+  db.approvals.unshift(apr);
+  ms.status = 'gate';
+  notifyAllApprovalChannels(db.settings, apr, '총괄 팀장');
+  leadSay(db, mission, '관문 결재 상신', `"${ms.title}"은 대표님 결정이 필요한 관문이라 결재함에 올렸습니다.${ms.decision ? ` 결정할 것: ${ms.decision}` : ''}`);
+  return apr;
+}
+
+/** 관문 결재 처리: 승인=마일스톤 통과 후 다음 진행 / 수정=메모 반영해 계획 수정 / 반려=마일스톤 보류 후 재계획 */
+async function handleStageGateDecision(apr, decision, note = '') {
+  if (!apr || apr.kind !== 'stage_gate') return null;
+  const db = loadDb();
+  const m = db.missions.find((x) => x.id === apr.missionId);
+  const ms = m?.plan?.milestones?.find((x) => x.id === apr.milestoneId);
+  if (!m || !ms) return null;
+  const memo = String(note || '').trim();
+  if (decision === 'approved') {
+    ms.status = 'done';
+    ms.doneAt = new Date().toISOString();
+    if (memo) ms.decisionNote = memo;
+    rememberFact(db, { kind: 'decision', missionId: m.id, pinned: true, text: `[관문 통과] ${ms.title}${memo ? ` — 대표님: ${memo}` : ''}`, source: 'stage_gate' });
+  } else if (decision === 'revision_requested') {
+    ms.status = 'todo';
+    ms.rounds = 0;
+    ms.decisionNote = memo;
+    if (memo) rememberFact(db, { kind: 'directive', missionId: m.id, pinned: true, text: `[관문 수정 지시] ${ms.title}: ${memo}`, source: 'stage_gate' });
+  } else {
+    ms.status = 'blocked';
+    ms.decisionNote = memo;
+    m.plan.needsReplan = true;
+  }
+  markCeoActivity(db, m.id);
+  saveDb(db);
+  await flushCloudBackup(db);
+  setTimeout(() => opsCycle(m.id).catch((err) => console.warn('ops cycle after gate failed:', err.message)), 1500);
+  return { db };
+}
+
+/** 운영 사이클 1회: 계획 수립(없으면) → 현재 마일스톤 처리 */
+async function opsCycle(missionId, { depth = 0 } = {}) {
+  if (opsCycleRunning.has(missionId) || depth > 3) return null;
+  opsCycleRunning.add(missionId);
+  try {
+    let db = loadDb();
+    let m = db.missions.find((x) => x.id === missionId);
+    if (!isOpsV3(m)) return null;
+    const st = missionLeadState(db, missionId);
+    st.lastPlanAt = new Date().toISOString();
+
+    // 1) 작전 계획 (없거나 재계획 필요)
+    if (!m.plan?.milestones?.length || m.plan.needsReplan) {
+      saveDb(db);
+      let drafted;
+      try {
+        drafted = await draftMissionPlan({ mission: m, digest: buildMissionDigest(db, missionId), agents: db.agents, settings: db.settings });
+      } catch (err) {
+        const fresh = loadDb();
+        appendLog(fresh, '총괄 팀장', `"${m.title}" 작전 계획 수립 보류(AI 엔진): ${err.message}`.slice(0, 300), 'warning');
+        saveDb(fresh);
+        return null;
+      }
+      db = loadDb();
+      m = db.missions.find((x) => x.id === missionId);
+      const keepDone = (m.plan?.milestones || []).filter((x) => x.status === 'done');
+      m.plan = { stage: drafted.stage, milestones: [...keepDone, ...drafted.milestones], createdAt: new Date().toISOString(), planner: drafted.planner };
+      leadSay(
+        db,
+        m,
+        '작전 계획',
+        [`**[작전 계획] ${m.title} — ${drafted.stage}**`, ...drafted.milestones.map((x, i) => `${i + 1}. ${x.title}${x.gate ? ' (관문: 대표님 결정)' : ''} — 완료 기준: ${x.doneWhen}`), '', '관문이 아닌 마일스톤은 팀장 전결로 바로 진행하고, 관문에서만 결재를 올리겠습니다.'].join('\n')
+      );
+      saveDb(db);
+    }
+
+    // 2) 현재 마일스톤
+    const ms = currentMilestone(m.plan);
+    if (!ms) {
+      // 모든 마일스톤 완료 → 목표 미달이면 다음 작전 계획
+      const g = getMissionGoal(m);
+      const reached = g.target !== null && g.current !== null && g.current >= g.target;
+      leadSay(db, m, '작전 완료', reached ? '작전 계획을 모두 마쳤고 목표에 도달했습니다.' : '작전 계획의 마일스톤을 모두 마쳤습니다. 목표까지 남은 차이를 기준으로 다음 작전 계획을 세우겠습니다.');
+      if (!reached) m.plan.needsReplan = true;
+      saveDb(db);
+      return reached ? null : opsCycle(missionId, { depth: depth + 1 });
+    }
+    if (ms.status === 'gate' || ms.status === 'blocked') return null; // 대표님 결정 대기
+    const openTasks = db.tasks.filter((t) => t.missionId === missionId && t.milestoneId === ms.id && ['queued', 'running', 'awaiting_bridge', 'awaiting_approval', 'outsourced'].includes(t.status));
+    if (openTasks.length) return null; // 진행 중
+
+    // 3) 판정 + 다음 작업
+    saveDb(db);
+    let work;
+    try {
+      work = await planMilestoneWork({
+        mission: m,
+        milestone: ms,
+        digest: buildMissionDigest(db, missionId),
+        agents: db.agents,
+        settings: db.settings,
+        teamLoad: `${buildPlanningRoster(db)}\n\n${ASSIGNMENT_RULES}`,
+        deliverablesText: deliverablesTextFor(m)
+      });
+    } catch (err) {
+      const fresh = loadDb();
+      appendLog(fresh, '총괄 팀장', `"${m.title}" 마일스톤 계획 보류(AI 엔진): ${err.message}`.slice(0, 300), 'warning');
+      saveDb(fresh);
+      return null;
+    }
+    db = loadDb();
+    m = db.missions.find((x) => x.id === missionId);
+    const msNow = m.plan.milestones.find((x) => x.id === ms.id);
+    if (work.milestoneDone) {
+      if (msNow.gate) {
+        createStageGate(db, m, msNow, { reason: '마일스톤 결과가 나와 대표님 결정이 필요합니다.', report: work.report });
+        saveDb(db);
+        await flushCloudBackup(db);
+        return null;
+      }
+      msNow.status = 'done';
+      msNow.doneAt = new Date().toISOString();
+      leadSay(db, m, '마일스톤 완료', `"${msNow.title}" 완료. ${work.report}`);
+      saveDb(db);
+      await flushCloudBackup(db);
+      return opsCycle(missionId, { depth: depth + 1 });
+    }
+    if (Number(msNow.rounds || 0) >= MAX_MILESTONE_ROUNDS || !work.tasks.length) {
+      createStageGate(db, m, msNow, { reason: `${MAX_MILESTONE_ROUNDS}번 시도했지만 완료 기준에 못 미쳤습니다. 방향을 정해 주세요.`, report: work.report });
+      saveDb(db);
+      await flushCloudBackup(db);
+      return null;
+    }
+    const created = createLeadTasks(db, m, work.tasks.map((t) => ({ ...t, milestoneId: msNow.id })), 'ops_cycle');
+    msNow.status = 'doing';
+    msNow.rounds = Number(msNow.rounds || 0) + 1;
+    leadSay(db, m, '마일스톤 진행', [`**[${msNow.title}] ${msNow.rounds}차 작업 배정**`, work.report, ...created.map(({ task, agent }) => `- ${task.title} (@${agent.name})`)].filter(Boolean).join('\n'));
+    saveDb(db);
+    await flushCloudBackup(db);
+    if (created.length) autoStartLiveMissionTasks(missionId, { proposeNext: false }).catch(() => {});
+    return { created: created.length };
+  } finally {
+    opsCycleRunning.delete(missionId);
+  }
+}
+
 /** 모든 작업이 끝난 미션을 팀장이 스스로 검토: 종료 보고 / 후속 작업 자동 배정 / 대표님께 구체적 요청 */
 async function leadAutoAdvance(missionId) {
   let db = loadDb();
   const mission = db.missions.find((m) => m.id === missionId);
   if (!mission) return null;
+  if (isOpsV3(mission)) return opsCycle(missionId);
   const cfg = getLeadSettings(db.settings);
   missionLeadState(db, missionId).lastPlanAt = new Date().toISOString();
   saveDb(db);
@@ -2707,6 +2861,159 @@ function notifyOutsourceCreated(db, req) {
   ).catch(() => {});
 }
 
+// ======================================================================
+// 업무 처리 엔진 v3: 모든 결과(자동 실행·일괄 실행·단건 실행·외부 봇 보고·외주 결과)가 이 한 경로로 처리됨
+//   1) 지침 위반·비결과물 검사 (leadTriageResult)
+//   2) 팀장 검수: 완료 기준과 비교 → 통과 / 재작업(최대 2회) / 상위 처리(다른 팀원·외주·대표님)
+//   3) 결재 판단 (결재 필요 표시 또는 금액 기준) → 결재 대기 / 완료
+//   4) 완료된 결과는 프로젝트 "결과물"로 등록, 회의실에 한 줄 보고
+// ======================================================================
+const MAX_REVIEW_ROUNDS = 2;
+
+function leadReviewOn(settings) {
+  const mode = getLeadSettings(settings).reviewMode || 'all';
+  return mode !== 'off';
+}
+
+function registerDeliverable(db, mission, task, agent) {
+  if (!mission) return;
+  mission.deliverables = Array.isArray(mission.deliverables) ? mission.deliverables : [];
+  const firstLine = String(task.output || '')
+    .split('\n')
+    .find((l) => l.trim() && !/^[#|>]/.test(l.trim()) && !/^\*\*?\[?(팀장|대표님)/.test(l.trim()))
+    ?.replace(/^[-*]\s*/, '')
+    .slice(0, 160);
+  const entry = {
+    id: task.id,
+    taskId: task.id,
+    title: task.title,
+    agentName: agent?.name || '',
+    summary: firstLine || '',
+    score: task.review?.score ?? task.quality?.score ?? null,
+    gaps: task.review?.acceptedWithGaps ? task.review.missing || [] : [],
+    createdAt: new Date().toISOString()
+  };
+  mission.deliverables = [entry, ...mission.deliverables.filter((d) => d.taskId !== task.id)].slice(0, 120);
+}
+
+/** 상위 처리: 다른(더 맞는) 팀원 → 외주 → 대표님 확인 순 */
+function escalateTask(db, task, agent, mission, reason) {
+  task.triage = task.triage || { retries: 0, tried: [] };
+  if (agent?.id && !task.triage.tried.includes(agent.id)) task.triage.tried.push(agent.id);
+  const nowIso = new Date().toISOString();
+  if (!task.triage.escalated) {
+    const rb = rebalanceAssignments(db, [{ ...task, assigneeId: agent?.id }]);
+    let next = rb.tasks[0].assigneeId !== agent?.id ? db.agents.find((a) => a.id === rb.tasks[0].assigneeId) : null;
+    if (!next) next = pickAlternateMember(db, task, task.triage.tried);
+    if (next) {
+      task.triage.escalated = true;
+      task.assigneeId = next.id;
+      task.status = next.connectionMode === 'bridge' || ['manus', 'muse', 'pickle', 'instinct', 'vooy'].includes(next.provider) ? 'awaiting_bridge' : 'queued';
+      task.description = `${task.description || ''}\n\n[팀장 검수 → 담당 변경] ${String(reason).slice(0, 600)}`.slice(0, 6000);
+      task.previousOutput = String(task.output || '').slice(0, 1500);
+      task.output = '';
+      task.updatedAt = nowIso;
+      task.dispatchPrompt = buildDispatchPrompt(next, task, mission);
+      leadSay(db, mission, '팀장 검수', `"${task.title}"은 ${agent?.name || '담당자'}가 하기 어려운 일이라 ${next.name}에게 넘겼습니다. (${String(reason).slice(0, 80)})`);
+      return { handled: true, requeued: task.status === 'queued' };
+    }
+  }
+  const osOn = getOutsourcingSettings(db.settings).enabled && !task.outsourceDeclined;
+  if (osOn) {
+    const repoLinked = Boolean(getMissionRepoCfg(db.settings, mission));
+    const kind = repoLinked && isCodeTask(task, agent) ? 'code' : 'task';
+    outsourceTask(db, task, { kind, worker: kind === 'code' ? 'antigravity' : 'any', reason: `팀장 검수 결과 내부 팀으로는 어려움: ${String(reason).slice(0, 300)}` });
+    return { handled: true };
+  }
+  task.status = 'blocked';
+  task.blockedReason = String(reason).slice(0, 200);
+  task.updatedAt = nowIso;
+  return { handled: true };
+}
+
+/**
+ * 결과 처리 단일 경로. res: { output, executionModeUsed, quality }
+ * opts.skipReview: 외주 결과(상위 AI)처럼 검수가 필요 없는 경우 / opts.message=false: 회의실 보고 생략
+ */
+async function processTaskResult(db, task, agent, mission, res, { skipReview = false, message = true, source = 'auto' } = {}) {
+  const nowIso = new Date().toISOString();
+  task.output = String(res?.output || '');
+  if (res?.executionModeUsed) task.executionModeUsed = res.executionModeUsed;
+  if (res?.quality) task.quality = res.quality;
+  task.updatedAt = nowIso;
+
+  // 1) 지침 위반·비결과물
+  const osFlag = extractOutsourceFlag(task.output);
+  const triage = mission ? leadTriageResult(db, task, agent, mission, task.output, osFlag) : { handled: false };
+  if (triage.handled) return triage;
+
+  // 2) 팀장 검수 (완료 기준)
+  if (!skipReview && mission && leadReviewOn(db.settings)) {
+    const rv = await leadReviewDeliverable({ task, output: task.output, mission, agents: db.agents, settings: db.settings }).catch(() => ({ verdict: 'accept', skipped: true }));
+    const rounds = Number(task.reviewRounds || 0);
+    task.review = { verdict: rv.verdict, score: rv.score ?? null, missing: rv.missing || [], feedback: rv.feedback || '', reviewer: rv.reviewer || '', skipped: Boolean(rv.skipped), round: rounds + 1, at: new Date().toISOString() };
+    task.acceptance = rv.acceptance || task.acceptance;
+    if (rv.verdict === 'revise' && rounds < MAX_REVIEW_ROUNDS) {
+      task.reviewRounds = rounds + 1;
+      task.description = `${task.description || ''}\n\n[팀장 검수 ${rounds + 1}차 — 재작업] 부족한 점: ${(rv.missing || []).join(' / ') || '-'}\n고칠 것: ${rv.feedback}`.slice(0, 6000);
+      task.previousOutput = task.output.slice(0, 1500);
+      task.output = '';
+      task.status = 'queued';
+      leadSay(db, mission, '팀장 검수', `"${task.title}" ${rounds + 1}차 검수: 보완이 필요해 ${agent?.name || '담당자'}에게 다시 맡겼습니다. (${(rv.missing || [])[0] || rv.feedback.slice(0, 60)})`);
+      return { handled: true, requeued: true };
+    }
+    if (rv.verdict === 'escalate') {
+      return escalateTask(db, task, agent, mission, rv.feedback || (rv.missing || []).join(', ') || '팀장 검수에서 상위 처리 판단');
+    }
+    if (rv.verdict === 'revise') task.review.acceptedWithGaps = true; // 재작업 한도 초과: 부족한 점을 기록하고 진행
+  }
+
+  // 3) 결재 판단
+  if (task.requiresApproval && saysNothingToDo(task.output)) {
+    task.requiresApproval = false;
+    task.output = `> 팀장 판단: 실행할 변경이 없어 결재 없이 종료합니다.\n\n${task.output}`;
+  }
+  const overThreshold = (Number(task.estimatedCostKRW) || 0) > 0 && (Number(task.estimatedCostKRW) || 0) >= (db.settings.approvalThresholdKRW || 30000);
+  if (task.requiresApproval || overThreshold) {
+    task.status = 'awaiting_approval';
+    if (!db.approvals.find((a) => a.taskId === task.id && a.status === 'pending')) {
+      const apr = createApprovalForTask(task, agent, mission);
+      db.approvals.unshift(apr);
+      const leadAg = db.agents.find((a) => a.id === (mission?.leadAgentId || 'agent_gemini_neon'));
+      notifyAllApprovalChannels(db.settings, apr, leadAg?.name || '총괄 팀장');
+    }
+    appendLog(db, '총괄 팀장', `"${task.title}" 검수 완료 → CEO 결재 상신.`, 'approval');
+  } else {
+    task.status = 'completed';
+    registerDeliverable(db, mission, task, agent);
+    appendLog(db, agent?.name || '팀원', `"${task.title}" 팀장 검수 통과${task.review?.acceptedWithGaps ? '(부족한 점 기록)' : ''} → 완료.`, 'success');
+    notifyTaskCompleted(db.settings, task, agent?.name || '');
+    if (mission) maybeScheduleCodeBundle(db, mission, task);
+  }
+
+  // 4) 회의실 한 줄 보고
+  if (message && mission && agent) {
+    const firstLine = task.output
+      .split('\n')
+      .find((l) => l.trim() && !l.startsWith('#') && !l.startsWith('|') && !l.startsWith('>'))
+      ?.replace(/^[-*]\s*/, '')
+      .slice(0, 140);
+    appendMessage(db, {
+      missionId: mission.id,
+      senderId: agent.id,
+      senderName: agent.name,
+      senderRole: agent.roleTitle,
+      senderShortCode: agent.shortCode,
+      senderAccent: agent.accent,
+      targetAgentId: task.status === 'awaiting_approval' ? 'ceo' : mission.leadAgentId || 'agent_gemini_neon',
+      statusText: task.status === 'awaiting_approval' ? '결재 상신' : '검수 통과',
+      type: task.status === 'awaiting_approval' ? 'approval' : 'work',
+      text: `[${task.status === 'awaiting_approval' ? '결재 상신' : `검수 통과${task.review?.score != null && !task.review?.skipped ? ` ${task.review.score}/10` : ''}`}] "${task.title}"${firstLine ? ` — ${firstLine}` : ''}`
+    });
+  }
+  return { handled: false, status: task.status };
+}
+
 /**
  * 팀장 검토 (Orchestrator): 팀원 결과가 실제 결과물인지 보고 다음 행동을 정함
  * - 로그인이 필요한 계정·콘솔 작업 → 외주 (실제로 무료 팀이 할 수 없음)
@@ -2975,7 +3282,13 @@ async function handleOutsourceSubmitted(id) {
             notifyAllApprovalChannels(db.settings, apr, `외주 · ${by}`);
           }
         } else {
+          // 외주 결과(상위 AI)는 검수 없이, 지침 위반 검사와 결과물 등록만
           task.status = 'completed';
+          if (mission) {
+            const vio = findOutputViolations(mission, task.output);
+            if (vio.length) appendLog(db, '총괄 팀장', `외주 결과 "${task.title}"에 지침 위반 의심: ${vio.join(', ')} (대표님 확인 권장)`, 'warning');
+            registerDeliverable(db, mission, task, { name: `외주 · ${by}` });
+          }
         }
       }
       if (mission) {
@@ -3032,6 +3345,21 @@ async function handleOutsourceNeedsCeo(id) {
   }
 }
 setOutsourcingHandlers({ onNeedsCeo: handleOutsourceNeedsCeo });
+
+// MCP submit_task_result → 업무 처리 엔진
+setTaskResultHandler(async (taskId, output, mode) => {
+  const db = loadDb();
+  const task = db.tasks.find((t) => t.id === taskId);
+  if (!task) return { status: 'error', error: '업무 없음' };
+  const agent = db.agents.find((a) => a.id === task.assigneeId);
+  const mission = db.missions.find((m) => m.id === task.missionId);
+  const out = await processTaskResult(db, task, agent, mission, { output, executionModeUsed: mode });
+  updateMissionStatus(db, task.missionId);
+  saveDb(db);
+  await flushCloudBackup(db);
+  if (out.requeued) setTimeout(() => autoStartLiveMissionTasks(task.missionId, { proposeNext: false }).catch(() => {}), 1500);
+  return { status: task.status, review: task.review || null };
+});
 
 function updateOutsourceRouting(db, { routing, awayHours, officeHours, leaseMinutes, roles, geminiWaitMinutes, priorities, waitMinutes } = {}) {
   const os = { ...getOutsourcingSettings(db.settings) };
@@ -3205,6 +3533,8 @@ function getTelegramCallbacks() {
       const res = applyApprovalDecisionInDb(aprId, decision, note);
       if (res.ok && res.approval?.kind === 'next_phase') {
         await handleNextPhaseDecision(res.approval, decision, note === 'Telegram 모바일 원터치 결재' ? '' : note);
+      } else if (res.ok && res.approval?.kind === 'stage_gate') {
+        await handleStageGateDecision(res.approval, decision, note === 'Telegram 모바일 원터치 결재' ? '' : note);
       } else if (res.ok && isCodeApproval(res.db, res.approval)) {
         res.codeApply = decision === 'approved';
         handleCodeDecision(res.approval.id, decision).catch((err) => {
@@ -4175,9 +4505,11 @@ async function handleAgentInboxReply(c) {
       }
       appendLog(db, `${agent.name} (HTTPS 보고)`, `"${task.title}" 실제 보고 접수 → CEO 결재함 상신.`, 'approval');
     } else {
-      task.status = 'completed';
-      appendLog(db, `${agent.name} (HTTPS 보고)`, `"${task.title}" 실제 작업 완료 보고.`, 'success');
-      notifyTaskCompleted(db.settings, task, agent.name);
+      // 외부 봇 결과도 같은 처리 경로: 지침 위반·팀장 검수·결과물 등록
+      const missionX = db.missions.find((m) => m.id === task.missionId);
+      const outX = await processTaskResult(db, task, agent, missionX, { output: deliverable, executionModeUsed: 'external_agent_https' }, { message: false });
+      appendLog(db, `${agent.name} (HTTPS 보고)`, `"${task.title}" 결과 보고 → ${task.status === 'completed' ? '검수 통과' : task.status === 'queued' || task.status === 'awaiting_bridge' ? '보완 요청' : task.status}.`, 'info');
+      if (outX.requeued) setTimeout(() => autoStartLiveMissionTasks(task.missionId, { proposeNext: false }).catch(() => {}), 1500);
     }
     updateMissionStatus(db, task.missionId);
   } else if (requestApproval) {
@@ -4254,7 +4586,8 @@ app.post('/api/missions', async (c) => {
     mode: body.mode,
     githubRepo: body.githubRepo,
     githubBranch: body.githubBranch,
-    siteUrl: body.siteUrl
+    siteUrl: body.siteUrl,
+    opsMode: body.opsMode === 'legacy' ? 'legacy' : 'v3'
   });
 
   return c.json({ mission, tasks, state: sanitizeStateForClient(db) }, 201);
@@ -4280,6 +4613,17 @@ app.patch('/api/missions/:id/mode', async (c) => {
   saveDb(db);
   await flushCloudBackup(db);
   return c.json({ mission, state: sanitizeStateForClient(db) });
+});
+
+// 운영 사이클 지금 실행 (작전 계획 수립 또는 현재 마일스톤 진행)
+app.post('/api/missions/:id/ops-cycle', async (c) => {
+  if (!isCeoRequest(c)) return c.json({ error: 'CEO만 실행할 수 있습니다.' }, 401);
+  const db = loadDb();
+  const mission = db.missions.find((m) => m.id === c.req.param('id'));
+  if (!mission) return c.json({ error: '미션을 찾을 수 없습니다.' }, 404);
+  if (!isOpsV3(mission)) return c.json({ error: '운영 사이클(v3) 프로젝트가 아닙니다.' }, 400);
+  opsCycle(mission.id).catch((err) => console.warn('manual ops cycle failed:', err.message));
+  return c.json({ ok: true, state: sanitizeStateForClient(loadDb()) });
 });
 
 app.post('/api/missions/:id/propose-next', async (c) => {
@@ -4319,9 +4663,22 @@ app.post('/api/missions/:id/run-all', async (c) => {
   }
 
   const agentMap = Object.fromEntries(db.agents.map((a) => [a.id, a]));
+  const EXTERNAL_PROVIDERS = new Set(['pickle', 'manus', 'muse', 'vooy', 'instinct']);
+  // 중복 실행 방지: 실행할 작업은 먼저 running으로 표시
+  const startIso = new Date().toISOString();
+  for (const t of targets) {
+    const ag = agentMap[t.assigneeId];
+    if (!ag || !EXTERNAL_PROVIDERS.has(ag.provider)) {
+      t.status = 'running';
+      t.updatedAt = startIso;
+    }
+  }
+  saveDb(db);
   const results = await Promise.all(
     targets.map(async (task) => {
       const agent = agentMap[task.assigneeId] || db.agents[0];
+      // 외부 봇 업무는 봇이 직접 가져가야 함: 결재가 필요한 실행 건만 사전 승인 요청을 올리고 나머지는 그대로 둠
+      if (EXTERNAL_PROVIDERS.has(agent.provider) && !task.requiresApproval) return { task, agent, skipped: true };
       try {
         const res = await executeAgentTask({ task, mission, agent, settings: db.settings });
         return { task, agent, res };
@@ -4331,47 +4688,28 @@ app.post('/api/missions/:id/run-all', async (c) => {
     })
   );
 
-  const now = new Date().toISOString();
   let runAllRequeued = false;
   for (const item of results) {
+    if (item.skipped) continue;
     if (item.error) {
+      item.task.status = 'queued';
       appendLog(db, item.agent.name, `"${item.task.title}" 실행 오류: ${item.error}`, 'warning');
       continue;
     }
-    item.task.output = item.res.output;
-    item.task.executionModeUsed = item.res.executionModeUsed;
-    if (item.res.quality) item.task.quality = item.res.quality;
-    item.task.updatedAt = now;
-
-    // 팀장 검토: 결과물이 아니면 재배정·외주·대표님 요청 (완료로 처리하지 않음)
-    const osFlagRA = extractOutsourceFlag(item.res.output);
-    const triageRA = leadTriageResult(db, item.task, item.agent, mission, item.res.output, osFlagRA);
-    if (triageRA.handled) {
-      if (triageRA.requeued) runAllRequeued = true;
-      continue;
-    }
-
-    const overThreshold = (item.task.estimatedCostKRW || 0) >= (db.settings.approvalThresholdKRW || 30000);
-    if (item.task.requiresApproval || overThreshold) {
+    if (EXTERNAL_PROVIDERS.has(item.agent.provider)) {
+      // 외부 봇 실행 전 사전 승인 (예약·결제 등)
+      item.task.output = item.res.output;
+      item.task.executionModeUsed = item.res.executionModeUsed;
       item.task.status = 'awaiting_approval';
-      const existing = db.approvals.find((a) => a.taskId === item.task.id && a.status === 'pending');
-      if (!existing) {
+      if (!db.approvals.find((a) => a.taskId === item.task.id && a.status === 'pending')) {
         const apr = createApprovalForTask(item.task, item.agent, mission);
         db.approvals.unshift(apr);
-        const leadAg = db.agents.find((a) => a.id === (mission.leadAgentId || 'agent_gemini_neon'));
-        notifyAllApprovalChannels(db.settings, apr, leadAg?.name || 'Gemini 4 Hydrogen');
+        notifyAllApprovalChannels(db.settings, apr, '총괄 팀장');
       }
-      appendLog(db, 'Gemini 4 Hydrogen (총괄 팀장)', `"${item.task.title}" 검토 완료 → 중요 의사결정으로 CEO 결재 상신.`, 'approval');
-    } else {
-      item.task.status = 'completed';
-      appendLog(
-        db,
-        item.agent.name,
-        `"${item.task.title}" 팀장 전결 완료 (${item.res.live ? 'Live SDK' : '자동 처리'}).`,
-        'success'
-      );
-      maybeScheduleCodeBundle(db, mission, item.task);
+      continue;
     }
+    const out = await processTaskResult(db, item.task, item.agent, mission, item.res);
+    if (out.requeued) runAllRequeued = true;
   }
 
   if (runAllRequeued) setTimeout(() => autoStartLiveMissionTasks(missionId, { proposeNext: false }).catch(() => {}), 1500);
@@ -4428,10 +4766,23 @@ app.patch('/api/missions/:id', async (c) => {
     Array.isArray(body.extraRepos);
   const hasScope = body.scope && typeof body.scope === 'object';
   const hasGoal = body.goal && typeof body.goal === 'object';
+  const hasOpsMode = ['v3', 'legacy'].includes(body.opsMode);
 
-  if (!hasTitle && !hasBindingUpdate && !hasScope && !hasGoal && typeof body.directive !== 'string') {
+  if (!hasTitle && !hasBindingUpdate && !hasScope && !hasGoal && !hasOpsMode && typeof body.directive !== 'string') {
     return c.json({ error: '수정할 내용을 입력해 주세요.' }, 400);
   }
+  let startCycle = false;
+  if (hasOpsMode) {
+    // 운영 방식: v3 = 작전 계획(마일스톤) + 관문 결재 / legacy = 단계별 제안서 결재
+    const prev = mission.opsMode || 'legacy';
+    mission.opsMode = body.opsMode;
+    if (body.opsMode === 'v3' && mission.mode !== 'project') mission.mode = 'project';
+    if (prev !== body.opsMode) {
+      appendLog(db, 'CEO', `"${mission.title}" 운영 방식: ${body.opsMode === 'v3' ? '작전 계획 + 관문 결재' : '단계별 제안서 결재'}`, 'info');
+      startCycle = body.opsMode === 'v3';
+    }
+  }
+  if (startCycle) setTimeout(() => opsCycle(mission.id).catch((err) => console.warn('ops cycle start failed:', err.message)), 2000);
   if (hasGoal) {
     // 목표: 지표·목표치·현재값·기한. 모든 AI 호출에 "판단 기준"으로 들어감
     const prevGoal = getMissionGoal(mission);
@@ -4749,44 +5100,26 @@ app.post('/api/tasks/:id/run', async (c) => {
       output: t.output
     }));
 
-  const result = await executeAgentTask({
-    task,
-    mission,
-    agent,
-    settings: db.settings,
-    priorOutputs
-  });
-
-  const now = new Date().toISOString();
-  task.output = result.output;
-  task.executionModeUsed = result.executionModeUsed;
-  if (result.quality) task.quality = result.quality;
-  task.updatedAt = now;
-
-  // 팀장 검토 (단건 실행도 동일): 결과물이 아니면 재배정·대표님 요청·외주
-  const triageOne = mission ? leadTriageResult(db, task, agent, mission, result.output, extractOutsourceFlag(result.output)) : { handled: false };
-  const overThreshold = (task.estimatedCostKRW || 0) >= (db.settings.approvalThresholdKRW || 30000);
-  if (triageOne.handled) {
-    if (triageOne.requeued) setTimeout(() => autoStartLiveMissionTasks(task.missionId, { proposeNext: false }).catch(() => {}), 1500);
-  } else if (task.requiresApproval || overThreshold) {
-    task.status = 'awaiting_approval';
-    const existing = db.approvals.find((a) => a.taskId === task.id && a.status === 'pending');
-    if (!existing) {
-      const apr = createApprovalForTask(task, agent, mission);
-      db.approvals.unshift(apr);
-      notifyAllApprovalChannels(db.settings, apr, agent.name);
-    }
-    appendLog(db, agent.name, `"${task.title}" 사전 작업 완료 → CEO 결재함에 승인 요청을 등록했습니다.`, 'approval');
-  } else {
-    task.status = 'completed';
-    appendLog(
-      db,
-      agent.name,
-      `"${task.title}" 작업을 완료했습니다. (${result.live ? 'Live SDK' : '시뮬레이션'})`,
-      'success'
-    );
-    maybeScheduleCodeBundle(db, mission, task);
+  if (task.status === 'running') return c.json({ error: '이미 실행 중인 업무입니다.' }, 409);
+  task.status = 'running';
+  task.updatedAt = new Date().toISOString();
+  saveDb(db);
+  let result;
+  try {
+    result = await executeAgentTask({
+      task,
+      mission,
+      agent,
+      settings: db.settings,
+      priorOutputs
+    });
+  } catch (err) {
+    task.status = 'queued';
+    saveDb(db);
+    return c.json({ error: err.message }, 500);
   }
+  const outOne = await processTaskResult(db, task, agent, mission, result);
+  if (outOne.requeued) setTimeout(() => autoStartLiveMissionTasks(task.missionId, { proposeNext: false }).catch(() => {}), 1500);
 
   updateMissionStatus(db, task.missionId);
   saveDb(db);
@@ -4832,9 +5165,9 @@ app.post('/api/tasks/:id/report', async (c) => {
     }
     appendLog(db, `${agent.name} (브릿지)`, `"${task.title}" 결과를 등록하고 CEO 결재를 요청했습니다.`, 'approval');
   } else {
-    task.status = 'completed';
-    appendLog(db, `${agent.name} (브릿지)`, `"${task.title}" 결과를 브릿지로 완료 보고했습니다.`, 'success');
-    maybeScheduleCodeBundle(db, mission, task);
+    // 대표님이 붙여넣은 외부 앱 결과도 같은 처리 경로 (지침 위반 검사·결과물 등록)
+    await processTaskResult(db, task, agent, mission, { output: reportText, executionModeUsed: 'bridge_manual' }, { skipReview: true });
+    appendLog(db, `${agent.name} (브릿지)`, `"${task.title}" 결과를 브릿지로 보고했습니다.`, 'info');
   }
 
   updateMissionStatus(db, task.missionId);
@@ -4882,6 +5215,10 @@ app.post('/api/approvals/:id/decide', async (c) => {
     const handled = await handleNextPhaseDecision(res.approval, body.decision, body.ceoNote);
     if (handled?.db) latestDb = handled.db;
     else latestDb = loadDb();
+  }
+  if (res.approval?.kind === 'stage_gate') {
+    const handled = await handleStageGateDecision(res.approval, body.decision, body.ceoNote);
+    latestDb = handled?.db || loadDb();
   }
   let codeApply = false;
   if (isCodeApproval(res.db, res.approval)) {
