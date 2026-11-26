@@ -14,6 +14,7 @@
  * AI SDK를 import하지 않는 순수 함수만 두어 서버·테스트 어디서든 재사용할 수 있게 했습니다.
  */
 import { uid } from './store.js';
+import { isDailyExhausted } from './ai-guard.js';
 
 /** 목표 추진 원칙 (팀장이 Goal을 향해 밀고 나가도록) */
 export const GOAL_DIRECTIVES = [
@@ -116,6 +117,8 @@ export function buildMissionBrief(mission, otherProjects = []) {
   if (otherProjects.length) nots.push(`다른 프로젝트(${otherProjects.join(', ')})의 데이터·결과·사례`);
   if (nots.length) lines.push(`- 절대 하지 말 것: ${nots.join(' / ')}`);
   if (!mission.siteUrl) lines.push('- 이 업무에는 연결된 사이트·분석 데이터가 없음 (수치는 웹 근거나 가정으로만)');
+  const lessons = Array.isArray(mission.reviewLessons) ? mission.reviewLessons.slice(0, 3) : [];
+  if (lessons.length) lines.push(`- 최근 반려된 실수 (반복 금지): ${lessons.map((l) => l.text).join(' / ')}`);
   return lines.join('\n');
 }
 
@@ -385,6 +388,8 @@ export function buildPlanningRoster(db) {
       if (p.async) {
         const h = lastSeenHours(db, a.id);
         mode = h < 48 ? `외부 앱(최근 ${h < 1 ? '1시간 내' : `${Math.round(h)}시간 전`} 접속 · 몇 시간 내 처리)` : '외부 앱(최근 접속 없음 → 배정 금지)';
+      } else if (isAgentExhausted(a, db.settings)) {
+        mode = '오늘 사용 한도 소진 → 자정까지 배정 금지';
       }
       return `- id: "${a.id}", ${a.name} — 잘함: ${p.good}${p.bad ? ` / 주의: ${p.bad}` : ''} / ${mode} / 진행 ${busy}건${busy === 0 ? ' (대기 중, 우선 배정)' : ''}`;
     })
@@ -399,7 +404,8 @@ export const ASSIGNMENT_RULES = [
   '- 실제 웹 조사(시장·경쟁·가격·사례)가 필요한 일은 웹 조사가 되는 팀원(Manus Cue)에게 맡기세요. 웹을 못 보는 API 팀원에게 맡기면 근거를 지어냅니다.',
   '- 실제 전화·예약·문자처럼 현실 행동이 필요한 일만 피클·인스팅스에게 맡기세요(결제·확정은 대표님 승인).',
   '- LG EXAONE에게는 짧은 요약·정리·번역 같은 단순 작업만 맡기세요.',
-  '- "최근 접속 없음" 외부 앱 팀원에게는 배정하지 마세요.'
+  '- "최근 접속 없음" 외부 앱 팀원에게는 배정하지 마세요.',
+  '- "오늘 사용 한도 소진" 팀원에게는 오늘 배정하지 마세요. 같은 일을 할 수 있는 다른 팀원에게 맡기세요.'
 ].join('\n');
 
 /** 계획 후 보정: EXAONE에 어려운 일, 응답 없는 외부 앱, 한 사람 몰림을 고쳐서 재배정 */
@@ -421,7 +427,8 @@ export function rebalanceAssignments(db, tasks = []) {
     if (WEB_RE.test(text) && !p.web && webAgent && !/(초안|기획서|명세)/.test(String(t.title || ''))) {
       changes.push(`"${String(t.title).slice(0, 40)}": ${agentsById[t.assigneeId]?.name || t.assigneeId} → ${agentsById[webAgent]?.name || webAgent} (실제 웹 조사 필요)`);
       t.assigneeId = webAgent;
-    } else if (p.simpleOnly && COMPLEX_RE.test(text)) reassign(t, '단순 업무 전용 팀원');
+    } else if (agentsById[t.assigneeId] && isAgentExhausted(agentsById[t.assigneeId], db.settings)) reassign(t, '오늘 사용 한도 소진');
+    else if (p.simpleOnly && COMPLEX_RE.test(text)) reassign(t, '단순 업무 전용 팀원');
     else if (p.async && lastSeenHours(db, t.assigneeId) >= 48) reassign(t, '외부 앱 최근 접속 없음');
     else if (p.realWorld && !/(전화|예약|문자|연락|방문|확인 전화)/.test(text)) reassign(t, '현실 행동 전용 팀원');
     planLoad[t.assigneeId] = (planLoad[t.assigneeId] || 0) + 1;
@@ -438,7 +445,10 @@ export function rebalanceAssignments(db, tasks = []) {
 export function pickAlternateMember(db, task, triedIds = [], planLoad = {}) {
   const text = `${task?.title || ''} ${task?.description || ''}`;
   const complex = COMPLEX_RE.test(text);
-  const active = (db.agents || []).filter((a) => a.active && INTERNAL_PROVIDERS.has(a.provider) && a.tier !== 'lead' && !(complex && AGENT_PROFILES[a.id]?.simpleOnly));
+  // 오늘 한도를 다 쓴 팀원은 후보에서 제외 (한국 시간 자정에 자동 복귀)
+  const active = (db.agents || []).filter(
+    (a) => a.active && INTERNAL_PROVIDERS.has(a.provider) && a.tier !== 'lead' && !(complex && AGENT_PROFILES[a.id]?.simpleOnly) && !isAgentExhausted(a, db.settings)
+  );
   const load = (id) => (db.tasks || []).filter((t) => t.assigneeId === id && ['queued', 'running'].includes(t.status)).length + (planLoad[id] || 0);
   const preferred = ROLE_HINTS.filter((h) => h.re.test(text)).flatMap((h) => h.ids);
   const candidates = active.filter((a) => !triedIds.includes(a.id));
@@ -464,6 +474,106 @@ export function describeTeamLoad(db) {
 }
 
 // ---------------------------------------------------------------- work items (업무의 완료 기준)
+
+// ---------------------------------------------------------------- 지침 준수·맥락 유지 (무료 모델이 지시를 놓치지 않게)
+
+/** 작업 설명에서 뒤에 붙은 팀장 피드백 단락을 떼어낸 원래 지시 (피드백은 별도 블록으로 맨 앞에 둔다) */
+export function baseTaskDescription(task = {}) {
+  return String(task.description || '').split(/\n\n\[(?:팀장 검수|팀장 피드백|팀장 검토)/)[0].trim();
+}
+
+/** 팀장 피드백을 구조화해 쌓음 (설명 끝에 붙이면 짧은 프롬프트에서 잘려 나가 같은 실수가 반복됨) */
+export function addLeadNote(task, kind, text) {
+  const t = String(text || '').trim();
+  if (!task || !t) return;
+  task.leadNotes = Array.isArray(task.leadNotes) ? task.leadNotes : [];
+  task.leadNotes.unshift({ at: new Date().toISOString(), kind, text: t.slice(0, 900) });
+  task.leadNotes = task.leadNotes.slice(0, 6);
+}
+
+/** 업무(미션) 단위 반려 교훈: 한 작업에서 나온 실수를 다른 작업·다른 팀원도 반복하지 않게 브리핑에 넣음 */
+export function addReviewLesson(mission, text) {
+  const t = oneLine(text, 160);
+  if (!mission || t.length < 6) return;
+  const list = Array.isArray(mission.reviewLessons) ? mission.reviewLessons : [];
+  const key = t.replace(/\s+/g, '').slice(0, 40);
+  const rest = list.filter((x) => String(x.text || '').replace(/\s+/g, '').slice(0, 40) !== key);
+  const prev = list.find((x) => String(x.text || '').replace(/\s+/g, '').slice(0, 40) === key);
+  mission.reviewLessons = [{ text: t, count: Number(prev?.count || 0) + 1, at: new Date().toISOString() }, ...rest].slice(0, 6);
+}
+
+/**
+ * 팀원에게 주는 작업 지시서 (프롬프트 맨 앞): 목표와 연결된 마일스톤, 완료 기준, 팀장 피드백, 지난 제출물, 반복 금지 실수.
+ * 작은 모델은 긴 프롬프트의 중간·끝을 놓치므로 꼭 지켜야 할 것만 짧게 모아 맨 앞에 둔다.
+ */
+export function buildTaskWorkOrder(task = {}, mission = null, { compact = false } = {}) {
+  const lines = [`[이번 작업 지시서 — 팀장 · 이 지시서와 다르면 반려됨]`];
+  lines.push(`- 작업: ${oneLine(task.title, 120)}`);
+  const ms = mission?.plan?.milestones?.find((x) => x.id === task.milestoneId);
+  if (ms) lines.push(`- 이 작업이 기여할 마일스톤: ${oneLine(ms.title, 100)} (완료 기준: ${oneLine(ms.doneWhen, 160)})`);
+  const g = mission ? getMissionGoal(mission) : null;
+  if (g?.metric && g.target !== null) lines.push(`- 프로젝트 목표: ${g.metric} ${g.current ?? '?'} → ${g.target}${g.unit ? ` ${g.unit}` : ''}`);
+  const acc = deriveAcceptance(task);
+  lines.push('- 완료 기준 (팀장이 이 기준으로 검수):', ...acc.map((x, i) => `  ${i + 1}. ${oneLine(x, 180)}`));
+  const notes = Array.isArray(task.leadNotes) ? task.leadNotes : [];
+  if (notes.length) {
+    lines.push('- 팀장 피드백 (최신순 · 모두 반영해야 통과):', ...notes.slice(0, compact ? 2 : 4).map((n) => `  - ${oneLine(n.text, compact ? 300 : 600)}`));
+  }
+  if (task.previousOutput) {
+    lines.push(`- 지난 제출물 (반려됨 · 같은 내용을 다시 내지 말고 피드백대로 고칠 것) 앞부분: ${oneLine(task.previousOutput, compact ? 260 : 600)}`);
+  }
+  const lessons = Array.isArray(mission?.reviewLessons) ? mission.reviewLessons : [];
+  if (lessons.length) lines.push(`- 이 업무에서 최근 반려된 실수 (반복 금지): ${lessons.slice(0, compact ? 3 : 5).map((l) => `${l.text}${l.count > 1 ? ` (${l.count}회)` : ''}`).join(' / ')}`);
+  return lines.join('\n');
+}
+
+/** 맨 끝 다짐: 완료 기준·피드백 반영 여부를 스스로 확인 */
+export function buildTaskRecap(task = {}) {
+  const acc = deriveAcceptance(task);
+  const items = [`완료 기준 ${acc.length}개를 모두 충족했는가? (하나씩 확인)`];
+  if (Array.isArray(task.leadNotes) && task.leadNotes.length) items.push('팀장 피드백을 빠짐없이 반영했는가? (지난 제출물과 달라졌는가?)');
+  return items.map((x) => `- ${x}`).join('\n');
+}
+
+// ---------------------------------------------------------------- 하루 사용 한도 소진 팀원 제외·대체
+
+const GROQ_MODEL_MAP = { 'llama-3.3-70b-versatile': 'openai/gpt-oss-120b', 'qwen/qwen3-32b': 'qwen/qwen3.8-27b' };
+const OR_MODEL_MAP = { 'deepseek/deepseek-r1:free': 'nvidia/nemotron-3.5-lightning:free', 'qwen/qwen3-coder:free': 'nvidia/nemotron-3.5-lightning:free', 'nvidia/nemotron-3-ultra-550b-a55b:free': 'nvidia/nemotron-3.5-lightning:free' };
+
+/** 팀원이 실제로 호출하는 엔진·모델 (orchestrator.resolveLanguageModel과 같은 규칙) */
+export function agentModelKey(agent, settings = {}) {
+  const p = settings?.providers || {};
+  if (!agent) return null;
+  if (agent.provider === 'gemini') {
+    const raw = String(p.gemini?.freeModel || '').trim();
+    return { provider: 'gemini', model: raw && raw !== 'gemini-2.5-flash' ? raw : 'gemini-4-hydrogen' };
+  }
+  if (agent.provider === 'groq') {
+    if (!p.groq?.apiKey && p.openrouter?.apiKey) return { provider: 'openrouter', model: 'openrouter/free' };
+    const raw = agent.modelId || p.groq?.model || 'openai/gpt-oss-120b';
+    return { provider: 'groq', model: GROQ_MODEL_MAP[raw] || raw };
+  }
+  if (agent.provider === 'openrouter') {
+    if (!p.openrouter?.apiKey && p.groq?.apiKey) return { provider: 'groq', model: 'openai/gpt-oss-120b' };
+    const raw = agent.modelId || p.openrouter?.model || 'openrouter/free';
+    return { provider: 'openrouter', model: OR_MODEL_MAP[raw] || raw };
+  }
+  if (agent.provider === 'exaone') return { provider: 'exaone', model: agent.modelId || p.exaone?.model || 'k-exaone_v2.5' };
+  if (agent.provider === 'claude') return { provider: 'claude', model: agent.modelId || p.claude?.model || 'claude-sonnet-4-5' };
+  return null;
+}
+
+/** 오늘 하루 한도를 다 쓴 팀원 (한국 시간 자정까지 업무 배정·실행에서 제외) */
+export function isAgentExhausted(agent, settings = {}) {
+  const k = agentModelKey(agent, settings);
+  return Boolean(k && isDailyExhausted(k.provider, k.model));
+}
+
+/** 한도 소진 팀원의 작업을 대신할 팀원: 같은 역할 힌트 → 다른 엔진 → 일이 적은 사람 순 */
+export function pickQuotaSubstitute(db, task, exhaustedAgent, triedIds = [], planLoad = {}) {
+  const tried = [...new Set([exhaustedAgent?.id, ...triedIds].filter(Boolean))];
+  return pickAlternateMember(db, task, tried, planLoad);
+}
 
 /** 업무 완료 기준: 계획 단계에서 정한 것이 있으면 그대로, 없으면 설명에서 뽑거나 기본 기준 */
 export function deriveAcceptance(task = {}) {

@@ -2,7 +2,7 @@
 import { OUTSOURCE_KIND_LABELS, OUTSOURCE_WORKER_LABELS, createOutsourcingRequest, extractOutsourceFlag, getOutsourcingSettings, resolveTarget } from '../outsourcing.js';
 import { appendLog, appendMessage } from '../store.js';
 import { buildDispatchPrompt, createApprovalForTask, leadReviewDeliverable } from '../orchestrator.js';
-import { classifyBlocker, detectNonResult, findOutputViolations, getLeadSettings, pickAlternateMember, rebalanceAssignments, triageGuidance } from '../lead-engine.js';
+import { classifyBlocker, detectNonResult, findOutputViolations, getLeadSettings, pickAlternateMember, rebalanceAssignments, triageGuidance, addLeadNote, addReviewLesson } from '../lead-engine.js';
 import { saysNothingToDo } from '../grounding.js';
 import { sendTelegramReport } from '../telegram.js';
 import { getMissionRepoCfg, isCodeTask, maybeScheduleCodeBundle } from './code-pipeline.js';
@@ -100,6 +100,7 @@ export function escalateTask(db, task, agent, mission, reason) {
       task.assigneeId = next.id;
       task.status = next.connectionMode === 'bridge' || ['manus', 'muse', 'pickle', 'instinct', 'vooy'].includes(next.provider) ? 'awaiting_bridge' : 'queued';
       task.description = `${task.description || ''}\n\n[팀장 검수 → 담당 변경] ${String(reason).slice(0, 600)}`.slice(0, 6000);
+      addLeadNote(task, 'escalate', `담당 변경(${agent?.name || '이전 담당'} → ${next.name}): ${String(reason).slice(0, 600)}`);
       task.previousOutput = String(task.output || '').slice(0, 1500);
       task.output = '';
       task.updatedAt = nowIso;
@@ -146,6 +147,8 @@ export async function processTaskResult(db, task, agent, mission, res, { skipRev
     if (rv.verdict === 'revise' && rounds < MAX_REVIEW_ROUNDS) {
       task.reviewRounds = rounds + 1;
       task.description = `${task.description || ''}\n\n[팀장 검수 ${rounds + 1}차 — 재작업] 부족한 점: ${(rv.missing || []).join(' / ') || '-'}\n고칠 것: ${rv.feedback}`.slice(0, 6000);
+      addLeadNote(task, 'revise', `${rounds + 1}차 검수 반려 — 부족한 점: ${(rv.missing || []).join(' / ') || '-'} → 고칠 것: ${rv.feedback}`);
+      for (const miss of (rv.missing || []).slice(0, 2)) addReviewLesson(mission, miss);
       task.previousOutput = task.output.slice(0, 1500);
       task.output = '';
       task.status = 'queued';
@@ -221,6 +224,8 @@ export function leadTriageResult(db, task, agent, mission, output, osFlag = '') 
     if (task.triage.scopeRetries < 1) {
       task.triage.scopeRetries += 1;
       task.description = `${task.description || ''}\n\n[팀장 피드백] ${triageGuidance('scope', { violations })}`.slice(0, 6000);
+      addLeadNote(task, 'scope', triageGuidance('scope', { violations }));
+      addReviewLesson(mission, `업무 지침 위반: ${violations.join(', ')} 관련 내용을 썼음`);
       task.status = 'queued';
       task.previousOutput = String(output || '').slice(0, 1500);
       task.output = '';
@@ -257,6 +262,8 @@ export function leadTriageResult(db, task, agent, mission, output, osFlag = '') 
     task.triage.retries += 1;
     task.assigneeId = next.id;
     task.description = `${task.description || ''}\n\n[팀장 피드백] 이전 결과("${String(nr.reason).slice(0, 120)}")는 실제 결과물이 아니라 완료로 인정하지 않았습니다. ${triageGuidance(blocker, { repoLinked })}`.slice(0, 6000);
+      addLeadNote(task, 'triage', `이전 결과("${String(nr.reason).slice(0, 120)}")는 실제 결과물이 아니라 반려. ${triageGuidance(blocker, { repoLinked })}`);
+      addReviewLesson(mission, '결과물 없이 "정보를 달라·할 수 없다"만 제출');
     task.status = 'queued';
     task.previousOutput = String(output || '').slice(0, 1500);
     task.output = '';

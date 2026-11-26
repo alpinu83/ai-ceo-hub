@@ -10,7 +10,7 @@ import { isProviderCooling } from './ai-guard.js';
 import { selectSkills, renderSkills, skillBlock, shouldReview, buildReviewRubric, getSkillSettings } from './skills.js';
 import { getRepoSnapshot, buildCodeEvidence, factCheckOutput } from './grounding.js';
 import { buildAnalyticsContext } from './google-data.js';
-import { buildComplianceChecklist, deriveAcceptance, buildMissionBrief } from './lead-engine.js';
+import { buildComplianceChecklist, deriveAcceptance, buildMissionBrief, buildTaskWorkOrder, buildTaskRecap, baseTaskDescription } from './lead-engine.js';
 
 function repoTokenFrom(settings) {
   return String(settings?.providers?.githubRepo?.apiKey || process.env.GITHUB_REPO_TOKEN || '').trim();
@@ -570,7 +570,16 @@ export function buildDispatchPrompt(agent, task, mission) {
   const approvalRule = task.requiresApproval
     ? '⚠️ [CEO 결재 게이트] 결제, 예약 확정, 외부 이메일/문자 발송, 프로덕션 배포 전에는 절대 실행하지 말고 후보·금액·리스크를 정리해 멈춘 뒤 CEO 승인을 요청하세요.'
     : '완료 후 핵심 3줄 요약과 실행 산출물(표·체크리스트·링크)을 함께 보고하세요.';
+  // 외부 봇에도 같은 작업 지시서(완료 기준·팀장 피드백·반복 금지 실수)를 맨 앞에 붙임
+  if (mission && !['pickle', 'instinct'].includes(agent.provider)) {
+    const order = buildTaskWorkOrder(task, mission, { compact: true });
+    const body = buildDispatchPromptBody(agent, { ...task, description: baseTaskDescription(task) }, mission, approvalRule);
+    return `${order}\n\n${body}`;
+  }
+  return buildDispatchPromptBody(agent, task, mission, approvalRule);
+}
 
+function buildDispatchPromptBody(agent, task, mission, approvalRule) {
   switch (agent.provider) {
     case 'pickle':
       return `[피클(Pickle) 실행 지시서]\n미션: ${mission.title}\n요청 작업: ${task.title}\n상세 내용: ${task.description}\n\n완료 조건:\n1. 전화 또는 국내 플랫폼 확인이 필요한 항목을 조사하고 후보 2~3곳(가격·가능 시간·취소 규정)을 표로 정리해줘.\n2. ${approvalRule}`;
@@ -1030,11 +1039,18 @@ export async function executeAgentTask({ task, mission, agent, settings, priorOu
     const systemFull = [system, skillsFull, companyCtx].filter(Boolean).join('\n\n');
     const systemCompact = [system, skillsCompact, companyCtxCompact].filter(Boolean).join('\n\n');
 
-    const checklistBlock = buildComplianceChecklist(mission);
-    const prompt = `미션: ${mission.title}
+    // 지시서(맨 앞) + 본문 + 자가 점검(맨 끝): 작은 모델이 팀장 피드백·완료 기준을 놓치지 않게 양쪽에 둡니다
+    const recap = buildTaskRecap(task);
+    const checklistBlock = [buildComplianceChecklist(mission), recap].filter(Boolean).join('\n');
+    const workOrder = buildTaskWorkOrder(task, mission);
+    const workOrderCompact = buildTaskWorkOrder(task, mission, { compact: true });
+    const baseDesc = baseTaskDescription(task);
+    const prompt = `${workOrder}
+
+미션: ${mission.title}
 CEO 원지시: ${mission.directive}
 담당 작업: ${task.title}
-상세 요구사항: ${task.description}${liveBlock}${contextBlock}${checklistBlock ? `\n\n${checklistBlock}` : ''}`;
+상세 요구사항: ${baseDesc}${liveBlock}${contextBlock}${checklistBlock ? `\n\n${checklistBlock}` : ''}`;
 
     const buildBackupModels = () => {
       const backups = [];
@@ -1067,10 +1083,12 @@ CEO 원지시: ${mission.directive}
     };
 
     // Compact variant for free tiers with small per-minute token budgets (e.g. Groq "Request too large")
-    const compactPrompt = `미션: ${mission.title}
+    const compactPrompt = `${workOrderCompact}
+
+미션: ${mission.title}
 CEO 원지시: ${String(mission.directive || '').slice(0, 800)}
 담당 작업: ${task.title}
-상세 요구사항: ${String(task.description || '').slice(0, 1500)}${evidenceCompact ? `\n\n${evidenceCompact}` : ''}${liveContext ? `\n\n${String(liveContext).slice(0, 2200)}` : ''}${contextBlock ? `\n${contextBlock.slice(0, 1200)}` : ''}${checklistBlock ? `\n\n${checklistBlock}` : ''}`;
+상세 요구사항: ${baseDesc.slice(0, 1500)}${evidenceCompact ? `\n\n${evidenceCompact}` : ''}${liveContext ? `\n\n${String(liveContext).slice(0, 2200)}` : ''}${contextBlock ? `\n${contextBlock.slice(0, 1200)}` : ''}${checklistBlock ? `\n\n${checklistBlock}` : ''}`;
     const isSizeError = (err) => /too large|413|context length|maximum context|tokens per mi|reduce the length/i.test(String(err?.message || err));
 
     // 초안 → (중요 작업이면) 다른 모델의 스킬 점검표 채점 → 기준 미달 시 수정본
@@ -1290,11 +1308,16 @@ export async function leadReviewDeliverable({ task, output, mission, agents, set
 - 계획·목차·"정보를 주세요"·"~하겠습니다"만 있는 결과는 accept 금지.
 - 근거 없는 수치를 사실처럼 쓴 경우, 브리핑의 금지 사항을 어긴 경우 accept 금지.
 ${mission ? `\n${buildMissionBrief(mission)}` : ''}`;
+  const priorNotes = Array.isArray(task.leadNotes) ? task.leadNotes.slice(0, 3) : [];
   const prompt = `[업무] ${task.title}
-[요구사항] ${String(task.description || '').slice(0, 1500)}
+[요구사항] ${baseTaskDescription(task).slice(0, 1500)}
 [완료 기준]
 ${acceptance.map((x, i) => `${i + 1}. ${x}`).join('\n')}
-
+${
+  priorNotes.length
+    ? `\n[이전에 준 팀장 피드백 — 반영됐는지 확인, 같은 문제가 남아 있으면 accept 금지]\n${priorNotes.map((n) => `- ${String(n.text).slice(0, 400)}`).join('\n')}\n`
+    : ''
+}
 [팀원 결과물 (앞부분)]
 ${String(output || '').slice(0, 4500)}`;
   try {

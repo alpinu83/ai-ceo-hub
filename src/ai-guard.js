@@ -70,12 +70,49 @@ export function isProviderCooling(provider, model = '') {
   return Boolean(activeCooldown(provider, model));
 }
 
+/** 하루 무료 한도를 다 쓴 엔진인지 (한국 시간 자정까지 업무에서 제외) */
+export function isDailyExhausted(provider, model = '') {
+  const cd = activeCooldown(provider, model);
+  return Boolean(cd && cd.daily);
+}
+
+/** 다음 한국 시간 자정 (하루 한도 소진 시 이 시각까지 제외) */
+export function nextKstMidnight(now = Date.now()) {
+  const KST = 9 * 60 * 60 * 1000;
+  const day = 24 * 60 * 60 * 1000;
+  return Math.floor((now + KST) / day) * day + day - KST;
+}
+
+/** 한도 오류 분류: 분당 한도와 하루 한도를 구분 (둘 다 "quota"라는 말이 들어가므로 quota만으로 하루 한도로 보지 않음) */
+export function classifyLimit(text = '') {
+  const t = String(text);
+  const daily = /per[\s_-]?day|perday|daily|requests per day|free-models-per-day|RPD\b|TPD\b|tokens per day/i.test(t);
+  const perMinute = /per[\s_-]?minute|perminute|tokens per mi|\bTPM\b|\bRPM\b/i.test(t);
+  return daily ? 'daily' : perMinute ? 'minute' : 'other';
+}
+
+/** 서버 재시작 때도 유지하도록 하루 한도 소진 기록을 내보내기/불러오기 */
+export function exportQuotaState() {
+  const now = Date.now();
+  return [...cooldowns.entries()]
+    .filter(([, cd]) => cd.daily && cd.until > now)
+    .map(([key, cd]) => ({ key, provider: cd.provider, model: cd.model, until: cd.until, reason: cd.reason, daily: true }));
+}
+export function importQuotaState(list = []) {
+  const now = Date.now();
+  for (const e of Array.isArray(list) ? list : []) {
+    if (!e?.key || !(Number(e.until) > now)) continue;
+    const cur = cooldowns.get(e.key);
+    if (!cur || cur.until < e.until) cooldowns.set(e.key, { until: Number(e.until), provider: e.provider, model: e.model, reason: e.reason || '일일 무료 한도 소진', daily: true });
+  }
+}
+
 export function getAiProviderHealth() {
   const now = Date.now();
   const list = [];
   for (const [key, cd] of cooldowns) {
     if (cd.until <= now) continue;
-    list.push({ key, provider: cd.provider, model: cd.model, until: new Date(cd.until).toISOString(), reason: cd.reason });
+    list.push({ key, provider: cd.provider, model: cd.model, until: new Date(cd.until).toISOString(), reason: cd.reason, daily: Boolean(cd.daily) });
   }
   return { cooldowns: list, stats: Object.fromEntries(stats) };
 }
@@ -108,18 +145,26 @@ if (!globalThis.__aiGuardInstalled) {
     } catch {
       // ignore
     }
-    const daily = /per[\s_-]?day|daily|requests per day|free-models-per-day|quota/i.test(text);
-    const perMinute = /per minute|tokens per mi|\bTPM\b|\bRPM\b/i.test(text);
-    let ms = parseRetryMs(text, res.headers);
-    if (!ms) ms = daily ? 60 * 60 * 1000 : perMinute ? 65 * 1000 : 60 * 1000;
-    ms = Math.min(Math.max(ms, 15 * 1000), 6 * 60 * 60 * 1000);
+    const kind = classifyLimit(text);
+    const daily = kind === 'daily';
+    const perMinute = kind === 'minute';
+    let until;
+    if (daily) {
+      // 하루 한도 소진: 한국 시간 자정까지 이 엔진은 업무에서 제외 (남은 자원으로 대체)
+      until = nextKstMidnight();
+    } else {
+      let ms = parseRetryMs(text, res.headers);
+      if (!ms) ms = perMinute ? 65 * 1000 : 60 * 1000;
+      until = Date.now() + Math.min(Math.max(ms, 15 * 1000), 6 * 60 * 60 * 1000);
+    }
     const accountWide = provider === 'openrouter' && /free-models-per-day/i.test(text);
     const key = accountWide ? `${provider}:*` : `${provider}:${model}`;
     cooldowns.set(key, {
-      until: Date.now() + ms,
+      until,
       provider,
       model: accountWide ? '*' : model,
-      reason: daily ? '일일 무료 한도 소진' : perMinute ? '분당 한도 초과' : '요청 한도 초과'
+      daily,
+      reason: daily ? '일일 무료 한도 소진 (자정까지 업무 제외)' : perMinute ? '분당 한도 초과' : '요청 한도 초과'
     });
     return res;
   };

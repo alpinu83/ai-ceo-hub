@@ -1,3 +1,4 @@
+import { importQuotaState } from './src/ai-guard.js';
 import { Hono } from 'hono';
 import { buildCompanyContext, ensureLeadDefaults } from './src/lead-engine.js';
 import { cors } from 'hono/cors';
@@ -132,6 +133,7 @@ initCloudPersistence()
   .finally(() => {
     server.listen(PORT, '0.0.0.0', () => {
       const db = loadDb();
+      importQuotaState(db.aiQuota); // 하루 한도 소진 기록 복원 (자정까지 해당 팀원 제외)
       ensureVapidKeys(db);
       if (ensureLeadDefaults(db)) saveDb(db);
       setTelegramDeferHandler(queueDeferredTelegram);
