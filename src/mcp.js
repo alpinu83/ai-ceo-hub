@@ -6,7 +6,7 @@ import { notifyWebhook } from './orchestrator.js';
 import { sendTelegramApprovalCard } from './telegram.js';
 import { sendWebPushNotification } from './push.js';
 import { buildCompanyContext } from './lead-engine.js';
-import { listRequests, summarizeRequest, claimRequest, findRequest, buildPacket, submitResult } from './outsourcing.js';
+import { listRequests, summarizeRequest, claimRequest, findRequest, buildPacket, submitResult, requestCeoAction, resolveTarget, describeRouting } from './outsourcing.js';
 
 export const MCP_TOOL_CATALOG = [
   {
@@ -28,7 +28,8 @@ export const MCP_TOOL_CATALOG = [
   { name: 'list_outsourcing_requests', description: '외부 AI 외주·자문 요청 목록 조회 (Antigravity·Aside용)' },
   { name: 'claim_outsourcing_request', description: '외주 요청을 잡고 요청서 전문 받기' },
   { name: 'get_outsourcing_request', description: '외주 요청서 전문 조회' },
-  { name: 'submit_outsourcing_result', description: '외주 결과 문서·PR 제출' }
+  { name: 'submit_outsourcing_result', description: '외주 결과 문서·PR 제출' },
+  { name: 'request_ceo_action', description: '로그인 등 대표님 개입이 필요할 때 멈추고 알림' }
 ];
 
 /**
@@ -292,7 +293,7 @@ export function createCeoMcpServer() {
           {
             type: 'text',
             text: JSON.stringify(
-              { count: list.length, requests: list.map(summarizeRequest), next: '처리할 요청을 claim_outsourcing_request로 잡고 요청서 지시대로 작업 후 submit_outsourcing_result로 제출' },
+              { count: list.length, routing: describeRouting(db.settings), requests: list.map((r) => ({ ...summarizeRequest(r), target: resolveTarget(db.settings, r) })), next: '처리할 요청을 claim_outsourcing_request로 잡고 요청서 지시대로 작업 후 submit_outsourcing_result로 제출. 로그인·인증 등 대표님 손이 필요하면 request_ceo_action' },
               null,
               2
             )
@@ -345,6 +346,25 @@ export function createCeoMcpServer() {
       try {
         const req = await submitResult(request_id, { worker, summary, document, prUrl: pr_url });
         return { content: [{ type: 'text', text: `제출 완료: ${req.id} (${req.status}). 대표님께 보고됐습니다.` }] };
+      } catch (err) {
+        return { isError: true, content: [{ type: 'text', text: err.message }] };
+      }
+    }
+  );
+
+  server.tool(
+    'request_ceo_action',
+    '로그인, 2단계 인증, CAPTCHA, 결제·발송 승인처럼 대표님만 할 수 있는 일이 필요할 때 작업을 멈추고 대표님께 텔레그램으로 알립니다. 대표님이 처리 후 재개하면 다시 대기열에 올라옵니다.',
+    {
+      request_id: z.string().describe('요청 ID'),
+      worker: z.string().describe('작업자 이름'),
+      action: z.string().describe('대표님이 해야 할 일 한 줄 (예: 애드센스 로그인 필요)'),
+      detail: z.string().optional().describe('어디서 무엇을 하면 되는지')
+    },
+    async ({ request_id, worker, action, detail = '' }) => {
+      try {
+        const req = await requestCeoAction(request_id, { worker, action, detail });
+        return { content: [{ type: 'text', text: `대표님께 알렸습니다: ${req.id} — ${action}. 이 요청은 재개될 때까지 멈춥니다. 다른 요청을 처리하세요.` }] };
       } catch (err) {
         return { isError: true, content: [{ type: 'text', text: err.message }] };
       }

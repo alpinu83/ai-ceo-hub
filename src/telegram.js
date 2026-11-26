@@ -317,6 +317,16 @@ export async function handleTelegramUpdate(update, callbacks) {
     }
 
     const parts = String(cq.data || '').split(':');
+    // 외주: 대표님 개입 후 재개 / 다른 작업자로 넘기기 / 취소
+    if (parts[0] === 'out' && parts.length === 3 && typeof callbacks.onOutsourceCallback === 'function') {
+      const r = await callbacks.onOutsourceCallback(parts[1], parts[2]);
+      await tgCall(tg.botToken, 'answerCallbackQuery', { callback_query_id: cq.id, text: String(r?.text || '처리됨').slice(0, 180) }).catch(() => {});
+      if (r?.ok && cq.message?.chat?.id && cq.message?.message_id) {
+        await tgCall(tg.botToken, 'editMessageReplyMarkup', { chat_id: cq.message.chat.id, message_id: cq.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(() => {});
+        await sendTelegramText(tg.botToken, cq.message.chat.id, escapeHtml(r.text)).catch(() => {});
+      }
+      return { handled: true, outsource: parts[1] };
+    }
     if (parts[0] === 'decide' && parts.length === 3) {
       const [, decision, aprId] = parts;
       const result = await callbacks.onDecision(aprId, decision, 'Telegram 모바일 원터치 결재');
@@ -396,6 +406,14 @@ export async function handleTelegramUpdate(update, callbacks) {
         ).catch(() => {});
         return { handled: true, command: '/order' };
       }
+    }
+
+    // 외주 라우팅: /route auto|aside|antigravity, /away 3, /office, /out [OUT-ID 작업자]
+    const outCmd = text.match(/^\/(route|away|office|out)(?:@\S+)?\s*([\s\S]*)$/i);
+    if (outCmd && typeof callbacks.onOutsourceCommand === 'function') {
+      const reply = await callbacks.onOutsourceCommand(outCmd[1].toLowerCase(), outCmd[2] || '');
+      if (reply) await sendTelegramText(tg.botToken, chatId, reply).catch(() => {});
+      return { handled: true, command: `/${outCmd[1].toLowerCase()}` };
     }
 
     // 알림 설정 명령어: /notify, /report on|off, /quiet 23:00-08:00 | off
