@@ -416,6 +416,12 @@ async function runTests() {
     assert.equal(roleSave.routing.roles.code, 'antigravity', 'gemini cannot be assigned code work');
     assert.equal(roleSave.routing.roles.consult, 'aside', 'role change should be saved');
     await fetch(`${BASE}/api/outsourcing/route`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ roles: { consult: 'gemini' } }) });
+    // 종류별 우선순위 저장
+    const prioSave = await (await fetch(`${BASE}/api/outsourcing/route`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ priorities: { research: ['aside', 'gemini'], browser: ['gemini', 'aside'] }, waitMinutes: 60 }) })).json();
+    assert.equal(prioSave.routing.byKind.research.worker, 'aside', 'priority 1 should be used');
+    assert.deepEqual(prioSave.routing.priorities.browser, ['aside'], 'gemini cannot take browser work');
+    assert.equal(prioSave.routing.waitMinutes, 60);
+    await fetch(`${BASE}/api/outsourcing/route`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ priorities: { research: ['gemini', 'aside', 'antigravity'], browser: ['aside', 'antigravity'] }, waitMinutes: 30 }) });
     // 난이도별 목록 (Gemini Neon/Hydrogen 예약이 나눠 처리)
     const lightList = await (await fetch(`${BASE}/api/outsourcing?${tokQ}&effort=light`)).json();
     assert.ok(lightList.requests.every((r) => r.effort === 'light'), 'effort filter should work');
