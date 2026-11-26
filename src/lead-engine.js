@@ -64,33 +64,50 @@ export function getMissionScope(mission) {
   return { focus: String(s.focus || '').trim().slice(0, 600), exclude, noCode: Boolean(s.noCode) };
 }
 
-const NEGATION_NEAR_RE = /(제외|말고|빼고|아닌|아니라|금지|않|없이|대신|보류)/;
+// 부정·배제 문맥: "크몽 제외", "세무·연말정산 관련 내용은 포함하지 않음", "코드·배포 대상이 아니며", "크몽·앱인토스 외 모델", "반려 사유: 크몽"
+const NEGATION_NEAR_RE = /(제외|배제|말고|빼고|아닌|아니|금지|않|없이|없음|대신|보류|반려|중단|포함되지|포함하지|다루지|피함|피해|✗|❌|이외|\s외(\s|$|[,·)]))/;
+// 코드 금지 단계에서도 "대표님 승인 후·관문 통과 후" 미래 단계로 언급하는 것은 계획 위반이 아님
+const GATED_FUTURE_RE = /(승인\s*후|승인되면|관문|다음\s*단계에서|추후\s*대표님)/;
 const CODE_PLAN_RE = /(\bPR\b|풀\s*리퀘|브랜치|커밋|배포|저장소에|레포에|컴포넌트\s*구현|코드\s*(작성|구현|수정)|git\s+(push|commit))/i;
+
+/** 문장(또는 표의 한 줄) 단위로 나눠 키워드가 들어 있는 문장 전체를 문맥으로 봄 */
+function sentencesOf(src) {
+  return String(src || '')
+    .split(/\n|(?<=[.!?。])\s+|(?<=다\.)/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/** 준수 선언 블록 ("불필요한 내용 배제", "주의", "자가 점검") 아래 줄은 금지어를 나열해도 위반이 아님 */
+const COMPLIANCE_HEAD_RE = /(배제|주의|자가\s*점검|준수|금지\s*사항|하지\s*말\s*것|제외\s*범위|체크리스트\s*점검)/;
 
 /**
  * 결과물·계획이 이 업무의 지침을 어겼는지 (금지 키워드 사용 · 코드 금지 단계에서 코드·PR 계획)
- * "세무는 제외했습니다"처럼 부정 문맥에서 언급한 것은 위반으로 보지 않음
+ * 문장 단위로 판단: "세무·크몽 관련 내용은 포함하지 않음"처럼 부정·배제 문장이나 준수 선언 블록 안의 언급은 위반이 아님.
+ * (예전에는 앞뒤 20자만 보아서, 지침을 지켰다고 밝힌 결과물까지 위반으로 막혔음)
  */
 export function findOutputViolations(mission, text = '') {
   const { exclude, noCode } = getMissionScope(mission);
-  const src = String(text || '');
+  const sentences = sentencesOf(text);
+  // 준수 선언 제목 바로 아래 몇 줄은 선언으로 봄
+  const declared = new Set();
+  sentences.forEach((s, i) => {
+    if (COMPLIANCE_HEAD_RE.test(s) && s.length < 80) for (let j = i; j <= i + 4 && j < sentences.length; j += 1) declared.add(j);
+  });
+  const isOk = (s, i) => declared.has(i) || NEGATION_NEAR_RE.test(s);
   const out = [];
   for (const k of exclude) {
-    const re = new RegExp(k.replace(/[.*+?^${}()|[\]\\]/g, (ch) => '\\' + ch), 'gi');
-    let m;
-    while ((m = re.exec(src))) {
-      const around = src.slice(Math.max(0, m.index - 20), m.index + k.length + 20);
-      if (!NEGATION_NEAR_RE.test(around)) {
-        out.push(`금지 범위 "${k}" 사용`);
-        break;
-      }
-    }
+    const lower = k.toLowerCase();
+    const hit = sentences.findIndex((s, i) => s.toLowerCase().includes(lower) && !isOk(s, i));
+    if (hit >= 0) out.push(`금지 범위 "${k}" 사용`);
   }
   if (noCode) {
-    const m = src.match(CODE_PLAN_RE);
-    if (m) {
-      const around = src.slice(Math.max(0, m.index - 20), m.index + 30);
-      if (!NEGATION_NEAR_RE.test(around)) out.push(`코드·PR 금지 단계인데 "${m[0]}" 계획`);
+    for (let i = 0; i < sentences.length; i += 1) {
+      const m = sentences[i].match(CODE_PLAN_RE);
+      if (m && !isOk(sentences[i], i) && !GATED_FUTURE_RE.test(sentences[i])) {
+        out.push(`코드·PR 금지 단계인데 "${m[0]}" 계획`);
+        break;
+      }
     }
   }
   return out;
