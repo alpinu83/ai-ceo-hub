@@ -2,8 +2,8 @@
 import { appendLog, flushCloudBackup, getCloudPersistenceStatus, loadDb, saveDb, uid } from '../store.js';
 import { buildDailyBriefing, buildDefaultRoutines, dueSlotKeys, kstParts, normalizeDays, normalizeTimes, runOpsCheck } from '../operations.js';
 import { buildDispatchPrompt } from '../orchestrator.js';
-import { findScopeViolations, getLeadSettings } from '../lead-engine.js';
-import { getAiProviderHealth } from '../ai-guard.js';
+import { findScopeViolations, getLeadSettings, isAgentExhausted } from '../lead-engine.js';
+import { getAiProviderHealth, exportQuotaState } from '../ai-guard.js';
 import { getGithubRepoConfig } from '../it-devops.js';
 import { getOutsourcingSettings } from '../outsourcing.js';
 import { sendTelegramGated } from '../telegram.js';
@@ -263,6 +263,8 @@ export async function runWatchdog() {
       if (t.status !== 'queued') continue;
       const ag = agentMap[t.assigneeId];
       if (!ag?.active || !INTERNAL_AI_PROVIDERS.has(ag.provider)) continue;
+      // 오늘 한도 소진으로 대체 팀원도 없어 멈춘 작업은 재시도 횟수를 쓰지 않고 자정까지 대기
+      if (t.quotaHold && isAgentExhausted(ag, db.settings)) continue;
       const age = ageMin(t.updatedAt);
       if (age < 10 || age > 3 * 24 * 60) continue;
       if (db.tasks.some((x) => x.missionId === t.missionId && x.status === 'running')) continue;
@@ -288,6 +290,8 @@ export async function runWatchdog() {
     }
   }
 
+  // 하루 한도 소진 기록을 저장해 서버가 재시작돼도 자정까지 제외가 유지되게 함
+  db.aiQuota = exportQuotaState();
   db.settings.opsWatchdog = {
     lastRunAt: nowIso,
     lastActions: actions.slice(0, 10),

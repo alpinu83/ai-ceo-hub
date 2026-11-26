@@ -1,5 +1,5 @@
 // hub/ceo-chat.js: server.js에서 분리 (공유 로직)
-import { ASSIGNMENT_RULES, buildPlanningRoster, ensureLeadDefaults, escapeTelegramHtml, findScopeViolations, isForbiddenCodeTask, isStandingOrder, markCeoActivity, rebalanceAssignments, rememberFact } from '../lead-engine.js';
+import { ASSIGNMENT_RULES, buildPlanningRoster, ensureLeadDefaults, escapeTelegramHtml, findScopeViolations, isForbiddenCodeTask, isStandingOrder, markCeoActivity, rebalanceAssignments, rememberFact, addLeadNote } from '../lead-engine.js';
 import { appendLog, appendMessage, flushCloudBackup, loadDb, saveDb, uid } from '../store.js';
 import { buildDispatchPrompt, classifyChatDirective, generateTeamChatReplies } from '../orchestrator.js';
 import { applyApprovalDecisionInDb, autoStartLiveMissionTasks, createMissionInDb } from './missions.js';
@@ -269,6 +269,7 @@ export async function intakeChatDirective(text, missionId) {
       const ag = agentMap[t.assigneeId];
       t.status = ag?.connectionMode === 'bridge' ? 'awaiting_bridge' : 'queued';
       t.description = `${t.description}\n[CEO 회의실 지시] ${text}`;
+        addLeadNote(t, 'ceo', `대표님 회의실 지시: ${text}`);
       t.updatedAt = now;
       delete t.codeBundleId;
       if (ag) t.dispatchPrompt = buildDispatchPrompt(ag, t, m);

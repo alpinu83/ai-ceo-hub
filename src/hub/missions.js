@@ -1,5 +1,5 @@
 // hub/missions.js: server.js에서 분리 (공유 로직)
-import { ASSIGNMENT_RULES, buildPlanningRoster, isStandingOrder, markCeoActivity, rebalanceAssignments, rememberFact } from '../lead-engine.js';
+import { ASSIGNMENT_RULES, buildPlanningRoster, isStandingOrder, markCeoActivity, rebalanceAssignments, rememberFact, addLeadNote, isAgentExhausted, pickQuotaSubstitute } from '../lead-engine.js';
 import { appendLog, appendMessage, applyInferredMissionBindings, flushCloudBackup, loadDb, saveDb, uid } from '../store.js';
 import { assessFeasibility, getOutsourcingSettings } from '../outsourcing.js';
 import { buildDispatchPrompt, decomposeDirective, executeAgentTask, synthesizeMissionReport } from '../orchestrator.js';
@@ -224,6 +224,26 @@ export async function autoStartLiveMissionTasks(missionId, { priorRunTaskIds = [
     });
   }
 
+  // 오늘 사용 한도를 다 쓴 팀원의 작업은 실행하지 않고, 같은 일을 할 수 있는 팀원으로 대체 (한국 시간 자정에 자동 복귀)
+  const quotaLoad = {};
+  autoTargets = autoTargets.filter((t) => {
+    const ag = agentMap[t.assigneeId];
+    if (!ag || !isAgentExhausted(ag, db.settings)) return true;
+    const sub = pickQuotaSubstitute(db, t, ag, t.triage?.tried || [], quotaLoad);
+    if (!sub) {
+      if (!t.quotaHold) appendLog(db, '총괄 팀장', `"${t.title}" 담당 ${ag.name} 오늘 한도 소진 · 대체 가능한 팀원 없음 → 자정 이후 재개`, 'warning');
+      t.quotaHold = true;
+      return false;
+    }
+    quotaLoad[sub.id] = (quotaLoad[sub.id] || 0) + 1;
+    t.quotaSwap = { from: ag.id, to: sub.id, at: new Date().toISOString() };
+    delete t.quotaHold;
+    t.assigneeId = sub.id;
+    t.dispatchPrompt = buildDispatchPrompt(sub, t, mission);
+    appendLog(db, '총괄 팀장', `"${t.title}" 담당 ${ag.name} 오늘 사용 한도 소진 → ${sub.name}이(가) 대신 처리 (자정까지 ${ag.name} 제외)`, 'info');
+    return true;
+  });
+
   // Ensure external bot tasks are cleanly marked as awaiting external inbox/MCP (never sitting in "실행 대기")
   const externalProviders = new Set(['pickle', 'manus', 'muse', 'vooy', 'instinct']);
   for (const t of db.tasks) {
@@ -267,6 +287,11 @@ export async function autoStartLiveMissionTasks(missionId, { priorRunTaskIds = [
         if (taskRow) {
           taskRow.status = 'queued';
           taskRow.updatedAt = new Date().toISOString();
+        }
+        // 실행 중 하루 한도가 끝난 경우: 바로 대체 팀원으로 다시 돌림
+        if (taskRow && isAgentExhausted(ag, fresh.settings) && !taskRow.quotaRetried) {
+          taskRow.quotaRetried = true;
+          requeuedIds.add(taskRow.id);
         }
         appendLog(fresh, ag.name, `"${target.title}" 자동 실행 오류: ${err.message}`, 'warning');
         notifyTelegramAnomaly(fresh.settings, `${ag.name} 업무 실행 이상`, `"${target.title}" — ${err.message}`);
@@ -388,6 +413,7 @@ export function applyApprovalDecisionInDb(aprId, decision, ceoNote = '') {
       task.status = agent?.connectionMode === 'bridge' ? 'awaiting_bridge' : 'queued';
       if (apr.ceoNote) {
         task.description = `${task.description}\n[CEO 수정 지시] ${apr.ceoNote}`;
+      addLeadNote(task, 'ceo', `대표님 수정 지시: ${apr.ceoNote}`);
         const mission = db.missions.find((m) => m.id === task.missionId);
         if (agent && mission) task.dispatchPrompt = buildDispatchPrompt(agent, task, mission);
       }
