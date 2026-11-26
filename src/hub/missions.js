@@ -272,10 +272,14 @@ export async function autoStartLiveMissionTasks(missionId, { priorRunTaskIds = [
   await runWithConcurrency(autoTargets, AI_TASK_CONCURRENCY, async (target) => {
       const ag = agentMap[target.assigneeId];
       try {
-        const res = await executeAgentTask({ task: target, mission, agent: ag, settings: db.settings });
+        // 판정 오류로 보류됐던 결과는 다시 만들지 않고 저장된 결과로 재검수
+        const res = target.recheckOutput
+          ? { output: target.recheckOutput, executionModeUsed: target.executionModeUsed || 'recheck' }
+          : await executeAgentTask({ task: target, mission, agent: ag, settings: db.settings });
         const fresh = loadDb();
         const taskRow = fresh.tasks.find((x) => x.id === target.id);
         if (!taskRow) return;
+        delete taskRow.recheckOutput;
         const out = await processTaskResult(fresh, taskRow, ag, mission, res);
         if (out.requeued) requeuedIds.add(taskRow.id);
         updateMissionStatus(fresh, mission.id);

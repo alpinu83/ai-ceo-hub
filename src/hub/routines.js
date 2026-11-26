@@ -2,7 +2,7 @@
 import { appendLog, flushCloudBackup, getCloudPersistenceStatus, loadDb, saveDb, uid } from '../store.js';
 import { buildDailyBriefing, buildDefaultRoutines, dueSlotKeys, kstParts, normalizeDays, normalizeTimes, runOpsCheck } from '../operations.js';
 import { buildDispatchPrompt } from '../orchestrator.js';
-import { findScopeViolations, getLeadSettings, isAgentExhausted } from '../lead-engine.js';
+import { findScopeViolations, getLeadSettings, isAgentExhausted, findOutputViolations } from '../lead-engine.js';
 import { getAiProviderHealth, exportQuotaState } from '../ai-guard.js';
 import { getGithubRepoConfig } from '../it-devops.js';
 import { getOutsourcingSettings } from '../outsourcing.js';
@@ -288,6 +288,22 @@ export async function runWatchdog() {
       relaunch.add(t.missionId);
       actions.push(`대기 업무 재실행 "${t.title}" (${t.autoRetries}회차)`);
     }
+  }
+
+  // 지침 위반으로 보류된 작업 재검사: 지침을 지켰다고 밝힌 문장까지 위반으로 잡던 판정 오류를 바로잡음
+  for (const t of db.tasks) {
+    if (t.status !== 'blocked' || !/^지침 위반 반복/.test(String(t.blockedReason || '')) || !t.output || t.violationRechecked) continue;
+    const m = db.missions.find((x) => x.id === t.missionId);
+    if (!m) continue;
+    t.violationRechecked = true;
+    if (findOutputViolations(m, t.output).length) continue;
+    t.recheckOutput = t.output;
+    t.status = 'queued';
+    t.updatedAt = nowIso;
+    delete t.blockedReason;
+    if (t.triage) t.triage.scopeRetries = 0;
+    relaunch.add(t.missionId);
+    actions.push(`지침 위반 판정 재검사 → 위반 아님, 재검수 "${t.title}"`);
   }
 
   // 하루 한도 소진 기록을 저장해 서버가 재시작돼도 자정까지 제외가 유지되게 함
