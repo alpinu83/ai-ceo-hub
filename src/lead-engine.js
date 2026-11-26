@@ -221,6 +221,87 @@ function formatFact(f, missionTitles) {
  * The shared context block injected into every AI call (team member work, team-lead chat, reports, IT PRs).
  * compact=true keeps it small for free tiers with tight per-minute token budgets.
  */
+// ---------------------------------------------------------------- orchestration (팀장의 지휘·검토)
+
+const CANNOT_RE = /(접근(이|할 수)?\s*(불가|없)|확인할 수 없|실행할 수 없|진행할 수 없|작성할 수 없|생성(이|할 수)?\s*(불가|없)|제공해\s*주(세요|십시오|시면)|알려\s*주(세요|십시오|시면)|미지정|지정되지 않|권한(이)?\s*(없|필요)|토큰(이)?\s*(없|필요)|정보가 (없|부족)|자료가 (없|부족))/;
+const LOGIN_RE = /(로그인|콘솔|계정 (설정|접속|등록)|애드센스|adsense|서치\s*콘솔\s*(설정|등록|제출|인증)|2단계|본인\s*인증|결제 수단)/i;
+const REPO_RE = /(저장소|repo|github|깃허브|\bPR\b|풀\s*리퀘|브랜치|커밋|파일 구조|기존 코드)/i;
+
+/**
+ * 팀원 결과가 "실제 결과물"이 아니라 못 한다는 말·정보 요청뿐인지 판단
+ * osFlag: 팀원이 [외주 필요: 사유]를 단 경우 그 사유
+ */
+export function detectNonResult(output = '', osFlag = '') {
+  const text = String(output || '');
+  if (osFlag) return { nonResult: true, reason: osFlag };
+  const head = text.replace(/[*#>\s]+/g, ' ').slice(0, 500);
+  const m = head.match(CANNOT_RE);
+  if (!m) return { nonResult: false, reason: '' };
+  // 앞부분이 "못 함/정보 달라"이고 본문이 짧으면 결과물이 아님
+  const substantive = text.replace(/\s+/g, ' ').length;
+  if (substantive > 2200) return { nonResult: false, reason: '' };
+  const idx = Math.max(0, head.indexOf(m[0]) - 60);
+  return { nonResult: true, reason: head.slice(idx, idx + 160).trim() };
+}
+
+/** 막힌 이유 분류: login(실제 계정 작업 → 외주) / repo(저장소 필요) / info(정보 부족) / capability(능력 부족) */
+export function classifyBlocker(reason = '', { repoLinked = false } = {}) {
+  const t = String(reason || '');
+  if (LOGIN_RE.test(t)) return 'login';
+  if (REPO_RE.test(t)) return repoLinked ? 'capability' : 'repo';
+  if (CANNOT_RE.test(t)) return 'info';
+  return 'capability';
+}
+
+/** 팀장 피드백: 다시 맡길 때 무엇을 어떻게 만들라고 할지 */
+export function triageGuidance(blocker, { repoLinked = false } = {}) {
+  if (blocker === 'repo') {
+    return '이 업무에는 연결된 저장소가 없습니다. 저장소·PR을 기다리지 말고, 바로 쓸 수 있는 결과물(새로 만들 파일의 경로와 전체 내용을 코드 블록으로, 또는 완성된 문서)을 만드세요. 저장소 연결은 팀장이 대표님께 따로 요청합니다.';
+  }
+  if (blocker === 'info') {
+    return '모르는 값은 합리적인 가정을 세우고 "가정:"으로 표시한 뒤 결과물을 끝까지 만드세요. 확인이 필요한 항목은 맨 끝에 "확인 필요" 목록으로 모으세요. 정보를 달라는 답만 쓰면 완료로 인정하지 않습니다.';
+  }
+  return `이전 담당자가 실제 결과물을 만들지 못했습니다. 당신의 역할에서 할 수 있는 범위까지 실제 결과물을 만드세요${repoLinked ? ' (코드면 바꿀 파일 경로와 변경 내용을 구체적으로)' : ''}. 정말 불가능한 부분만 이유와 함께 짧게 적으세요.`;
+}
+
+const ROLE_HINTS = [
+  { re: /(코드|개발|구현|컴포넌트|스크립트|자동화|html|css|js|api|버그|빌드)/i, ids: ['agent_it_dev', 'agent_qwen'] },
+  { re: /(보안|취약|감사|권한)/i, ids: ['agent_it_sec', 'agent_deepseek'] },
+  { re: /(테스트|qa|검증|릴리스|무결성)/i, ids: ['agent_it_qa', 'agent_groq'] },
+  { re: /(전략|분석|수익|추론|비교|시장|진단|우선순위)/i, ids: ['agent_deepseek', 'agent_gemma'] },
+  { re: /(기획|ux|글|콘텐츠|카피|문서|초안|랜딩|키워드|seo)/i, ids: ['agent_gemma', 'agent_groq'] },
+  { re: /(요약|번역|정리|한국어)/i, ids: ['agent_exaone', 'agent_groq'] }
+];
+const INTERNAL_PROVIDERS = new Set(['exaone', 'gemini', 'groq', 'openrouter']);
+
+/** 다시 맡길 내부 팀원 고르기: 업무 성격에 맞고, 아직 시도하지 않았고, 지금 일이 적은 사람 */
+export function pickAlternateMember(db, task, triedIds = []) {
+  const active = (db.agents || []).filter((a) => a.active && INTERNAL_PROVIDERS.has(a.provider) && a.tier !== 'lead');
+  const load = (id) => (db.tasks || []).filter((t) => t.assigneeId === id && ['queued', 'running'].includes(t.status)).length;
+  const text = `${task?.title || ''} ${task?.description || ''}`;
+  const preferred = ROLE_HINTS.filter((h) => h.re.test(text)).flatMap((h) => h.ids);
+  const candidates = active.filter((a) => !triedIds.includes(a.id));
+  if (!candidates.length) return null;
+  candidates.sort((a, b) => {
+    const pa = preferred.indexOf(a.id) === -1 ? 99 : preferred.indexOf(a.id);
+    const pb = preferred.indexOf(b.id) === -1 ? 99 : preferred.indexOf(b.id);
+    return pa - pb || load(a.id) - load(b.id);
+  });
+  return candidates[0];
+}
+
+/** 팀장 후속 계획용: 내부 팀원별 현재 업무량 */
+export function describeTeamLoad(db) {
+  const active = (db.agents || []).filter((a) => a.active && INTERNAL_PROVIDERS.has(a.provider) && a.tier !== 'lead');
+  return active
+    .map((a) => {
+      const mine = (db.tasks || []).filter((t) => t.assigneeId === a.id);
+      const busy = mine.filter((t) => ['queued', 'running'].includes(t.status)).length;
+      return `- id: "${a.id}", ${a.name} (${a.roleTitle}) — 진행 ${busy}건${busy === 0 ? ' · 대기 중(우선 배정)' : ''}`;
+    })
+    .join('\n');
+}
+
 /** 프로젝트 목표 (지표·목표치·현재값·기한) 정리 */
 export function getMissionGoal(mission) {
   const g = (mission && mission.goal) || {};
@@ -322,6 +403,10 @@ export function buildCompanyContext(db, missionId = '', { compact = false } = {}
     const lines = [
       `- 업무: ${mission.title} (상태 ${mission.status}${mission.mode === 'project' ? `, Phase ${Number(mission.phase) || 1}` : ''})`,
       `- 작업: 완료 ${count('completed')} · 진행 ${count('running') + count('queued')} · 결재 대기 ${count('awaiting_approval')} · 외부 봇 대기 ${count('awaiting_bridge')}`,
+      mission.githubRepo
+        ? `- 연결 저장소: ${mission.githubRepo} (PR로 실제 반영 가능)`
+        : '- 연결 저장소: 없음 → PR·배포·저장소 작업은 계획하지 말고, 결과물은 파일 내용·문서로 만들 것. 저장소가 꼭 필요하면 팀장이 대표님께 연결을 요청',
+      mission.siteUrl ? `- 라이브 사이트: ${mission.siteUrl}` : '',
       ...codeLines,
       st?.lastCodeNote?.message ? `- 최근 IT팀 판단: ${oneLine(st.lastCodeNote.message, 160)}` : ''
     ].filter(Boolean);
