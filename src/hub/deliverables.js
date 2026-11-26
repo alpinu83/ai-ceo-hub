@@ -25,16 +25,105 @@ function fileList(v) {
   return v.map((f) => `- ${typeof f === 'string' ? f : f?.filename || f?.path || f?.name || JSON.stringify(f)}`).join('\n');
 }
 
-/** 결재 안건과 연결된 업무 ID들: 단일 업무, 묶음(PR·성과품) 업무, 관문 결재면 그 업무의 최근 결과물 */
+/** 결재 안건과 연결된 업무 ID들: 단일 업무, 묶음(PR·성과품) 업무, 관문/다음단계 결재면 그 업무의 최근 결과물 */
 export function relatedTaskIds(db, apr) {
   const ids = new Set();
   if (apr?.taskId) ids.add(apr.taskId);
   for (const id of Array.isArray(apr?.taskIds) ? apr.taskIds : []) if (id) ids.add(id);
-  if (apr?.kind === 'stage_gate' && apr.missionId) {
+  if ((apr?.kind === 'stage_gate' || apr?.kind === 'next_phase') && apr.missionId) {
     const mission = (db.missions || []).find((m) => m.id === apr.missionId);
     for (const d of (mission?.deliverables || []).slice(0, 6)) if (d?.taskId) ids.add(d.taskId);
   }
   return [...ids];
+}
+
+/**
+ * 모든 결재 안건에 관련 성과품(taskIds)과 체크리스트(checklist)를 자동 첨부하고 번들 문서를 반환합니다.
+ * - 단일 업무 결재, 관문 결재, 다음 단계 제안, 코드 PR, 외주/MCP 결재 등 모든 결재 유형에 공통 적용됩니다.
+ */
+export function enrichApprovalDeliverables(db, apr) {
+  if (!db || !apr) return { changed: false, deliverable: null };
+  let changed = false;
+
+  const idSet = new Set();
+  if (apr.taskId) idSet.add(apr.taskId);
+  for (const id of Array.isArray(apr.taskIds) ? apr.taskIds : []) if (id) idSet.add(id);
+
+  // 관문/다음단계/단독 결재인데 연결된 업무 ID가 비어 있으면, 해당 미션의 최근 산출물(deliverables 또는 완료된 산출물)을 자동 연결
+  const shouldAttachMissionOutputs =
+    apr.missionId &&
+    (apr.kind === 'stage_gate' || apr.kind === 'next_phase' || apr.kind === 'deliverable_review' || idSet.size === 0);
+  if (shouldAttachMissionOutputs) {
+    const mission = (db.missions || []).find((m) => m.id === apr.missionId);
+    if (mission) {
+      if (apr.milestoneId) {
+        const msTasks = (db.tasks || [])
+          .filter((t) => t.missionId === mission.id && t.milestoneId === apr.milestoneId && String(t.output || '').trim())
+          .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))
+          .slice(0, 5);
+        for (const t of msTasks) idSet.add(t.id);
+      }
+      for (const d of (mission.deliverables || []).slice(0, 6)) {
+        if (d?.taskId) idSet.add(d.taskId);
+      }
+      if (idSet.size === 0) {
+        const recentOutputs = (db.tasks || [])
+          .filter(
+            (t) =>
+              t.missionId === mission.id &&
+              ['completed', 'awaiting_approval'].includes(t.status) &&
+              String(t.output || '').trim().length >= 80
+          )
+          .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))
+          .slice(0, 4);
+        for (const t of recentOutputs) idSet.add(t.id);
+      }
+    }
+  }
+
+  const nextIds = [...idSet];
+  const prevIds = Array.isArray(apr.taskIds) ? apr.taskIds : [];
+  if (nextIds.length && (nextIds.length !== prevIds.length || nextIds.some((id, i) => prevIds[i] !== id))) {
+    apr.taskIds = nextIds;
+    changed = true;
+  }
+
+  // 연결된 모든 산출물 + 외주 결과에서 체크리스트 항목 자동 추출·병합
+  const ckSeen = new Set();
+  const mergedCk = [];
+  const addCk = (item) => {
+    const s = String(item || '').trim();
+    const k = s.toLowerCase().replace(/\s+/g, '');
+    if (s && !ckSeen.has(k) && mergedCk.length < 12) {
+      ckSeen.add(k);
+      mergedCk.push(s);
+    }
+  };
+  for (const item of Array.isArray(apr.checklist) ? apr.checklist : []) addCk(item);
+  for (const id of nextIds) {
+    const t = (db.tasks || []).find((x) => x.id === id);
+    if (t?.output) {
+      for (const item of extractChecklistItems(t.output, 8)) addCk(item);
+    }
+  }
+  const consultId = apr.consult?.requestId || apr.consultRequestId || '';
+  for (const r of db.outsourcing || []) {
+    if (
+      r?.result &&
+      (r.approvalId === apr.id || (r.taskId && idSet.has(r.taskId)) || (apr.outsourceId && r.id === apr.outsourceId) || (consultId && r.id === consultId))
+    ) {
+      for (const item of extractChecklistItems(r.result.document || r.result.summary || '', 6)) addCk(item);
+    }
+  }
+
+  const prevCk = Array.isArray(apr.checklist) ? apr.checklist : [];
+  if (mergedCk.length && (mergedCk.length !== prevCk.length || mergedCk.some((c, i) => prevCk[i] !== c))) {
+    apr.checklist = mergedCk;
+    changed = true;
+  }
+
+  const deliverable = buildApprovalDeliverable(db, apr.id);
+  return { changed, deliverable };
 }
 
 /**

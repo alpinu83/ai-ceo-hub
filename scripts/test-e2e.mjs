@@ -361,6 +361,27 @@ async function runTests() {
     const bundle = buildReportDeliverableBundle(repDb, repDb.missions[0], rep.reviewTasks, rep.checklistItems);
     assert.ok(bundle && bundle.markdown.includes('유튜브 채널 개설') && bundle.markdown.includes('AI 3단계 파이프라인'), 'report deliverable bundle should include checklist and full draft');
 
+    // 9-3. 모든 결재 유형(일반 업무·관문·다음 단계)에 성과품·체크리스트 자동 첨부 검증
+    const { enrichApprovalDeliverables } = await import('../src/hub/deliverables.js');
+    const univDb = {
+      missions: [{ id: 'msn_u', title: '앱인토스 런칭', deliverables: [{ taskId: 'tsk_u1' }] }],
+      agents: [{ id: 'ag_u', name: '전략 팀원' }],
+      tasks: [
+        { id: 'tsk_u1', missionId: 'msn_u', milestoneId: 'ms_1', assigneeId: 'ag_u', title: '미니앱 기획서 및 심사 시안', status: 'completed', output: '## 핵심 기획\n앱인토스 미니앱 초안\n## 체크리스트\n- [ ] 사업자 등록증 업로드\n- [ ] 토스 콘솔 심사 제출', updatedAt: new Date().toISOString() }
+      ],
+      outsourcing: [],
+      approvals: [
+        { id: 'apr_u_gate', missionId: 'msn_u', milestoneId: 'ms_1', kind: 'stage_gate', title: '[관문 결재] 기획 확정', summary: '관문 요약', status: 'pending' },
+        { id: 'apr_u_next', missionId: 'msn_u', kind: 'next_phase', title: '다음 단계 제안', summary: '제안 요약', proposedDirective: '개발 착수', status: 'pending' }
+      ]
+    };
+    const eg = enrichApprovalDeliverables(univDb, univDb.approvals[0]);
+    assert.ok(eg.changed && univDb.approvals[0].taskIds.includes('tsk_u1'), 'stage_gate must auto-attach milestone deliverables');
+    assert.ok(univDb.approvals[0].checklist.includes('사업자 등록증 업로드'), 'stage_gate must auto-extract checklist items');
+    assert.ok(eg.deliverable.sectionCount >= 2 && eg.deliverable.markdown.includes('앱인토스 미니앱 초안'), 'deliverable bundle must include checklist + full draft');
+    const en = enrichApprovalDeliverables(univDb, univDb.approvals[1]);
+    assert.ok(univDb.approvals[1].taskIds.includes('tsk_u1') && en.deliverable.markdown.includes('토스 콘솔 심사 제출'), 'next_phase approval must also auto-attach mission deliverables & checklist');
+
     // 10. Async External Agent HTTPS Inbox (Pickle / Vooy real pull, flexible POST, & heartbeat tracking)
     const inboxRes = await fetch(`${BASE}/api/agent-inbox/pickle?token=${encodeURIComponent(mcpToken)}`);
     const inbox = await inboxRes.json();

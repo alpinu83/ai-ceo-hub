@@ -252,7 +252,13 @@ export async function sendTelegramAlert(settings, title, detail) {
   }
 }
 
-export async function sendTelegramApprovalCard(settings, approval, agentName, missionLabel = '', { force = false } = {}) {
+export async function sendTelegramApprovalCard(
+  settings,
+  approval,
+  agentName,
+  missionLabel = '',
+  { force = false, deliverableDoc = null } = {}
+) {
   const tg = settings?.telegram;
   if (!isValidBotToken(tg?.botToken) || !isNumericChatId(tg?.chatId)) return { ok: false, skipped: true };
   if (!force) {
@@ -274,7 +280,7 @@ export async function sendTelegramApprovalCard(settings, approval, agentName, mi
           ``,
           `<b>☑️ 확인 · 실행 체크리스트:</b>`,
           ...approval.checklist.slice(0, 5).map((c) => `☐ ${escapeHtml(String(c).slice(0, 140))}`),
-          ...(approval.checklist.length > 5 ? [`… 외 ${approval.checklist.length - 5}건 (아래 📎 버튼으로 전문 확인)`] : [])
+          ...(approval.checklist.length > 5 ? [`… 외 ${approval.checklist.length - 5}건 (아래 첨부 파일로 전문 확인)`] : [])
         ]
       : [];
 
@@ -304,12 +310,23 @@ export async function sendTelegramApprovalCard(settings, approval, agentName, mi
         { text: '✏️ 수정 지시', callback_data: `decide:revision_requested:${approval.id}` },
         { text: '❌ 반려', callback_data: `decide:rejected:${approval.id}` }
       ],
-      [{ text: '📎 성과품(시안·체크리스트) 받기', callback_data: `doc:${approval.id}` }]
+      [{ text: '📎 성과품(시안·체크리스트) 다시 받기', callback_data: `doc:${approval.id}` }]
     ]
   };
 
   try {
-    return await sendTelegramText(tg.botToken, tg.chatId, text, keyboard);
+    const sent = await sendTelegramText(tg.botToken, tg.chatId, text, keyboard);
+    if (deliverableDoc?.sectionCount > 0 && deliverableDoc?.markdown) {
+      const cap = `📎 <b>결재 첨부 성과품 · 시안 · 체크리스트</b>\n• 안건: ${escapeHtml(String(approval.title || approval.id).slice(0, 160))}\n• 포함 항목: ${deliverableDoc.sectionCount}개 섹션 (위 결재 카드 버튼으로 승인/수정/반려)`;
+      await sendTelegramDocument(
+        tg.botToken,
+        tg.chatId,
+        deliverableDoc.filename || `deliverable-${approval.id}.md`,
+        deliverableDoc.markdown,
+        cap
+      ).catch(() => {});
+    }
+    return sent;
   } catch (err) {
     return { ok: false, error: err.message };
   }

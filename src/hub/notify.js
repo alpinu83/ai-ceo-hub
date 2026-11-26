@@ -5,6 +5,7 @@ import { getTelegramNotifyPrefs, isQuietNow, sendTelegramAlert, sendTelegramAppr
 import { notifyWebhook } from '../orchestrator.js';
 import { sendWebPushNotification } from '../push.js';
 import { deployLabelFor, getMissionRepoCfg, isCodeApproval, scheduleCodeBundle, setCodeStatus } from './code-pipeline.js';
+import { enrichApprovalDeliverables } from './deliverables.js';
 
 // ================================================================
 // 텔레그램 알림 설정: 보고 켜기/끄기 · 방해금지 시간(그 사이 알림은 모아두었다가 끝나면 요약 발송)
@@ -65,13 +66,22 @@ export async function flushTelegramQueue({ force = false } = {}) {
     let text = lines.join('\n');
     if (text.length > 3800) text = `${text.slice(0, 3780)}\n…`;
     await sendTelegramText(tg.botToken, tg.chatId, text).catch(() => {});
-    // 아직 대기 중인 결재는 버튼이 있는 카드로 다시 보냄
+    // 아직 대기 중인 결재는 버튼이 있는 카드 + 성과품(.md) 파일로 다시 보냄
     const fresh = loadDb();
     const agentName = (id) => fresh.agents.find((a) => a.id === id)?.name || id;
+    let enrichedAny = false;
     for (const it of q.filter((x) => x.kind === 'approval' && x.approvalId).slice(0, 6)) {
       const apr = fresh.approvals.find((a) => a.id === it.approvalId && a.status === 'pending');
-      if (apr) await sendTelegramApprovalCard(fresh.settings, apr, agentName(apr.agentId), '', { force: true }).catch(() => {});
+      if (apr) {
+        const { changed, deliverable } = enrichApprovalDeliverables(fresh, apr);
+        if (changed) enrichedAny = true;
+        await sendTelegramApprovalCard(fresh.settings, apr, agentName(apr.agentId), '', {
+          force: true,
+          deliverableDoc: deliverable
+        }).catch(() => {});
+      }
     }
+    if (enrichedAny) saveDb(fresh);
   } finally {
     telegramFlushRunning = false;
   }
@@ -135,22 +145,35 @@ export function notifyAllApprovalChannels(settings, apr, agentName) {
 
 export function sendApprovalNotifications(settings, apr, agentName) {
   let missionLabel = '';
+  let deliverableDoc = null;
+  let effectiveApr = apr;
   try {
     const db = loadDb();
     const msn = db.missions.find((m) => m.id === apr?.missionId);
     if (msn) {
       missionLabel = `${msn.mode === 'project' ? `[프로젝트 P${Number(msn.phase) || 1}] ` : '[일반 업무] '}${msn.title}`;
     }
+    // 모든 업무의 모든 결재 안건에 관련 성과품·시안·체크리스트 자동 첨부 및 번들 생성
+    const liveApr = db.approvals.find((a) => a.id === apr?.id) || apr;
+    if (liveApr) {
+      const { changed, deliverable } = enrichApprovalDeliverables(db, liveApr);
+      deliverableDoc = deliverable;
+      effectiveApr = liveApr;
+      if (changed && db.approvals.some((a) => a.id === liveApr.id)) {
+        saveDb(db);
+        flushCloudBackup(db).catch(() => {});
+      }
+    }
   } catch {
     // ignore
   }
-  notifyWebhook(settings, 'approval_requested', { ...apr, missionLabel }).catch(() => {});
-  sendTelegramApprovalCard(settings, apr, agentName, missionLabel).catch(() => {});
+  notifyWebhook(settings, 'approval_requested', { ...effectiveApr, missionLabel }).catch(() => {});
+  sendTelegramApprovalCard(settings, effectiveApr, agentName, missionLabel, { deliverableDoc }).catch(() => {});
   sendWebPushNotification({
-    title: missionLabel ? `[결재 · ${missionLabel}]` : `[결재 요청] ${apr.title}`,
-    body: `${apr.title} · ${agentName || '총괄 팀장'}`,
+    title: missionLabel ? `[결재 · ${missionLabel}]` : `[결재 요청] ${effectiveApr.title}`,
+    body: `${effectiveApr.title} · ${agentName || '총괄 팀장'}`,
     view: 'approvals',
-    tag: `apr-${apr.id}`
+    tag: `apr-${effectiveApr.id}`
   }).catch(() => {});
 }
 

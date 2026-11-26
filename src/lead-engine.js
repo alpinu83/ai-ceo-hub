@@ -163,7 +163,7 @@ export function findScopeViolations(mission, text = '') {
 const MAX_FACTS = 150;
 const MAX_PINNED = 20;
 const EXTERNAL_ACTION_RE = /외부 권한 미연동|대표님 실행 가이드|대표님이 직접|체크리스트|승인 전 확인/;
-const DELIVERABLE_HINT_RE = /(시안|기획안|기획서|초안|대본|카피|프로세스|가이드라인|체크리스트|제안서|템플릿|매뉴얼)/;
+const DELIVERABLE_HINT_RE = /(시안|기획안|기획서|초안|대본|카피|프로세스|가이드라인|체크리스트|제안서|템플릿|매뉴얼|전략|로드맵|분석|보고서|개선안|설계|리스트|심사|검토)/;
 const CHECKLIST_HEAD_RE = /(체크리스트|대표님\s*(확인|실행|직접|조치)|외부\s*(권한|작업)|실행\s*가이드|승인\s*전\s*확인|확정\s*항목)/;
 // 보고서 머리말(수신·발신·담당·인사말 등)은 요약에서 제외
 const BOILERPLATE_RE = /^(\(?\s*)?(수신|발신|담당|작성자?|위임자|날짜|일시|주제|목표|미션|대상 저장소|참고|to|from)\s*[:：–-]|^안녕하세요|^대표님,?\s*$|^총괄 팀장\(?.*\)?입니다|^모든 내용은 실제|기준\s*[–-]\s*실제/i;

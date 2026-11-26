@@ -1390,13 +1390,17 @@ function renderApprovalsView() {
       const idSet = new Set();
       if (apr.taskId) idSet.add(apr.taskId);
       for (const id of Array.isArray(apr.taskIds) ? apr.taskIds : []) if (id) idSet.add(id);
-      if (apr.kind === 'stage_gate' && msn?.deliverables) {
+      if ((apr.kind === 'stage_gate' || apr.kind === 'next_phase') && msn?.deliverables) {
         for (const d of msn.deliverables.slice(0, 6)) if (d?.taskId) idSet.add(d.taskId);
       }
       const attachedTasks = [...idSet]
         .map((id) => state.tasks.find((t) => t.id === id))
         .filter((t) => t && String(t.output || '').trim());
-      if (!attachedTasks.length) return '';
+      const hasBundleable =
+        attachedTasks.length > 0 ||
+        (Array.isArray(apr.checklist) && apr.checklist.length > 0) ||
+        Boolean(apr.proposedDirective || apr.prUrl || apr.consult?.document);
+      if (!hasBundleable) return '';
       return `<div class="memo-section">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
             <h4 style="margin:0;">📎 첨부 성과품 · 시안 (${attachedTasks.length}건)</h4>

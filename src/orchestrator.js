@@ -10,7 +10,7 @@ import { isProviderCooling } from './ai-guard.js';
 import { selectSkills, renderSkills, skillBlock, shouldReview, buildReviewRubric, getSkillSettings } from './skills.js';
 import { getRepoSnapshot, buildCodeEvidence, factCheckOutput } from './grounding.js';
 import { buildAnalyticsContext } from './google-data.js';
-import { buildComplianceChecklist, deriveAcceptance, buildMissionBrief, buildTaskWorkOrder, buildTaskRecap, baseTaskDescription } from './lead-engine.js';
+import { buildComplianceChecklist, deriveAcceptance, buildMissionBrief, buildTaskWorkOrder, buildTaskRecap, baseTaskDescription, extractChecklistItems } from './lead-engine.js';
 
 function repoTokenFrom(settings) {
   return String(settings?.providers?.githubRepo?.apiKey || process.env.GITHUB_REPO_TOKEN || '').trim();
@@ -1262,16 +1262,19 @@ ${rows}
 
 export function createApprovalForTask(task, agent, mission, reason, proposedAction) {
   const leadId = mission?.leadAgentId || 'agent_gemini_neon';
+  const checklist = extractChecklistItems(task?.output || '', 10);
   return {
     id: uid('apr'),
     missionId: mission.id,
     taskId: task.id,
+    taskIds: task?.id ? [task.id] : [],
     agentId: leadId,
     title: `${task.title} — CEO 실행 승인 요청`,
     category: task.estimatedCostKRW > 0 ? '예약 · 결제' : '대외 실행 · 최종 승인',
     riskLevel: task.estimatedCostKRW >= 100000 ? 'high' : task.estimatedCostKRW > 0 ? 'medium' : 'low',
     estimatedCostKRW: task.estimatedCostKRW || 0,
     depositKRW: 0,
+    ...(checklist.length ? { checklist } : {}),
     summary:
       reason ||
       `[실무: ${agent.name} → 총괄 팀장 검토 후 상신] "${task.title}" 사전 준비를 마치고 실제 실행(예약/결제/발송/배포) 전 CEO 결재를 요청합니다.`,

@@ -11,7 +11,7 @@ import { autoStartLiveMissionTasks, leadSay } from './missions.js';
 import { getMissionRepoCfg } from './code-pipeline.js';
 import { notifyAllApprovalChannels } from './notify.js';
 import { requestConsultForApproval, requestConsultForReport } from './outsourcing-bridge.js';
-import { buildReportDeliverableBundle } from './deliverables.js';
+import { buildReportDeliverableBundle, enrichApprovalDeliverables } from './deliverables.js';
 
 export function leadAgentFor(db, mission) {
   return (
@@ -290,6 +290,7 @@ export function createStageGate(db, mission, ms, { reason = '', report = '' } = 
     decidedAt: null
   };
   db.approvals.unshift(apr);
+  enrichApprovalDeliverables(db, apr);
   ms.status = 'gate';
   notifyAllApprovalChannels(db.settings, apr, '총괄 팀장');
   // 관문 결재에는 상위 AI 자문을 붙여 대표님 판단을 도움 (설정에서 끌 수 있음)

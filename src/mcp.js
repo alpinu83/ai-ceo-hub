@@ -7,6 +7,7 @@ import { notifyWebhook } from './orchestrator.js';
 import { sendTelegramApprovalCard } from './telegram.js';
 import { sendWebPushNotification } from './push.js';
 import { buildCompanyContext } from './lead-engine.js';
+import { enrichApprovalDeliverables } from './hub/deliverables.js';
 import { listRequests, summarizeRequest, claimRequest, findRequest, buildPacket, submitResult, requestCeoAction, resolveTarget, describeRouting, passRequest } from './outsourcing.js';
 
 export const MCP_TOOL_CATALOG = [
@@ -204,8 +205,11 @@ export function createCeoMcpServer() {
           };
           db.approvals.unshift(apr);
           approvalId = apr.id;
+          const { deliverable: mcpDeliverable } = enrichApprovalDeliverables(db, apr);
           notifyWebhook(db.settings, 'approval_requested', apr).catch(() => {});
-          sendTelegramApprovalCard(db.settings, apr, agent?.name || task.assigneeId).catch(() => {});
+          sendTelegramApprovalCard(db.settings, apr, agent?.name || task.assigneeId, '', {
+            deliverableDoc: mcpDeliverable
+          }).catch(() => {});
           sendWebPushNotification({
             title: `[결재 요청] ${apr.title}`,
             body: `${agent?.name || 'AI'} · ${apr.summary.slice(0, 90)}`,
@@ -287,10 +291,13 @@ export function createCeoMcpServer() {
         decidedAt: null
       };
       db.approvals.unshift(apr);
+      const { deliverable: mcpReqDeliverable } = enrichApprovalDeliverables(db, apr);
       appendLog(db, `${agent?.name || 'MCP 에이전트'}`, `CEO 결재 안건 상신: "${apr.title}"`, 'approval');
       saveDb(db);
       notifyWebhook(db.settings, 'approval_requested', apr).catch(() => {});
-      sendTelegramApprovalCard(db.settings, apr, agent?.name || 'MCP 에이전트').catch(() => {});
+      sendTelegramApprovalCard(db.settings, apr, agent?.name || 'MCP 에이전트', '', {
+        deliverableDoc: mcpReqDeliverable
+      }).catch(() => {});
       sendWebPushNotification({
         title: `[결재 요청] ${apr.title}`,
         body: `${agent?.name || 'AI'} · ${apr.summary.slice(0, 90)}`,
