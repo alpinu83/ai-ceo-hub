@@ -1022,7 +1022,8 @@ export async function executeAgentTask({ task, mission, agent, settings, priorOu
 3. 미연동 외부 작업이 필요하면 반드시 \`[외부 권한 미연동 — 대표님 실행 가이드/초안]\` 배지를 달아 대표님이 직접 실행할 체크리스트로 정리하세요.
 4. 연동된 GitHub 저장소의 코드·SEO·데이터 수정안은 IT 유지보수팀이 \`실코드 수정 · GitHub PR\`로 즉시 반영할 수 있게 **대상 파일 경로와 구체적 변경 내용**을 명확히 제시하세요.
 5. 아래 [CEO 전역 지침]과 [회사 기억]은 이전 대화·결정의 요약입니다. 이미 결정·반려된 내용을 되풀이하지 말고, 그 결정을 전제로 작업하세요.
-6. 무료 API 도구로는 실제로 할 수 없는 일(로그인이 필요한 콘솔·계정 작업, 여러 파일에 걸친 큰 코드 수정, 실제 브라우저 확인이 필요한 일)은 지어내지 말고 결과 맨 앞줄에 \`[외주 필요: 한 줄 사유]\`를 쓰세요. 그러면 상위 AI(Antigravity·Aside)에 외주로 넘어갑니다. 그 아래에는 외부 작업자가 바로 시작할 수 있게 해야 할 일·완료 기준·확인할 곳을 정리하세요.`;
+6. 당신의 결과물은 팀장이 검토합니다. "정보를 주세요·접근할 수 없습니다"라는 답만 쓰면 완료로 인정되지 않고 다시 배정됩니다. 저장소가 없거나 값을 모르면 가정을 "가정:"으로 밝히고, 바로 쓸 수 있는 결과물(파일 경로와 전체 내용, 완성 문서)을 끝까지 만드세요. 확인이 필요한 항목은 맨 끝 "확인 필요" 목록으로 모으세요.
+7. 오직 로그인이 필요한 계정·콘솔 작업(애드센스·서치콘솔 설정, 결제 수단 등)이나 실제 브라우저 조작이 꼭 필요한 일만 결과 맨 앞줄에 \`[외주 필요: 구체적인 사유]\`를 쓰세요(저장소 미연결·정보 부족은 외주 사유가 아님). 그 아래에 외부 작업자가 바로 시작할 수 있게 해야 할 일·완료 기준·확인할 곳을 정리하세요.`;
     const companyCtx = companyContextFor(mission?.id);
     const companyCtxCompact = companyContextFor(mission?.id, { compact: true });
     // 작업 유형에 맞는 스킬(절차·출력 형식·자체 점검표) 주입
@@ -1901,24 +1902,28 @@ const LeadFollowUpSchema = z.object({
         isCodeChange: z.boolean().describe('연동 저장소 코드·문구·SEO 파일을 실제로 고쳐야 하는 일이면 true')
       })
     )
-    .max(3),
+    .max(4),
   ceoRequests: z.array(z.string()).max(4).describe('대표님만 할 수 있는 일(권한·API 키·결정·외부 계정 작업)을 구체적으로')
 });
 
-export async function planLeadFollowUp({ mission, digest, agents, settings }) {
+export async function planLeadFollowUp({ mission, digest, agents, settings, teamLoad = '' }) {
   const leadAgent = agents.find((a) => a.id === (mission?.leadAgentId || 'agent_gemini_neon')) || agents[0];
   const resolved = resolveLanguageModel(leadAgent, settings) || resolveLiveBackendModel(settings);
   if (!resolved) return null;
-  const roster = agents
-    .filter((a) => a.active && ['exaone', 'gemini', 'groq', 'openrouter'].includes(a.provider))
-    .map((a) => `- id: "${a.id}", ${a.name} (${a.roleTitle})`)
-    .join('\n');
+  const roster =
+    (typeof teamLoad === 'string' && teamLoad) ||
+    agents
+      .filter((a) => a.active && ['exaone', 'gemini', 'groq', 'openrouter'].includes(a.provider))
+      .map((a) => `- id: "${a.id}", ${a.name} (${a.roleTitle})`)
+      .join('\n');
   const system = withCompanyContext(
     `당신은 총괄 팀장(${leadAgent.name})입니다. 팀원들의 작업이 모두 끝난 상태입니다. 대표님이 물어보기 전에 다음 행동을 스스로 정하세요.
 규칙:
 - [목표] 블록의 숫자 목표를 달성했을 때만 goalStatus=done. 작업이 다 끝났어도 목표 지표가 안 움직였으면 done이 아닙니다.
 - 다음 작업은 목표까지 남은 차이를 가장 크게 줄일 병목을 겨냥하세요. 각 작업 description에 "어떤 지표를 얼마나 움직이려는지"를 한 줄 넣으세요.
-- 팀이 직접 끝낼 수 있는 구체적 후속 작업만 nextTasks에 넣으세요(최대 3개). 이미 한 일을 반복하거나 막연한 리서치·보고서만 늘리는 작업은 금지.
+- 당신은 지휘자(Orchestrator)입니다. 직접 일하거나 외부 AI에 넘기기보다 내부 팀원에게 역할에 맞게 나눠 맡기세요. "대기 중(우선 배정)"인 팀원부터, 서로 다른 팀원에게 병렬로 배정하세요.
+- 팀이 직접 끝낼 수 있는 구체적 후속 작업만 nextTasks에 넣으세요(최대 4개). 이미 한 일을 반복하거나 막연한 리서치·보고서만 늘리는 작업은 금지. 각 작업 description에 완료 기준(무엇이 나오면 끝인지)을 쓰세요.
+- 연결 저장소가 없으면 PR·배포 작업 대신 파일 내용·문서 같은 결과물을 만들게 하고, 저장소 연결은 ceoRequests에 쓰세요.
 - 결제·광고비·외부 발송·외부 계정(애드센스·GA4·서치콘솔 등) 조작은 nextTasks가 아니라 ceoRequests에 구체적 절차로 쓰세요.
 - 권한·키 부족 등으로 막혔으면 goalStatus=blocked로 하고 필요한 조치를 ceoRequests에 쓰세요.
 - report에는 확인된 사실만 쓰고 추측 수치를 실제값처럼 쓰지 마세요.

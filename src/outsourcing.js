@@ -294,7 +294,10 @@ export function assessFeasibility(task, { googleDataConnected = false } = {}) {
 export function extractOutsourceFlag(output = '') {
   const m = String(output).match(/\[외주\s*필요\s*[:：]?\s*([^\]]{0,240})\]/);
   if (!m) return '';
-  return (m[1] || '').trim() || '담당 팀원이 무료 도구로는 할 수 없다고 판단';
+  const reason = (m[1] || '').trim();
+  // 양식 예시 문구를 그대로 베낀 경우("한 줄 사유", "구체적인 사유")는 사유로 보지 않음
+  if (!reason || /^(한\s*줄\s*사유|구체적인\s*사유|사유)$/.test(reason)) return '담당 팀원이 사유 없이 외주 필요라고 표시';
+  return reason;
 }
 
 function kstStamp() {
