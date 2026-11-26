@@ -1415,62 +1415,107 @@ const OUT_WORKER_LABELS = { antigravity: 'Antigravity', aside: 'Aside', any: '�
 const OUT_STATUS = {
   open: ['badge-amber', '대기'],
   claimed: ['badge-blue', '작업 중'],
+  needs_ceo: ['badge-red', '대표님 필요'],
   submitted: ['badge-blue', '결과 접수'],
   accepted: ['badge-green', '반영 완료'],
   cancelled: ['badge-neutral', '취소'],
   rejected: ['badge-red', '반려']
 };
 let outSubmitOpenId = null;
+let lastOutRouting = null;
 
 function outsourcingSettingsClient() {
   const o = state?.settings?.outsourcing || {};
+  const oh = o.officeHours || {};
   return {
     enabled: o.enabled !== false,
     autoOnFailure: o.autoOnFailure !== false,
     autoForBrowser: o.autoForBrowser !== false,
-    consultMode: o.consultMode || 'proposals'
+    consultMode: o.consultMode || 'proposals',
+    routing: o.routing || 'auto',
+    officeHours: { days: Array.isArray(oh.days) && oh.days.length ? oh.days : [1, 2, 3, 4, 5], start: oh.start || '09:00', end: oh.end || '19:00' },
+    awayUntil: o.awayUntil && Date.parse(o.awayUntil) > Date.now() ? o.awayUntil : ''
   };
 }
 
+/** 서버와 같은 규칙으로 요청별 현재 대상 계산 (화면 표시용) */
+function outTargetClient(r) {
+  if (r.pinnedWorker) return r.pinnedWorker;
+  if (r.kind === 'code') return 'antigravity';
+  return lastOutRouting?.target || 'aside';
+}
+
 function mcpConfigSnippet() {
-  const url = `${getPublicServerOrigin()}/api/mcp?token=${encodeURIComponent(state?.settings?.mcpToken || '')}`;
-  return JSON.stringify({ mcpServers: { 'ceo-office': { serverUrl: url } } }, null, 2);
+  const json = { mcpServers: { 'ceo-office': { serverUrl: `${getPublicServerOrigin()}/api/mcp`, headers: { Authorization: `Bearer ${state?.settings?.mcpToken || ''}` } } } };
+  return JSON.stringify(json, null, 2);
 }
 
 function renderOutsourcingView() {
   if (!state) return;
+  if (state.outsourcingRouting) lastOutRouting = state.outsourcingRouting;
   const list = Array.isArray(state.outsourcing) ? state.outsourcing : [];
-  const active = list.filter((r) => ['open', 'claimed'].includes(r.status));
+  const active = list.filter((r) => ['open', 'claimed', 'needs_ceo'].includes(r.status));
+  const needsCeo = list.filter((r) => r.status === 'needs_ceo');
   const countEl = document.getElementById('nav-outsourcing-count');
-  if (countEl) countEl.textContent = active.length;
+  if (countEl) {
+    countEl.textContent = needsCeo.length ? `${needsCeo.length}!` : active.length;
+    countEl.style.color = needsCeo.length ? 'var(--accent-danger)' : '';
+  }
   const root = document.getElementById('outsourcing-root');
   if (!root) return;
   const cfg = outsourcingSettingsClient();
   const missions = state.missions.filter((m) => !m.isRoutineHub);
+  const rt = lastOutRouting || { label: '-', why: '' };
+  const daysVal = cfg.officeHours.days.length === 7 ? 'all' : cfg.officeHours.days.join(',') === '1,2,3,4,5' ? 'weekdays' : 'custom';
 
   const cards = list.slice(0, 40).map((r) => {
     const [cls, label] = OUT_STATUS[r.status] || ['badge-neutral', r.status];
     const mission = state.missions.find((m) => m.id === r.missionId);
     const res = r.result;
     const open = ['open', 'claimed'].includes(r.status);
-    return `<div class="sheet out-card">
+    const target = outTargetClient(r);
+    return `<div class="sheet out-card ${r.status === 'needs_ceo' ? 'out-card-ceo' : ''}">
         <div class="routine-head">
           <div style="min-width:0;">
             <div class="routine-meta">
               <span class="badge badge-neutral mono">${esc(r.id)}</span>
               <span class="badge badge-neutral">${esc(OUT_KIND_LABELS[r.kind] || r.kind)}</span>
               <span class="badge ${cls}">${esc(label)}${r.claimedBy && r.status === 'claimed' ? ` · ${esc(r.claimedBy)}` : ''}</span>
+              ${open || r.status === 'needs_ceo' ? `<span class="badge badge-blue">→ ${esc(OUT_WORKER_LABELS[target] || target)}${r.pinnedWorker ? ' (지정)' : ''}</span>` : ''}
             </div>
             <h3 class="routine-title">${esc(r.title)}</h3>
-            <div class="routine-sub">권장: ${esc(OUT_WORKER_LABELS[r.worker] || r.worker)}${mission ? ` · ${esc(mission.title)}` : ''}${r.repo ? ` · ${esc(r.repo)}` : ''} · ${esc(formatTime(r.createdAt))}</div>
+            <div class="routine-sub">${mission ? esc(mission.title) : '단독 요청'}${r.repo ? ` · ${esc(r.repo)}` : ''} · ${esc(formatTime(r.createdAt))}</div>
           </div>
           <div class="routine-actions">
+            ${
+              open
+                ? `<select class="out-assign" data-out-assign="${esc(r.id)}" title="이 요청을 누구에게 맡길지">
+                    <option value="auto" ${!r.pinnedWorker ? 'selected' : ''}>대상: 자동</option>
+                    <option value="aside" ${r.pinnedWorker === 'aside' ? 'selected' : ''}>대상: Aside</option>
+                    <option value="antigravity" ${r.pinnedWorker === 'antigravity' ? 'selected' : ''}>대상: Antigravity</option>
+                  </select>`
+                : ''
+            }
             <button type="button" class="btn btn-ghost btn-sm" data-out-copy="${esc(r.id)}">요청서 복사</button>
             ${open ? `<button type="button" class="btn btn-ghost btn-sm" data-out-submit-toggle="${esc(r.id)}">결과 붙여넣기</button>` : ''}
-            ${open ? `<button type="button" class="btn btn-ghost btn-sm" data-out-cancel="${esc(r.id)}">취소</button>` : ''}
+            ${open || r.status === 'needs_ceo' ? `<button type="button" class="btn btn-ghost btn-sm" data-out-cancel="${esc(r.id)}">취소</button>` : ''}
           </div>
         </div>
-        ${r.reason ? `<p class="routine-desc">사유: ${esc(r.reason)}</p>` : ''}
+        ${
+          r.status === 'needs_ceo' && r.ceoAction
+            ? `<div class="out-ceo-box">
+                <div><strong>대표님이 해주실 일:</strong> ${esc(r.ceoAction.action)}</div>
+                ${r.ceoAction.detail ? `<div class="routine-desc">${esc(r.ceoAction.detail)}</div>` : ''}
+                <div class="routine-sub">알린 작업자: ${esc(r.ceoAction.by || '외부 AI')} · ${esc(formatTime(r.ceoAction.at))}</div>
+                <div class="routine-form-actions" style="justify-content:flex-start;">
+                  <button type="button" class="btn btn-primary btn-sm" data-out-resume="${esc(r.id)}" data-out-resume-worker="">처리했어요 · 재개</button>
+                  <button type="button" class="btn btn-ghost btn-sm" data-out-resume="${esc(r.id)}" data-out-resume-worker="antigravity">Antigravity로 재개</button>
+                  <button type="button" class="btn btn-ghost btn-sm" data-out-resume="${esc(r.id)}" data-out-resume-worker="aside">Aside로 재개</button>
+                </div>
+              </div>`
+            : ''
+        }
+        ${r.reason && r.status !== 'needs_ceo' ? `<p class="routine-desc">사유: ${esc(r.reason)}</p>` : ''}
         ${
           outSubmitOpenId === r.id && open
             ? `<div class="out-submit">
@@ -1496,20 +1541,61 @@ function renderOutsourcingView() {
   });
 
   root.innerHTML = `
+    <div class="sheet out-route">
+      <div class="out-route-now">
+        <div>
+          <div class="routine-sub">지금 외주가 가는 곳</div>
+          <div class="out-route-target">${esc(rt.label || '-')}</div>
+          <div class="routine-sub">${esc(rt.why || '')} · 코드 수정은 항상 Antigravity</div>
+        </div>
+        <div class="out-away">
+          <span class="routine-sub">이동 중이면</span>
+          <button type="button" class="btn btn-ghost btn-sm" data-out-away="1">1시간</button>
+          <button type="button" class="btn btn-ghost btn-sm" data-out-away="3">3시간</button>
+          <button type="button" class="btn btn-ghost btn-sm" data-out-away="8">8시간</button>
+          ${cfg.awayUntil ? `<button type="button" class="btn btn-primary btn-sm" data-out-away="0">이동 중 해제</button>` : ''}
+        </div>
+      </div>
+      <div class="out-settings">
+        <label class="out-check">외주 대상
+          <select id="out-route-mode">
+            <option value="auto" ${cfg.routing === 'auto' ? 'selected' : ''}>자동 (업무 시간 Aside · 그 외 Antigravity)</option>
+            <option value="aside" ${cfg.routing === 'aside' ? 'selected' : ''}>항상 Aside</option>
+            <option value="antigravity" ${cfg.routing === 'antigravity' ? 'selected' : ''}>항상 Antigravity</option>
+          </select>
+        </label>
+        <label class="out-check">업무 시간
+          <select id="out-route-days">
+            <option value="weekdays" ${daysVal === 'weekdays' ? 'selected' : ''}>평일</option>
+            <option value="all" ${daysVal === 'all' ? 'selected' : ''}>매일</option>
+            ${daysVal === 'custom' ? '<option value="custom" selected>사용자 지정</option>' : ''}
+          </select>
+          <input type="time" id="out-route-start" value="${esc(cfg.officeHours.start)}" />
+          ~
+          <input type="time" id="out-route-end" value="${esc(cfg.officeHours.end)}" />
+        </label>
+        <button type="button" class="btn btn-primary btn-sm" data-out-route-save="1">대상 저장</button>
+      </div>
+      <p class="routine-sub" style="margin:8px 0 0;">텔레그램에서도 바꿀 수 있어요: /away 3 (3시간 이동 중) · /office (해제) · /route antigravity · /out (외주 현황) · /out 요청ID aside. 작업자가 잡은 요청은 45분 안에 결과가 없으면 다른 쪽이 가져갈 수 있고, 대상을 바꾸면 10분 안에 넘어갑니다.</p>
+    </div>
+
     <div class="sheet out-guide">
       <div class="out-guide-grid">
         <div>
           <h4>어떻게 돌아가나요</h4>
-          <p class="routine-desc">무료 API 팀이 할 수 없는 일(로그인이 필요한 콘솔 작업, 큰 코드 수정, 3번 실패한 작업, 팀원이 [외주 필요]라고 표시한 일)과 팀장 결재안에 대한 외부 자문을 이 창구에 요청서로 올립니다. Antigravity나 Aside가 가져가서 결과 문서나 PR을 제출하면, 결과가 업무·결재 카드에 붙고 코드 PR은 결재 승인 시 자동 머지·배포됩니다.</p>
+          <p class="routine-desc">무료 API 팀이 못 하는 일(로그인이 필요한 콘솔 작업, 큰 코드 수정, 3번 실패한 작업, 팀원이 [외주 필요]라고 표시한 일)과 결재안 자문을 요청서로 올립니다. 지금 대상인 AI가 가져가 처리하고, 로그인·인증처럼 대표님 손이 필요하면 멈추고 텔레그램으로 알립니다. 처리 후 "재개"를 누르면 이어서 진행합니다.</p>
         </div>
         <div>
-          <h4>Antigravity 연결 (노트북·이동 중)</h4>
-          <p class="routine-desc">Antigravity → MCP Servers → Manage → View raw config 에 아래를 넣고, 에이전트에게 "CEO Office 외주 처리해줘"라고 하세요. 코드 작업은 저장소에 out/요청ID 브랜치로 PR을 엽니다.</p>
-          <button type="button" class="btn btn-ghost btn-sm" data-out-copy-mcp="1">MCP 설정 복사</button>
+          <h4>Antigravity 연결 (노트북·모바일)</h4>
+          <p class="routine-desc">"설정 프롬프트 복사"를 눌러 Antigravity 에이전트에게 그대로 보내면, MCP 서버 등록·스킬 설치·30분 자동 실행까지 알아서 합니다. 직접 하려면 IDE는 에이전트 패널 … → MCP Servers → Manage MCP Servers → View raw config, App은 설정 파일 ~/.gemini/config/mcp_config.json 에 "MCP 설정 복사" 내용을 넣으세요.</p>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <button type="button" class="btn btn-primary btn-sm" data-out-copy-setup="1">설정 프롬프트 복사</button>
+            <button type="button" class="btn btn-ghost btn-sm" data-out-copy-mcp="1">MCP 설정 복사</button>
+          </div>
         </div>
         <div>
           <h4>Aside 연결 (회사 PC)</h4>
-          <p class="routine-desc">Aside 정기 루틴이 주기적으로 대기 요청을 확인해 브라우저·계정 작업과 자문을 처리합니다. 바로 시키려면 Aside에 "CEO Office 외주 처리해줘"라고 하세요.</p>
+          <p class="routine-desc">Aside 정기 루틴이 매시간(9~21시) Aside에 배정된 요청만 처리합니다. 바로 시키려면 Aside에 "CEO Office 외주 처리해줘"라고 하세요.</p>
         </div>
       </div>
       <div class="out-settings">
@@ -1537,7 +1623,7 @@ function renderOutsourcingView() {
       <label class="field" style="margin-top:12px;"><span class="field-label">해야 할 일 *</span><textarea id="out-new-goal" rows="4" placeholder="무엇을, 어떤 기준으로 끝내면 되는지 적어 주세요."></textarea></label>
       <div class="form-row-two" style="margin-top:12px;">
         <label class="field"><span class="field-label">관련 프로젝트</span><select id="out-new-mission"><option value="">없음</option>${missions.map((m) => `<option value="${esc(m.id)}">${esc(m.title)}</option>`).join('')}</select></label>
-        <label class="field"><span class="field-label">권장 작업자</span><select id="out-new-worker"><option value="any">먼저 잡는 쪽</option><option value="antigravity">Antigravity</option><option value="aside">Aside</option></select></label>
+        <label class="field"><span class="field-label">맡길 곳</span><select id="out-new-worker"><option value="any">자동 (지금 대상)</option><option value="antigravity">Antigravity</option><option value="aside">Aside</option></select></label>
       </div>
       <div class="routine-form-actions"><button type="button" class="btn btn-primary btn-sm" data-out-create="1">요청 올리기</button></div>
     </details>
@@ -1685,8 +1771,10 @@ function renderRoutinesView() {
 
 function applyStateKeepingHealth(nextState) {
   const health = state?.aiHealth || lastAiHealth;
+  const routing = nextState?.outsourcingRouting || state?.outsourcingRouting || lastOutRouting;
   state = nextState;
   if (!state.aiHealth && health) state.aiHealth = health;
+  if (!state.outsourcingRouting && routing) state.outsourcingRouting = routing;
 }
 
 function renderRosterView() {
@@ -2325,6 +2413,21 @@ function bindEvents() {
     toast(next === 'studio' ? '다크 테마로 전환했습니다.' : '라이트 테마로 전환했습니다.');
   });
 
+  // 외주 요청별 대상 변경 (select)
+  document.getElementById('content-area')?.addEventListener('change', async (e) => {
+    const sel = e.target.closest('[data-out-assign]');
+    if (!sel) return;
+    try {
+      const res = await api(`/api/outsourcing/${sel.dataset.outAssign}/assign`, { method: 'POST', body: JSON.stringify({ worker: sel.value }) });
+      applyStateKeepingHealth(res.state);
+      renderAll();
+      refreshIcons();
+      toast(sel.value === 'auto' ? '대상을 자동으로 되돌렸습니다.' : `이 요청을 ${OUT_WORKER_LABELS[sel.value]}로 넘겼습니다.`);
+    } catch (err) {
+      toast(err.message, true);
+    }
+  });
+
   // Routine form
   const routineWrap = document.getElementById('routine-form-wrap');
   document.getElementById('btn-toggle-routine-form')?.addEventListener('click', () => {
@@ -2484,6 +2587,72 @@ function bindEvents() {
 
     const target = e.target.closest('button');
     if (!target) return;
+
+    if (target.dataset.outResume) {
+      target.disabled = true;
+      try {
+        const res = await api(`/api/outsourcing/${target.dataset.outResume}/resume`, {
+          method: 'POST',
+          body: JSON.stringify({ worker: target.dataset.outResumeWorker || '', note: '대표님이 화면에서 처리 완료' })
+        });
+        applyStateKeepingHealth(res.state);
+        renderAll();
+        refreshIcons();
+        toast('재개했습니다. 대상 AI가 다음 실행 때 이어서 처리합니다.');
+      } catch (err) {
+        toast(err.message, true);
+        target.disabled = false;
+      }
+      return;
+    }
+    if (target.dataset.outAway !== undefined && target.dataset.outAway !== '') {
+      const hours = Number(target.dataset.outAway);
+      try {
+        const res = await api('/api/outsourcing/route', { method: 'POST', body: JSON.stringify({ routing: 'auto', awayHours: hours }) });
+        applyStateKeepingHealth(res.state);
+        lastOutRouting = res.routing;
+        renderAll();
+        refreshIcons();
+        toast(hours > 0 ? `이동 중 모드 ${hours}시간: 외주는 ${res.routing.label}로 갑니다.` : `이동 중 모드 해제: 지금 ${res.routing.label}`);
+      } catch (err) {
+        toast(err.message, true);
+      }
+      return;
+    }
+    if (target.dataset.outRouteSave) {
+      const daysSel = document.getElementById('out-route-days')?.value;
+      const days = daysSel === 'all' ? [0, 1, 2, 3, 4, 5, 6] : daysSel === 'weekdays' ? [1, 2, 3, 4, 5] : undefined;
+      try {
+        const res = await api('/api/outsourcing/route', {
+          method: 'POST',
+          body: JSON.stringify({
+            routing: document.getElementById('out-route-mode')?.value || 'auto',
+            officeHours: {
+              ...(days ? { days } : {}),
+              start: document.getElementById('out-route-start')?.value || '09:00',
+              end: document.getElementById('out-route-end')?.value || '19:00'
+            }
+          })
+        });
+        applyStateKeepingHealth(res.state);
+        lastOutRouting = res.routing;
+        renderAll();
+        refreshIcons();
+        toast(`저장했습니다. 지금 외주 대상: ${res.routing.label} (${res.routing.why})`);
+      } catch (err) {
+        toast(err.message, true);
+      }
+      return;
+    }
+    if (target.dataset.outCopySetup) {
+      try {
+        const res = await api('/api/outsourcing/setup/antigravity');
+        await copyText(res.prompt || '', 'Antigravity 설정 프롬프트를 복사했습니다. Antigravity 에이전트 대화창에 그대로 붙여넣으세요 (토큰 포함, 공유 금지).');
+      } catch (err) {
+        toast(err.message, true);
+      }
+      return;
+    }
 
     if (target.dataset.outCopy) {
       try {
