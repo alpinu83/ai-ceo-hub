@@ -6,7 +6,7 @@ import { getGithubRepoConfig } from '../it-devops.js';
 import { getMissionGoal, getMissionScope, rememberFact } from '../lead-engine.js';
 import { applyApprovalDecisionInDb, autoStartLiveMissionTasks, createMissionInDb, updateMissionStatus } from '../hub/missions.js';
 import { handleCodeDecision, isCodeApproval, triggerItPrForMission } from '../hub/code-pipeline.js';
-import { handleStageGateDecision, isOpsMission, opsCycle } from '../hub/lead-ops.js';
+import { handleStageGateDecision, isOpsMission, opsCycle, replanMission } from '../hub/lead-ops.js';
 import { isCeoRequest } from '../hub/outsourcing-bridge.js';
 import { notifyAllApprovalChannels } from '../hub/notify.js';
 import { processTaskResult } from '../hub/task-results.js';
@@ -76,6 +76,14 @@ export function registerMissionsRoutes(app) {
     if (!isOpsMission(mission)) return c.json({ error: '프로젝트 업무에서만 운영 사이클을 실행할 수 있습니다.' }, 400);
     opsCycle(mission.id).catch((err) => console.warn('manual ops cycle failed:', err.message));
     return c.json({ ok: true, state: sanitizeStateForClient(loadDb()) });
+  });
+
+  // 작전 재계획 (대표님 지시 메모 반영)
+  app.post('/api/missions/:id/replan', async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const res = await replanMission(c.req.param('id'), body.note || '');
+    if (!res.ok) return c.json({ error: res.error }, 400);
+    return c.json({ ok: true, dropped: res.dropped, state: sanitizeStateForClient(res.db) });
   });
 
   app.post('/api/missions/:id/run-all', async (c) => {
