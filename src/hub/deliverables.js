@@ -1,0 +1,125 @@
+// hub/deliverables.js: 결재 안건의 성과품(시안·계획서·외주 결과·PR)을 마크다운 문서 하나로 묶습니다.
+// 텔레그램 결재 카드의 [📎 성과품 받기] 버튼과 /doc 명령이 이 문서를 파일로 보내, 대표님이 결재 전에 실제 결과물을 볼 수 있게 합니다.
+// db를 인자로 받는 순수 함수라 저장소(store)를 건드리지 않습니다.
+
+const MAX_SECTION = 12000;
+const MAX_DOC = 60000;
+
+function clip(text, max = MAX_SECTION) {
+  const s = String(text || '').trim();
+  return s.length > max ? `${s.slice(0, max)}\n\n…(이하 ${s.length - max}자 생략 · 전문은 웹 결재함에서 확인)` : s;
+}
+
+function asText(v) {
+  if (v == null) return '';
+  if (typeof v === 'string') return v.trim();
+  if (Array.isArray(v)) return v.map((x, i) => `${i + 1}. ${asText(x)}`).join('\n');
+  if (typeof v === 'object') return v.title || v.name || v.filename || v.path || JSON.stringify(v);
+  return String(v);
+}
+
+function fileList(v) {
+  if (!Array.isArray(v)) return asText(v);
+  return v.map((f) => `- ${typeof f === 'string' ? f : f?.filename || f?.path || f?.name || JSON.stringify(f)}`).join('\n');
+}
+
+/** 결재 안건과 연결된 업무 ID들: 단일 업무, 묶음(PR) 업무, 관문 결재면 그 업무의 최근 결과물 */
+export function relatedTaskIds(db, apr) {
+  const ids = new Set();
+  if (apr?.taskId) ids.add(apr.taskId);
+  for (const id of Array.isArray(apr?.taskIds) ? apr.taskIds : []) if (id) ids.add(id);
+  if (apr?.kind === 'stage_gate' && apr.missionId) {
+    const mission = (db.missions || []).find((m) => m.id === apr.missionId);
+    for (const d of (mission?.deliverables || []).slice(0, 6)) if (d?.taskId) ids.add(d.taskId);
+  }
+  return [...ids];
+}
+
+/**
+ * 결재 안건 하나의 성과품 문서를 만듭니다.
+ * @returns {null | { approval, title, filename, markdown, sectionCount }}
+ *   sectionCount=0 이면 요약 외에 첨부할 결과물이 없다는 뜻입니다.
+ */
+export function buildApprovalDeliverable(db, aprId) {
+  const apr = (db?.approvals || []).find((a) => a.id === aprId);
+  if (!apr) return null;
+  const mission = (db.missions || []).find((m) => m.id === apr.missionId);
+  const agentName = (id) => (db.agents || []).find((a) => a.id === id)?.name || '';
+  const sections = [];
+
+  // 1) 계획서: 다음 단계 제안 등 결재 안건에 담긴 계획
+  const plan = [];
+  if (apr.proposedDirective) plan.push(`**지시안:** ${asText(apr.proposedDirective)}`);
+  if (apr.goalGap) plan.push(`**목표까지 남은 차이:** ${asText(apr.goalGap)}`);
+  if (apr.kpi) plan.push(`**이번 단계 지표·목표치:** ${asText(apr.kpi)}`);
+  if (apr.doneCriteria) plan.push(`**완료 기준:** ${asText(apr.doneCriteria)}`);
+  if (Array.isArray(apr.proposedSteps) && apr.proposedSteps.length) plan.push(`**진행 단계:**\n${asText(apr.proposedSteps)}`);
+  if (plan.length) sections.push({ heading: '계획서', body: plan.join('\n\n') });
+
+  // 2) 시안·결과물: 연결된 업무의 실제 산출물
+  const taskIds = relatedTaskIds(db, apr);
+  for (const id of taskIds) {
+    const t = (db.tasks || []).find((x) => x.id === id);
+    if (!t || !String(t.output || '').trim()) continue;
+    const score = t.review?.score ?? t.quality?.score;
+    sections.push({
+      heading: `시안·결과물: ${t.title}`,
+      meta: [agentName(t.assigneeId), t.status ? `상태 ${t.status}` : '', score != null ? `팀장 검수 ${score}/10` : ''].filter(Boolean).join(' · '),
+      body: clip(t.output)
+    });
+  }
+
+  // 3) 외주 결과(자문·코드·리서치)
+  const consultId = apr.consult?.requestId || apr.consultRequestId || '';
+  const outs = (db.outsourcing || []).filter(
+    (r) =>
+      r?.result &&
+      (r.approvalId === apr.id || (r.taskId && taskIds.includes(r.taskId)) || (apr.outsourceId && r.id === apr.outsourceId) || (consultId && r.id === consultId))
+  );
+  for (const r of outs) {
+    sections.push({
+      heading: `외주 결과: ${r.title || r.id} (${r.id})`,
+      meta: [r.result.by, r.result.prUrl].filter(Boolean).join(' · '),
+      body: clip([r.result.summary, r.result.document].filter(Boolean).join('\n\n'))
+    });
+  }
+  if (apr.consult && (apr.consult.document || apr.consult.summary) && !outs.some((r) => r.id === apr.consult.requestId)) {
+    sections.push({ heading: '외부 자문 의견', meta: apr.consult.by || '', body: clip(apr.consult.document || apr.consult.summary) });
+  }
+
+  // 4) 코드 변경(PR)
+  const code = [];
+  if (apr.prUrl) code.push(`**PR:** ${apr.prUrl}`);
+  if (apr.branchName || apr.branch) code.push(`**브랜치:** ${apr.branchName || apr.branch}`);
+  if (apr.diffSummary) code.push(`**변경 요약:**\n${clip(asText(apr.diffSummary), 6000)}`);
+  if (Array.isArray(apr.changedFiles) && apr.changedFiles.length) code.push(`**바뀐 파일:**\n${fileList(apr.changedFiles)}`);
+  if (code.length) sections.push({ heading: '코드 변경', body: code.join('\n\n') });
+
+  const cost = Number(apr.estimatedCostKRW || 0) > 0 ? `${Number(apr.estimatedCostKRW).toLocaleString('ko-KR')}원` : '비용 없음';
+  const head = [
+    `# ${apr.title || apr.id}`,
+    '',
+    `- 결재 ID: ${apr.id}`,
+    `- 상태: ${apr.status || '-'}`,
+    apr.category ? `- 유형: ${apr.category}` : null,
+    mission ? `- 관련 프로젝트/업무: ${mission.title}` : null,
+    `- 예상 비용: ${cost}`,
+    apr.createdAt ? `- 상신: ${apr.createdAt}` : null,
+    '',
+    '## 요약',
+    asText(apr.summary) || '(요약 없음)',
+    apr.proposedAction ? `\n## 승인 시 실행\n${asText(apr.proposedAction)}` : null
+  ].filter((l) => l !== null);
+
+  const body = sections.map((s) => [`## ${s.heading}`, s.meta ? `_${s.meta}_` : '', '', s.body].filter((l, i) => l !== '' || i === 2).join('\n'));
+  let markdown = [...head, '', ...body.flatMap((b) => [b, ''])].join('\n').trim() + '\n';
+  if (markdown.length > MAX_DOC) markdown = `${markdown.slice(0, MAX_DOC)}\n\n…(문서가 길어 이하 생략 · 전문은 웹 결재함에서 확인)\n`;
+
+  return {
+    approval: apr,
+    title: apr.title || apr.id,
+    filename: `deliverable-${String(apr.id).replace(/[^\w-]/g, '')}.md`,
+    markdown,
+    sectionCount: sections.length
+  };
+}

@@ -7,6 +7,7 @@ import { getMissionRepoCfg, handleCodeDecision, isCodeApproval } from './code-pi
 import { handleNotifyCommand } from './notify.js';
 import { handleOutsourceTelegramCallback, handleOutsourceTelegramCommand } from './outsourcing-bridge.js';
 import { handleStageGateDecision } from './lead-ops.js';
+import { buildApprovalDeliverable } from './deliverables.js';
 
 export function getTelegramCallbacks() {
   return {
@@ -44,7 +45,7 @@ export function getTelegramCallbacks() {
         `• 진행 중 업무: ${activeMissions}건`,
         `• CEO 결재 대기: <b>${pending}건</b>`,
         ``,
-        `명령어: /approvals · /order 지시내용 · /out (외주 현황) · /away 3 (PC 자리비움, Aside 건너뜀) · /office · /route`,
+        `명령어: /approvals · /doc (결재 성과품 파일) · /order 지시내용 · /out (외주 현황) · /away 3 (PC 자리비움, Aside 건너뜀) · /office · /route`,
         `자유 대화: 그냥 메시지를 보내면 총괄 팀장이 답하고, 지시면 실제 업무로 등록합니다. (#업무명 으로 채널 지정, #전체 로 해제)`,
         `알림: /notify 상태 · /report on|off · /quiet 23:00-08:00 · /quiet off`
       ].join('\n');
@@ -53,6 +54,7 @@ export function getTelegramCallbacks() {
     onNotifyCommand: async (cmd, arg) => handleNotifyCommand(cmd, arg),
     onOutsourceCommand: async (cmd, arg) => handleOutsourceTelegramCommand(cmd, arg),
     onOutsourceCallback: async (action, id) => handleOutsourceTelegramCallback(action, id),
+    onDeliverable: async (aprId) => buildApprovalDeliverable(loadDb(), aprId),
     onListPending: async () => {
       const db = loadDb();
       const map = Object.fromEntries(db.agents.map((a) => [a.id, a.name]));
