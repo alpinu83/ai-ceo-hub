@@ -623,13 +623,9 @@ function heuristicDecompose({ directive, domain, costPolicy, agents, leadAgent }
   const tasks = [];
   const isFreeOnly = costPolicy === 'free_first';
 
-  const researchAgent = isFreeOnly
-    ? pick(['agent_exaone', 'agent_vooy', 'agent_cue'])
-    : pick(['agent_exaone', 'agent_cue', 'agent_gemini_neon']);
+  const researchAgent = pick(['agent_deepseek', 'agent_gemma', 'agent_groq', 'agent_exaone']);
 
-  const deepWorkAgent = isFreeOnly
-    ? pick(['agent_exaone', 'agent_muse', 'agent_groq'])
-    : pick(['agent_groq', 'agent_gemini_neon', 'agent_exaone']);
+  const deepWorkAgent = pick(['agent_gemma', 'agent_groq', 'agent_deepseek', 'agent_exaone']);
 
   const needsCallOrBooking = /예약|식당|병원|전화|ktx|기차|호텔|숙소|주문|결제|구매/.test(text);
   const needsRecurring = /매일|매주|아침|브리핑|모니터링|가격|뉴스|트렌드|추적/.test(text);
@@ -649,9 +645,7 @@ function heuristicDecompose({ directive, domain, costPolicy, agents, leadAgent }
   });
 
   if (needsCode || domain === 'dev') {
-    const devAgent = isFreeOnly
-      ? pick(['agent_exaone', 'agent_groq'])
-      : pick(['agent_groq', 'agent_gemini_neon']);
+    const devAgent = pick(['agent_qwen', 'agent_it_dev', 'agent_groq']);
     tasks.push({
       title: '아키텍처 설계 · 구현 코드 작성 및 리뷰',
       description: '핵심 구현 코드, 예외 처리, 단위 테스트 및 보안 체크리스트를 작성합니다.',
@@ -893,7 +887,9 @@ export async function decomposeDirective({
   githubRepo = '',
   githubBranch = 'main',
   siteUrl = '',
-  extraRepos = []
+  extraRepos = [],
+  planningRoster = '',
+  assignmentRules = ''
 }) {
   const leadAgent = selectLeadAgent(agents, costPolicy, settings);
   const activeAgents = agents.filter((a) => a.active);
@@ -927,8 +923,8 @@ CEO의 지시를 3~5개 구체적 실무 작업으로 분해하고, 아래 조�
 - GA4·AdSense 등 미연동 외부 API를 "실제 조회 완료"하라는 허위 업무 대신, 실제 코드·SEO·콘텐츠·체크리스트 중심으로 분해하세요.
 
 [활성 AI 조직원]
-${rosterText}
-
+${planningRoster || rosterText}
+${assignmentRules ? `\n${assignmentRules}\n` : ''}
 ${skillBlock({ agent: leadAgent, mission: { directive, domain }, purpose: 'decompose', settings, compact: true, max: 1 })}`, '', { compact: true });
 
     try {
