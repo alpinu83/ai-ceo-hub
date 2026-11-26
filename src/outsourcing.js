@@ -55,12 +55,52 @@ export const WORKER_STRENGTHS = {
 export const ROLE_CHOICES = ['time', 'gemini', 'aside', 'antigravity'];
 export const DEFAULT_ROLES = { consult: 'gemini', research: 'gemini', task: 'gemini', browser: 'time', code: 'antigravity' };
 
+/**
+ * 난이도: deep = 판단·추론이 필요한 일 (Gemini Neon / Antigravity Carbon·Neon)
+ *        light = 자료 조사·단순 작업 (Hydrogen)
+ */
+export const EFFORT_LABELS = { deep: '깊은 판단', light: '단순·조사' };
+const DEEP_RE = /(전략|분석|설계|판단|검토|기획|비교|원인|우선순위|리스크|위험|평가|의사\s*결정|아키텍처|구조\s*개선|진단)/;
+export function inferEffort(req = {}) {
+  if (EFFORT_LABELS[req.effort]) return req.effort;
+  if (req.kind === 'consult' || req.kind === 'code') return 'deep';
+  if (req.kind === 'research' || req.kind === 'browser') return 'light';
+  return DEEP_RE.test(`${req.title || ''} ${req.goal || ''}`) ? 'deep' : 'light';
+}
+
+/** 요청서에 넣을 모델 분담 원칙 (작업자별) */
+function modelPlanLines(target, req) {
+  const effort = inferEffort(req);
+  if (target === 'antigravity') {
+    return [
+      '## 모델 분담 (Antigravity: Carbon > Neon > Hydrogen)',
+      `- 이 요청 난이도: ${EFFORT_LABELS[effort]}`,
+      '- Gemini 4 Carbon (최상위, 이 대화의 기본): 요청서 해석, 계획·설계, 위험 판단, 하위 결과 검토, PR 전 최종 리뷰와 제출 문서 작성',
+      '- Gemini 4 Neon (중간): 여러 파일에 걸친 구현, 원인 추적이 필요한 디버깅, 판단이 들어가는 분석 → Neon 하위 에이전트에 맡기기',
+      '- Gemini 4 Hydrogen (하위): 자료 조사, 파일·코드 검색, 정해진 대로 하는 단순 수정, 테스트·빌드 실행, 문서 갱신 → Hydrogen 하위 에이전트(또는 Orchestrator 실행 모델)에 맡기기',
+      '- 하위 에이전트를 부를 때 "Gemini 4 Neon으로 실행" / "Gemini 4 Hydrogen으로 실행"처럼 모델을 지시에 적을 것. Hydrogen이 막히면 Neon에, Neon이 막히면 Carbon이 직접 판단',
+      '- Carbon 사용량을 아끼기 위해 반복·단순 작업은 직접 하지 말고 내려보낼 것. 모델을 지정할 수 없는 환경이면 현재 모델로 하고 결과 문서 끝에 사용한 모델을 적을 것',
+      ''
+    ].join('\n');
+  }
+  if (target === 'gemini') {
+    return [
+      '## 모델 분담 (Gemini 앱: Neon / Hydrogen)',
+      `- 이 요청 난이도: ${EFFORT_LABELS[effort]} → ${effort === 'deep' ? 'Neon 예약 작업이 처리' : 'Hydrogen 예약 작업이 처리'}`,
+      '- Hydrogen으로 처리하다가 판단·추론이 많이 필요하다고 보이면 억지로 끝내지 말고 pass_outsourcing_request(to "deep")로 Neon에 올릴 것 (지금까지 조사한 내용을 reason에 요약)',
+      ''
+    ].join('\n');
+  }
+  return '';
+}
+
 function normalizeRoles(raw = {}) {
   const out = { ...DEFAULT_ROLES };
   for (const kind of Object.keys(DEFAULT_ROLES)) {
     const v = raw?.[kind];
     if (!ROLE_CHOICES.includes(v)) continue;
     if (v !== 'time' && !WORKER_CAPS[v]?.includes(kind)) continue; // 못 하는 일은 배정 불가
+    if (v === 'time' && !WORKER_CAPS.aside.includes(kind)) continue; // 시간대 담당(Aside 포함)이 못 하는 일
     out[kind] = v;
   }
   return out;
@@ -236,6 +276,7 @@ export function createOutsourcingRequest(db, spec = {}) {
     branch: spec.branch || 'main',
     siteUrl: spec.siteUrl || '',
     worker: OUTSOURCE_WORKER_LABELS[spec.worker] ? spec.worker : 'any',
+    effort: inferEffort({ kind, title: spec.title, goal: spec.goal, effort: spec.effort }),
     status: 'open',
     claimedBy: '',
     claimedAt: null,
@@ -263,7 +304,7 @@ export function findRequest(db, id) {
   return ensureList(db).find((r) => r.id === String(id || '').trim());
 }
 
-export function listRequests(db, { status = 'active', worker = '' } = {}) {
+export function listRequests(db, { status = 'active', worker = '', effort = '' } = {}) {
   const list = ensureList(db);
   const now = new Date();
   return list.filter((r) => {
@@ -271,6 +312,7 @@ export function listRequests(db, { status = 'active', worker = '' } = {}) {
     if (status && status !== 'active' && status !== 'all' && r.status !== status) return false;
     // 작업자별 목록은 "지금 그 작업자에게 배정된 것"만 (대표님 라우팅 설정·요청별 지정 반영)
     if (worker && worker !== 'any' && resolveTarget(db.settings, r, now) !== worker) return false;
+    if (EFFORT_LABELS[effort] && inferEffort(r) !== effort) return false;
     return true;
   });
 }
@@ -280,6 +322,7 @@ export function summarizeRequest(r) {
     id: r.id,
     kind: r.kind,
     kindLabel: OUTSOURCE_KIND_LABELS[r.kind],
+    effort: inferEffort(r),
     title: r.title,
     status: r.status,
     preferredWorker: r.worker,
@@ -416,6 +459,21 @@ export function passRequest(id, { worker = '', to = 'auto', reason = '' } = {}) 
   if (!req) throw new Error(`외주 요청을 찾을 수 없습니다: ${id}`);
   if (!['open', 'claimed'].includes(req.status)) throw new Error(`${req.status} 상태라 넘길 수 없습니다.`);
   const from = String(worker || req.claimedBy || '').slice(0, 40);
+  if (to === 'deep') {
+    // 같은 작업자 안에서 상위 모델로 올림 (Gemini Hydrogen → Neon)
+    const nowIso2 = new Date().toISOString();
+    req.effort = 'deep';
+    if (from && WORKER_CAPS[from]?.includes(req.kind)) req.pinnedWorker = from;
+    req.status = 'open';
+    req.claimedBy = '';
+    req.leaseUntil = null;
+    req.context = `${req.context || ''}\n\n[${OUTSOURCE_WORKER_LABELS[from] || from || '작업자'} 하위 모델이 상위 모델로 올림 ${nowIso2.slice(5, 16)}] ${String(reason || '').slice(0, 600)}`.slice(0, 8000);
+    req.updatedAt = nowIso2;
+    req.history.push({ at: nowIso2, event: 'escalated:deep', by: from || 'worker' });
+    appendLog(db, '외주 창구', `${req.id} — 깊은 판단이 필요해 상위 모델로 올렸습니다: ${String(reason || '').slice(0, 120)}`, 'info');
+    saveDb(db);
+    return req;
+  }
   let dest = ['aside', 'antigravity', 'gemini'].includes(to) ? to : timeWorker(db.settings);
   if (dest === from) dest = from === 'antigravity' ? 'aside' : 'antigravity';
   if (!WORKER_CAPS[dest]?.includes(req.kind)) dest = 'antigravity';
@@ -428,6 +486,18 @@ export function passRequest(id, { worker = '', to = 'auto', reason = '' } = {}) 
   req.updatedAt = nowIso;
   req.history.push({ at: nowIso, event: `passed:${dest}`, by: from || 'worker' });
   appendLog(db, '외주 창구', `${req.id} — ${OUTSOURCE_WORKER_LABELS[from] || from}가 ${OUTSOURCE_WORKER_LABELS[dest]}에 넘겼습니다: ${String(reason || '').slice(0, 120)}`, 'info');
+  saveDb(db);
+  return req;
+}
+
+/** 대표님이 난이도 지정 (auto = 자동 판단으로 되돌림) */
+export function setRequestEffort(id, effort = 'auto') {
+  const db = loadDb();
+  const req = findRequest(db, id);
+  if (!req) throw new Error(`외주 요청을 찾을 수 없습니다: ${id}`);
+  req.effort = EFFORT_LABELS[effort] ? effort : inferEffort({ ...req, effort: '' });
+  req.updatedAt = new Date().toISOString();
+  req.history.push({ at: req.updatedAt, event: `effort:${req.effort}`, by: 'CEO' });
   saveDb(db);
   return req;
 }
@@ -479,7 +549,7 @@ export function buildPacket(db, req, baseUrl = publicBaseUrl(), { forChat = fals
     `# 외주 요청서 ${req.id}`,
     '',
     `- 회사: ${db.settings.companyName || 'CEO Office'} (대표: ${db.settings.ceoName || '대표님'})`,
-    `- 종류: ${OUTSOURCE_KIND_LABELS[req.kind]}`,
+    `- 종류: ${OUTSOURCE_KIND_LABELS[req.kind]} · 난이도: ${EFFORT_LABELS[inferEffort(req)]}`,
     `- 지금 배정: ${OUTSOURCE_WORKER_LABELS[resolveTarget(db.settings, req)]}${req.pinnedWorker ? ' (대표님 지정)' : ''}`,
     `- 제목: ${req.title}`,
     mission ? `- 프로젝트: ${mission.title}${mission.mode === 'project' ? ` (Phase ${Number(mission.phase) || 1})` : ''}` : '',
@@ -514,6 +584,7 @@ export function buildPacket(db, req, baseUrl = publicBaseUrl(), { forChat = fals
     `로그인, 2단계 인증, CAPTCHA, 결제·발송 승인처럼 대표님만 할 수 있는 순간에는 억지로 진행하지 말고 MCP request_ceo_action 또는 POST ${baseUrl}/api/outsourcing/${req.id}/need-ceo 본문 {"worker":"...","action":"무엇이 필요한지 한 줄","detail":"어디서 무엇을 하면 되는지"} 로 알리세요. 대표님이 처리하고 재개하면 다시 대기열에 올라옵니다.`,
     `잡은 요청은 ${getOutsourcingSettings(db.settings).leaseMinutes}분 안에 제출하거나 같은 이름으로 다시 claim해서 연장하세요. 시간이 지나면 다른 작업자가 가져갈 수 있습니다.`,
     '',
+    modelPlanLines(resolveTarget(db.settings, req), req),
     resolveTarget(db.settings, req) === 'gemini'
       ? [
           '## Gemini 앱 작업 규칙',

@@ -284,11 +284,12 @@ export function createCeoMcpServer() {
     'CEO Office가 외부 AI에 맡긴 외주·자문 요청 목록을 조회합니다. 무료 AI 팀이 할 수 없는 일(코드 대규모 수정, 계정·콘솔 작업, 반복 실패 작업)과 팀장 결과물 자문이 올라옵니다.',
     {
       worker: z.string().optional().describe('작업자 이름 (antigravity, aside, gemini). 지금 그 작업자에게 배정된 것만 보여줌'),
-      status: z.string().optional().describe('active(기본: 대기·진행) / open / claimed / submitted / accepted / all')
+      status: z.string().optional().describe('active(기본: 대기·진행) / open / claimed / submitted / accepted / all'),
+      effort: z.string().optional().describe('난이도 필터: deep(판단·추론 필요 → 상위 모델) / light(자료 조사·단순 작업 → Hydrogen). 비우면 전부')
     },
-    async ({ worker = '', status = 'active' }) => {
+    async ({ worker = '', status = 'active', effort = '' }) => {
       const db = loadDb();
-      const list = listRequests(db, { status, worker });
+      const list = listRequests(db, { status, worker, effort });
       return {
         content: [
           {
@@ -378,7 +379,7 @@ export function createCeoMcpServer() {
     {
       request_id: z.string().describe('요청 ID'),
       worker: z.string().describe('내 작업자 이름 (gemini, aside, antigravity)'),
-      to: z.string().optional().describe('넘길 곳: antigravity(코드 수정) / aside(로그인·콘솔 작업) / auto(시간대 담당)'),
+      to: z.string().optional().describe('넘길 곳: antigravity(코드 수정) / aside(로그인·콘솔 작업) / auto(시간대 담당) / deep(같은 작업자의 상위 모델로 올림: Gemini Hydrogen → Neon)'),
       reason: z.string().describe('왜 넘기는지, 지금까지 한 것과 남은 일 (다음 작업자가 이어받을 수 있게)')
     },
     async ({ request_id, worker, to = 'auto', reason }) => {
