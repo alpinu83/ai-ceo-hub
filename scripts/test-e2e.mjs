@@ -416,6 +416,11 @@ async function runTests() {
     assert.equal(roleSave.routing.roles.code, 'antigravity', 'gemini cannot be assigned code work');
     assert.equal(roleSave.routing.roles.consult, 'aside', 'role change should be saved');
     await fetch(`${BASE}/api/outsourcing/route`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ roles: { consult: 'gemini' } }) });
+    // 난이도별 목록 (Gemini Neon/Hydrogen 예약이 나눠 처리)
+    const lightList = await (await fetch(`${BASE}/api/outsourcing?${tokQ}&effort=light`)).json();
+    assert.ok(lightList.requests.every((r) => r.effort === 'light'), 'effort filter should work');
+    const effRes = await (await fetch(`${BASE}/api/outsourcing/${out3.request.id}/effort`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ effort: 'deep' }) })).json();
+    assert.equal(effRes.state.outsourcing.find((r) => r.id === out3.request.id)?.effort, 'deep', 'CEO can set effort');
 
     const afterOut = await (await fetch(`${BASE}/api/state`)).json();
     const outRow = (afterOut.outsourcing || []).find((r) => r.id === outId);
