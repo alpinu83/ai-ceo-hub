@@ -8,7 +8,8 @@
  * 중간 매개체 = 이 서버(이미 클라우드에 있고 인증·백업이 됨). 요청서/결과는 마크다운 문서로 주고받습니다.
  * - Antigravity: MCP 서버(/api/mcp) 도구로 직접 조회·제출, 코드 작업은 저장소에 브랜치+PR (제목에 요청 ID)
  * - Aside: 로그인된 브라우저로 HTTPS API 호출 (정기 루틴으로 자동 처리 가능)
- * - 그 밖의 AI(모바일 앱 등): 웹 화면에서 요청서 복사 → 결과 붙여넣기
+ * - Gemini 앱: 맞춤 연결 앱(MCP)으로 자문·리서치·문서 작업을 가져가서 제출 (예약 작업으로 자동 실행)
+ * - 그 밖의 AI: 웹 화면에서 요청서 복사 → 결과 붙여넣기
  */
 import { loadDb, saveDb, appendLog } from './store.js';
 import { buildCompanyContext } from './lead-engine.js';
@@ -16,6 +17,7 @@ import { buildCompanyContext } from './lead-engine.js';
 export const OUTSOURCE_WORKER_LABELS = {
   antigravity: 'Antigravity',
   aside: 'Aside',
+  gemini: 'Gemini 앱',
   any: '먼저 잡는 쪽'
 };
 export const OUTSOURCE_KIND_LABELS = {
@@ -33,6 +35,37 @@ export function setOutsourcingHandlers(h = {}) {
 
 const HHMM_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
+/**
+ * 작업자별로 실제로 할 수 있는 일 (연결성·확장성 차이)
+ * - Antigravity: 저장소·터미널·브라우저·MCP 모두 가능 → 코드 수정 전담, 나머지는 예비
+ * - Aside: 대표님 PC의 로그인된 브라우저 → 계정·콘솔 작업, 리서치·문서
+ * - Gemini 앱: 웹 검색·Deep Research·긴 글 작성·구글 워크스페이스. 저장소 쓰기·로그인 작업은 불가
+ */
+export const WORKER_CAPS = {
+  antigravity: ['task', 'code', 'consult', 'browser', 'research'],
+  aside: ['task', 'consult', 'browser', 'research'],
+  gemini: ['task', 'consult', 'research']
+};
+export const WORKER_STRENGTHS = {
+  antigravity: '코드 수정·PR, 여러 파일 작업 (사용량 한도가 빡빡하니 코드 위주로)',
+  aside: '회사 PC 로그인된 브라우저: 애드센스·서치콘솔 같은 계정·콘솔 작업, 사이트 점검',
+  gemini: '자문·검토, 심층 리서치(웹 검색·Deep Research), 문서·카피 작성. 저장소 쓰기·로그인 작업은 못 함'
+};
+// 종류별 담당: 'time' = 업무 시간엔 Aside, 그 외·이동 중엔 Antigravity
+export const ROLE_CHOICES = ['time', 'gemini', 'aside', 'antigravity'];
+export const DEFAULT_ROLES = { consult: 'gemini', research: 'gemini', task: 'gemini', browser: 'time', code: 'antigravity' };
+
+function normalizeRoles(raw = {}) {
+  const out = { ...DEFAULT_ROLES };
+  for (const kind of Object.keys(DEFAULT_ROLES)) {
+    const v = raw?.[kind];
+    if (!ROLE_CHOICES.includes(v)) continue;
+    if (v !== 'time' && !WORKER_CAPS[v]?.includes(kind)) continue; // 못 하는 일은 배정 불가
+    out[kind] = v;
+  }
+  return out;
+}
+
 export function getOutsourcingSettings(settings) {
   const o = settings?.outsourcing || {};
   const oh = o.officeHours || {};
@@ -42,7 +75,7 @@ export function getOutsourcingSettings(settings) {
     autoForBrowser: o.autoForBrowser !== false,
     consultMode: ['off', 'proposals', 'proposals_and_reports'].includes(o.consultMode) ? o.consultMode : 'proposals',
     // 외주 대상: auto(업무 시간엔 Aside, 그 외·이동 중엔 Antigravity) / aside / antigravity
-    routing: ['auto', 'aside', 'antigravity'].includes(o.routing) ? o.routing : 'auto',
+    routing: ['auto', 'aside', 'antigravity', 'gemini'].includes(o.routing) ? o.routing : 'auto',
     officeHours: {
       days: Array.isArray(oh.days) && oh.days.length ? oh.days.map(Number).filter((d) => d >= 0 && d <= 6) : [1, 2, 3, 4, 5],
       start: HHMM_RE.test(oh.start || '') ? oh.start : '09:00',
@@ -50,7 +83,11 @@ export function getOutsourcingSettings(settings) {
     },
     awayUntil: o.awayUntil && Date.parse(o.awayUntil) > Date.now() ? o.awayUntil : '',
     // 잡은 뒤 이 시간 안에 결과·연장이 없으면 다른 작업자가 가져갈 수 있음 (같은 작업자가 다시 잡으면 연장)
-    leaseMinutes: Math.min(240, Math.max(15, Number(o.leaseMinutes) || 45))
+    leaseMinutes: Math.min(240, Math.max(15, Number(o.leaseMinutes) || 45)),
+    // 종류별 담당 (역할 분담표)
+    roles: normalizeRoles(o.roles),
+    // Gemini 앱이 이 시간 동안 안 가져가면 시간대 담당(Aside/Antigravity)으로 넘김. 0 = 넘기지 않음
+    geminiWaitMinutes: [0, 60, 120, 180, 360, 720].includes(Number(o.geminiWaitMinutes)) ? Number(o.geminiWaitMinutes) : 180
   };
 }
 
@@ -69,24 +106,67 @@ export function inOfficeHours(settings, date = new Date()) {
   return a <= b ? minutes >= a && minutes < b : minutes >= a || minutes < b;
 }
 
-/** 지금 외주를 받을 작업자 (요청별 지정 > 코드 작업 > 대표님 설정 > 자동: 이동 중/업무 시간) */
-export function resolveTarget(settings, req = {}, date = new Date()) {
-  if (req.pinnedWorker && OUTSOURCE_WORKER_LABELS[req.pinnedWorker] && req.pinnedWorker !== 'any') return req.pinnedWorker;
+/** 시간대 담당: 이동 중이거나 업무 시간 밖이면 Antigravity, 업무 시간엔 Aside */
+export function timeWorker(settings, date = new Date()) {
   const cfg = getOutsourcingSettings(settings);
-  if (req.kind === 'code') return 'antigravity';
-  if (cfg.routing !== 'auto') return cfg.routing;
   if (cfg.awayUntil) return 'antigravity';
   return inOfficeHours(settings, date) ? 'aside' : 'antigravity';
 }
 
+/** Gemini 앱 담당 요청이 너무 오래 안 잡히면 시간대 담당으로 넘김 */
+function geminiStale(cfg, req, date) {
+  if (!cfg.geminiWaitMinutes || req.status !== 'open') return false;
+  const since = Date.parse(req.updatedAt || req.createdAt || 0);
+  return Number.isFinite(since) && date.getTime() - since > cfg.geminiWaitMinutes * 60 * 1000;
+}
+
+/**
+ * 지금 외주를 받을 작업자
+ * 요청별 지정 > 대표님 고정 설정(그 작업자가 할 수 있는 일만) > 역할 분담표 > 시간대 담당
+ */
+export function resolveTarget(settings, req = {}, date = new Date()) {
+  if (req.pinnedWorker && OUTSOURCE_WORKER_LABELS[req.pinnedWorker] && req.pinnedWorker !== 'any') return req.pinnedWorker;
+  const cfg = getOutsourcingSettings(settings);
+  const kind = OUTSOURCE_KIND_LABELS[req.kind] ? req.kind : 'task';
+  if (cfg.routing !== 'auto' && WORKER_CAPS[cfg.routing]?.includes(kind)) return cfg.routing;
+  const role = cfg.roles[kind] || 'time';
+  if (role === 'time') return timeWorker(settings, date);
+  if (role === 'gemini' && geminiStale(cfg, req, date)) return timeWorker(settings, date);
+  return role;
+}
+
 export function describeRouting(settings, date = new Date()) {
   const cfg = getOutsourcingSettings(settings);
-  const target = resolveTarget(settings, {}, date);
+  // 한 곳에 몰기 설정이면 그 작업자, 아니면 시간대 담당
+  const target = cfg.routing !== 'auto' ? cfg.routing : timeWorker(settings, date);
   let why = '';
-  if (cfg.routing !== 'auto') why = '대표님 고정 설정';
-  else if (cfg.awayUntil) why = `이동 중 모드 (${new Date(cfg.awayUntil).toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul', hour: '2-digit', minute: '2-digit' })}까지)`;
+  if (cfg.awayUntil) why = `이동 중 모드 (${new Date(cfg.awayUntil).toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul', hour: '2-digit', minute: '2-digit' })}까지)`;
   else why = inOfficeHours(settings, date) ? `업무 시간 ${cfg.officeHours.start}~${cfg.officeHours.end}` : '업무 시간 밖';
-  return { target, label: OUTSOURCE_WORKER_LABELS[target], why, routing: cfg.routing, awayUntil: cfg.awayUntil, officeHours: cfg.officeHours };
+  if (cfg.routing !== 'auto') why = `대표님 고정: ${OUTSOURCE_WORKER_LABELS[cfg.routing]} (못 하는 일만 분담표대로) · ${why}`;
+  const byKind = {};
+  for (const kind of Object.keys(OUTSOURCE_KIND_LABELS)) {
+    const w = resolveTarget(settings, { kind }, date);
+    byKind[kind] = { worker: w, label: OUTSOURCE_WORKER_LABELS[w], role: cfg.roles[kind] };
+  }
+  return {
+    target,
+    label: OUTSOURCE_WORKER_LABELS[target],
+    why,
+    routing: cfg.routing,
+    awayUntil: cfg.awayUntil,
+    officeHours: cfg.officeHours,
+    roles: cfg.roles,
+    byKind,
+    geminiWaitMinutes: cfg.geminiWaitMinutes
+  };
+}
+
+/** 한 줄 요약: "자문 Gemini 앱 · 리서치 Gemini 앱 · ..." */
+export function describeRolesLine(settings, date = new Date()) {
+  const r = describeRouting(settings, date);
+  return Object.entries(r.byKind)
+    .map(([k, v]) => `${OUTSOURCE_KIND_LABELS[k]} ${v.label}`)
+    .join(' · ');
 }
 
 export function publicBaseUrl() {
@@ -326,6 +406,32 @@ export function assignRequest(id, worker = 'auto') {
   return req;
 }
 
+/**
+ * 작업자가 "이건 내가 못 하는 일"이라고 판단하면 다른 작업자에게 넘김 (예: Gemini 앱 → 로그인 필요 → Aside)
+ * to: aside | antigravity | gemini | auto(시간대 담당, 단 넘긴 쪽은 제외)
+ */
+export function passRequest(id, { worker = '', to = 'auto', reason = '' } = {}) {
+  const db = loadDb();
+  const req = findRequest(db, id);
+  if (!req) throw new Error(`외주 요청을 찾을 수 없습니다: ${id}`);
+  if (!['open', 'claimed'].includes(req.status)) throw new Error(`${req.status} 상태라 넘길 수 없습니다.`);
+  const from = String(worker || req.claimedBy || '').slice(0, 40);
+  let dest = ['aside', 'antigravity', 'gemini'].includes(to) ? to : timeWorker(db.settings);
+  if (dest === from) dest = from === 'antigravity' ? 'aside' : 'antigravity';
+  if (!WORKER_CAPS[dest]?.includes(req.kind)) dest = 'antigravity';
+  const nowIso = new Date().toISOString();
+  req.pinnedWorker = dest;
+  req.status = 'open';
+  req.claimedBy = '';
+  req.leaseUntil = null;
+  req.context = `${req.context || ''}\n\n[${OUTSOURCE_WORKER_LABELS[from] || from || '작업자'}가 넘김 ${nowIso.slice(5, 16)}] ${String(reason || '').slice(0, 600)}`.slice(0, 8000);
+  req.updatedAt = nowIso;
+  req.history.push({ at: nowIso, event: `passed:${dest}`, by: from || 'worker' });
+  appendLog(db, '외주 창구', `${req.id} — ${OUTSOURCE_WORKER_LABELS[from] || from}가 ${OUTSOURCE_WORKER_LABELS[dest]}에 넘겼습니다: ${String(reason || '').slice(0, 120)}`, 'info');
+  saveDb(db);
+  return req;
+}
+
 /** 대표님이 라우팅을 바꾸면, 새 대상이 아닌 작업자가 잡고 있던 요청은 10분 안에 넘어가도록 작업 시간을 줄임 */
 export function shortenForeignLeases(db) {
   const now = Date.now();
@@ -365,7 +471,7 @@ export function releaseExpiredLeases(db) {
   return released;
 }
 
-export function buildPacket(db, req, baseUrl = publicBaseUrl()) {
+export function buildPacket(db, req, baseUrl = publicBaseUrl(), { forChat = false } = {}) {
   const mission = db.missions.find((m) => m.id === req.missionId);
   const company = buildCompanyContext(db, req.missionId || '', { compact: true });
   const isCode = req.kind === 'code' || Boolean(req.repo);
@@ -408,10 +514,31 @@ export function buildPacket(db, req, baseUrl = publicBaseUrl()) {
     `로그인, 2단계 인증, CAPTCHA, 결제·발송 승인처럼 대표님만 할 수 있는 순간에는 억지로 진행하지 말고 MCP request_ceo_action 또는 POST ${baseUrl}/api/outsourcing/${req.id}/need-ceo 본문 {"worker":"...","action":"무엇이 필요한지 한 줄","detail":"어디서 무엇을 하면 되는지"} 로 알리세요. 대표님이 처리하고 재개하면 다시 대기열에 올라옵니다.`,
     `잡은 요청은 ${getOutsourcingSettings(db.settings).leaseMinutes}분 안에 제출하거나 같은 이름으로 다시 claim해서 연장하세요. 시간이 지나면 다른 작업자가 가져갈 수 있습니다.`,
     '',
+    resolveTarget(db.settings, req) === 'gemini'
+      ? [
+          '## Gemini 앱 작업 규칙',
+          '- 웹 검색·Deep Research로 근거를 확인하고, 수치·주장마다 출처 링크를 붙일 것',
+          '- 저장소에 코드를 쓰거나, 로그인이 필요한 사이트에서 작업해야 하면 직접 하지 말고 pass_outsourcing_request로 넘길 것 (코드 → antigravity, 로그인·콘솔 → aside)',
+          '- 결과는 submit_outsourcing_result로 제출 (worker: gemini). 대화창에 답만 쓰고 끝내지 말 것',
+          ''
+        ].join('\n')
+      : '',
     '## 진행·제출 방법 (편한 것 하나)',
-    `1. MCP (Antigravity 등): \`claim_outsourcing_request\` → 작업 → \`submit_outsourcing_result\` (request_id: ${req.id})`,
-    `2. HTTPS: \`POST ${baseUrl}/api/outsourcing/${req.id}/claim\` → \`POST ${baseUrl}/api/outsourcing/${req.id}/submit\` 본문 {"worker":"antigravity|aside","summary":"...","document":"마크다운","prUrl":"(코드면 PR 주소)"} · 인증: 헤더 x-ceo-key 또는 ?token=MCP토큰`,
+    `1. MCP (Antigravity·Gemini 앱): \`claim_outsourcing_request\` → 작업 → \`submit_outsourcing_result\` (request_id: ${req.id}). 내가 못 하는 일이면 \`pass_outsourcing_request\`로 넘기기`,
+    `2. HTTPS: \`POST ${baseUrl}/api/outsourcing/${req.id}/claim\` → \`POST ${baseUrl}/api/outsourcing/${req.id}/submit\` 본문 {"worker":"antigravity|aside|gemini","summary":"...","document":"마크다운","prUrl":"(코드면 PR 주소)"} · 인증: 헤더 x-ceo-key 또는 ?token=MCP토큰`,
     `3. 웹: ${baseUrl} → 외부 협업 → ${req.id} → 결과 붙여넣기`
   ];
+  if (forChat) {
+    const cut = lines.findIndex((l) => typeof l === 'string' && l.startsWith('## 대표님 손이 필요하면'));
+    const kept = cut > 0 ? lines.slice(0, cut) : lines;
+    kept.push(
+      '## 답변 형식',
+      '- 첫 줄: 결과 요약 2~4문장',
+      '- 그 아래: 결과 문서 전문 (마크다운). 실제 확인한 사실과 추정을 구분',
+      '- 로그인·결제 승인처럼 대표님이 직접 해야 할 일이 있으면 맨 앞줄에 [대표님 필요: 할 일 한 줄]이라고 쓰고 이유와 방법을 적을 것',
+      '- 코드 수정이 필요하면 바꿀 파일 경로와 바꿀 내용을 구체적으로 (CEO Office IT팀이 PR로 반영함)'
+    );
+    return kept.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  }
   return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }

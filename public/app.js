@@ -1409,9 +1409,20 @@ function renderApprovalsView() {
   `;
 }
 
-/* ==================== OUTSOURCING (외부 협업: Antigravity · Aside) ==================== */
+/* ==================== OUTSOURCING (외부 협업: Antigravity · Aside · Gemini 앱) ==================== */
 const OUT_KIND_LABELS = { task: '실무 작업', code: '코드 수정', consult: '외부 자문', browser: '브라우저·계정', research: '심층 리서치' };
-const OUT_WORKER_LABELS = { antigravity: 'Antigravity', aside: 'Aside', any: '먼저 잡는 쪽' };
+const OUT_WORKER_LABELS = { antigravity: 'Antigravity', aside: 'Aside', gemini: 'Gemini 앱', any: '먼저 잡는 쪽' };
+// 서버 WORKER_CAPS와 같음: 작업자별로 할 수 있는 일
+const OUT_WORKER_CAPS = { antigravity: ['task', 'code', 'consult', 'browser', 'research'], aside: ['task', 'consult', 'browser', 'research'], gemini: ['task', 'consult', 'research'] };
+const OUT_ROLE_LABELS = { time: '시간대 담당 (업무 시간 Aside · 그 외 Antigravity)', gemini: 'Gemini 앱', aside: 'Aside', antigravity: 'Antigravity' };
+const OUT_DEFAULT_ROLES = { consult: 'gemini', research: 'gemini', task: 'gemini', browser: 'time', code: 'antigravity' };
+const OUT_KIND_HINTS = {
+  consult: '결재안 검토·의견',
+  research: '시장·경쟁·키워드 조사',
+  task: '문서·카피·기획 등 일반 실무',
+  browser: '애드센스·서치콘솔 등 로그인 작업',
+  code: '저장소 수정·PR'
+};
 const OUT_STATUS = {
   open: ['badge-amber', '대기'],
   claimed: ['badge-blue', '작업 중'],
@@ -1434,15 +1445,41 @@ function outsourcingSettingsClient() {
     consultMode: o.consultMode || 'proposals',
     routing: o.routing || 'auto',
     officeHours: { days: Array.isArray(oh.days) && oh.days.length ? oh.days : [1, 2, 3, 4, 5], start: oh.start || '09:00', end: oh.end || '19:00' },
-    awayUntil: o.awayUntil && Date.parse(o.awayUntil) > Date.now() ? o.awayUntil : ''
+    awayUntil: o.awayUntil && Date.parse(o.awayUntil) > Date.now() ? o.awayUntil : '',
+    roles: { ...OUT_DEFAULT_ROLES, ...(o.roles || {}) },
+    geminiWaitMinutes: o.geminiWaitMinutes ?? 180
   };
 }
 
 /** 서버와 같은 규칙으로 요청별 현재 대상 계산 (화면 표시용) */
 function outTargetClient(r) {
   if (r.pinnedWorker) return r.pinnedWorker;
+  const by = lastOutRouting?.byKind?.[r.kind];
+  if (by?.worker === 'gemini' && r.status === 'open') {
+    const wait = Number(lastOutRouting?.geminiWaitMinutes ?? 180);
+    const since = Date.parse(r.updatedAt || r.createdAt || 0);
+    if (wait && Number.isFinite(since) && Date.now() - since > wait * 60000) return lastOutRouting?.target || 'aside';
+  }
+  if (by?.worker) return by.worker;
   if (r.kind === 'code') return 'antigravity';
   return lastOutRouting?.target || 'aside';
+}
+
+function geminiConnectorUrl() {
+  return `${getPublicServerOrigin()}/api/mcp?token=${encodeURIComponent(state?.settings?.mcpToken || '')}`;
+}
+
+/** Gemini 앱 예약 작업(Scheduled)에 넣을 지시문 */
+function geminiSchedulePrompt() {
+  return [
+    '@CEO Office 외주창구 앱으로 CEO Office 외주를 처리해줘.',
+    '1) list_outsourcing_requests를 worker "gemini"로 호출해서 나한테 배정된 대기 요청을 확인해. 없으면 "처리할 외주 없음" 한 줄로 끝내.',
+    '2) 가장 오래된 요청 1건을 claim_outsourcing_request(worker "gemini")로 잡고, 돌려받은 요청서를 끝까지 읽어.',
+    '3) 요청서의 "해야 할 일"과 "제출물" 기준대로 작업해. 웹 검색으로 근거를 확인하고 수치·주장에는 출처 링크를 붙여. 확인한 사실과 추정은 구분해.',
+    '4) 코드 저장소 수정이나 로그인이 필요한 사이트 작업이면 직접 하지 말고 pass_outsourcing_request로 넘겨 (코드 → antigravity, 로그인·콘솔 → aside). 결제·발송·광고비 집행은 하지 마.',
+    '5) 끝나면 submit_outsourcing_result로 제출해 (worker "gemini", summary 2~4문장, document 마크다운 전문). 대화창에 답만 쓰고 끝내지 마.',
+    '6) 시간이 남으면 다음 요청도 같은 방법으로 최대 2건까지 처리해.'
+  ].join('\n');
 }
 
 function mcpConfigSnippet() {
@@ -1479,6 +1516,7 @@ function outCardHtml(r) {
                   <option value="auto" ${!r.pinnedWorker ? 'selected' : ''}>대상: 자동</option>
                   <option value="aside" ${r.pinnedWorker === 'aside' ? 'selected' : ''}>대상: Aside</option>
                   <option value="antigravity" ${r.pinnedWorker === 'antigravity' ? 'selected' : ''}>대상: Antigravity</option>
+                  ${OUT_WORKER_CAPS.gemini.includes(r.kind) ? `<option value="gemini" ${r.pinnedWorker === 'gemini' ? 'selected' : ''}>대상: Gemini 앱</option>` : ''}
                 </select>`
               : ''
           }
@@ -1497,6 +1535,7 @@ function outCardHtml(r) {
                 <button type="button" class="btn btn-primary btn-sm" data-out-resume="${esc(r.id)}" data-out-resume-worker="">처리했어요 · 재개</button>
                 <button type="button" class="btn btn-ghost btn-sm" data-out-resume="${esc(r.id)}" data-out-resume-worker="antigravity">Antigravity로 재개</button>
                 <button type="button" class="btn btn-ghost btn-sm" data-out-resume="${esc(r.id)}" data-out-resume-worker="aside">Aside로 재개</button>
+                ${OUT_WORKER_CAPS.gemini.includes(r.kind) ? `<button type="button" class="btn btn-ghost btn-sm" data-out-resume="${esc(r.id)}" data-out-resume-worker="gemini">Gemini 앱으로 재개</button>` : ''}
               </div>
             </div>`
           : ''
@@ -1506,7 +1545,7 @@ function outCardHtml(r) {
         outSubmitOpenId === r.id && open
           ? `<div class="out-submit">
               <label class="field"><span class="field-label">작업한 AI</span>
-                <select id="out-submit-worker"><option value="antigravity">Antigravity</option><option value="aside">Aside</option><option value="manual">기타 (직접/다른 AI)</option></select></label>
+                <select id="out-submit-worker"><option value="antigravity">Antigravity</option><option value="aside">Aside</option><option value="gemini">Gemini 앱</option><option value="manual">기타 (직접/다른 AI)</option></select></label>
               <label class="field"><span class="field-label">요약</span><input type="text" id="out-submit-summary" placeholder="결과 핵심 2~3문장" /></label>
               <label class="field"><span class="field-label">결과 문서 (마크다운)</span><textarea id="out-submit-doc" rows="6" placeholder="외부 AI가 만든 결과를 그대로 붙여넣으세요"></textarea></label>
               <label class="field"><span class="field-label">PR 주소 (코드 작업일 때)</span><input type="text" id="out-submit-pr" placeholder="https://github.com/alpinu83/.../pull/12" /></label>
@@ -1566,7 +1605,7 @@ function renderOutsourcingView() {
             <label class="field" style="margin-top:12px;"><span class="field-label">해야 할 일 *</span><textarea id="out-new-goal" rows="4" placeholder="무엇을, 어떤 기준으로 끝내면 되는지 적어 주세요."></textarea></label>
             <div class="form-row-two" style="margin-top:12px;">
               <label class="field"><span class="field-label">관련 프로젝트</span><select id="out-new-mission"><option value="">없음</option>${missions.map((m) => `<option value="${esc(m.id)}">${esc(m.title)}</option>`).join('')}</select></label>
-              <label class="field"><span class="field-label">맡길 곳</span><select id="out-new-worker"><option value="any">자동 (지금 대상)</option><option value="antigravity">Antigravity</option><option value="aside">Aside</option></select></label>
+              <label class="field"><span class="field-label">맡길 곳</span><select id="out-new-worker"><option value="any">자동 (역할 분담표대로)</option><option value="antigravity">Antigravity</option><option value="aside">Aside</option><option value="gemini">Gemini 앱 (자문·리서치·문서만)</option></select></label>
             </div>
             <div class="routine-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-out-new-toggle="1">닫기</button><button type="button" class="btn btn-primary btn-sm" data-out-create="1">요청 올리기</button></div>
           </div>`
@@ -1592,14 +1631,39 @@ function renderOutsourcingSettings(force = false) {
   const cfg = outsourcingSettingsClient();
   const rt = lastOutRouting || { label: '-', why: '' };
   const daysVal = cfg.officeHours.days.length === 7 ? 'all' : cfg.officeHours.days.join(',') === '1,2,3,4,5' ? 'weekdays' : 'custom';
+  const roleRows = Object.keys(OUT_DEFAULT_ROLES)
+    .map((kind) => {
+      const cur = cfg.roles[kind] || OUT_DEFAULT_ROLES[kind];
+      const opts = ['time', 'gemini', 'aside', 'antigravity'].filter((w) => w === 'time' || OUT_WORKER_CAPS[w].includes(kind));
+      const now = rt.byKind?.[kind]?.label;
+      return `<tr>
+          <td><strong>${esc(OUT_KIND_LABELS[kind])}</strong><div class="routine-sub">${esc(OUT_KIND_HINTS[kind])}</div></td>
+          <td><select data-out-role="${kind}">${opts.map((w) => `<option value="${w}" ${cur === w ? 'selected' : ''}>${esc(OUT_ROLE_LABELS[w])}</option>`).join('')}</select></td>
+          <td class="routine-sub">${now ? `지금 → ${esc(now)}` : ''}</td>
+        </tr>`;
+    })
+    .join('');
   root.innerHTML = `
     <div class="card out-route">
-      <div class="card-head"><h3 class="card-title">외주 대상</h3></div>
-      <div class="out-route-now">
+      <div class="card-head"><h3 class="card-title">역할 분담</h3></div>
+      <p class="routine-desc" style="margin-top:0;">작업자마다 연결된 도구가 달라서 일의 종류별로 나눠 맡깁니다. Gemini 앱은 웹 검색·Deep Research·긴 글 작성이 강하지만 저장소 수정과 로그인 작업은 못 해서, 그런 일은 Aside·Antigravity가 맡습니다. Antigravity는 사용량 한도가 빡빡해 코드 수정 위주로 둡니다.</p>
+      <div style="overflow-x:auto;"><table class="out-role-table" style="width:100%;border-collapse:collapse;font-size:13px;">
+        <thead><tr><th style="text-align:left;padding:6px 4px;">일의 종류</th><th style="text-align:left;padding:6px 4px;">담당</th><th style="text-align:left;padding:6px 4px;">현재</th></tr></thead>
+        <tbody>${roleRows}</tbody>
+      </table></div>
+      <div class="out-settings">
+        <label class="out-check">Gemini 앱이 안 가져가면
+          <select id="out-gemini-wait">
+            ${[[60, '1시간 뒤'], [120, '2시간 뒤'], [180, '3시간 뒤'], [360, '6시간 뒤'], [720, '12시간 뒤'], [0, '넘기지 않음']].map(([v, t]) => `<option value="${v}" ${Number(cfg.geminiWaitMinutes) === v ? 'selected' : ''}>${t}</option>`).join('')}
+          </select>
+          시간대 담당에게 넘김
+        </label>
+      </div>
+      <div class="out-route-now" style="margin-top:12px;">
         <div>
-          <div class="routine-sub">지금 외주가 가는 곳</div>
+          <div class="routine-sub">시간대 담당 (지금)</div>
           <div class="out-route-target">${esc(rt.label || '-')}</div>
-          <div class="routine-sub">${esc(rt.why || '')} · 코드 수정은 지정하지 않으면 Antigravity</div>
+          <div class="routine-sub">${esc(rt.why || '')}</div>
         </div>
         <div class="out-away">
           <span class="routine-sub">이동 중이면</span>
@@ -1610,11 +1674,12 @@ function renderOutsourcingSettings(force = false) {
         </div>
       </div>
       <div class="out-settings">
-        <label class="out-check">외주 대상
+        <label class="out-check">한 곳에 몰기
           <select id="out-route-mode">
-            <option value="auto" ${cfg.routing === 'auto' ? 'selected' : ''}>자동 (업무 시간 Aside · 그 외 Antigravity)</option>
-            <option value="aside" ${cfg.routing === 'aside' ? 'selected' : ''}>항상 Aside</option>
-            <option value="antigravity" ${cfg.routing === 'antigravity' ? 'selected' : ''}>항상 Antigravity</option>
+            <option value="auto" ${cfg.routing === 'auto' ? 'selected' : ''}>안 함 (분담표대로)</option>
+            <option value="gemini" ${cfg.routing === 'gemini' ? 'selected' : ''}>Gemini 앱에 몰기</option>
+            <option value="aside" ${cfg.routing === 'aside' ? 'selected' : ''}>Aside에 몰기</option>
+            <option value="antigravity" ${cfg.routing === 'antigravity' ? 'selected' : ''}>Antigravity에 몰기</option>
           </select>
         </label>
         <label class="out-check">업무 시간
@@ -1627,9 +1692,9 @@ function renderOutsourcingSettings(force = false) {
           ~
           <input type="time" id="out-route-end" value="${esc(cfg.officeHours.end)}" />
         </label>
-        <button type="button" class="btn btn-primary btn-sm" data-out-route-save="1">대상 저장</button>
+        <button type="button" class="btn btn-primary btn-sm" data-out-route-save="1">분담 저장</button>
       </div>
-      <p class="routine-sub" style="margin:8px 0 0;">텔레그램: /away 3 (3시간 이동 중) · /office (해제) · /route antigravity · /out (외주 현황) · /out 요청ID aside. 잡은 요청은 45분 안에 결과가 없으면 다른 쪽이 가져갈 수 있고, 대상을 바꾸면 10분 안에 넘어갑니다.</p>
+      <p class="routine-sub" style="margin:8px 0 0;">한 곳에 몰아도 그 작업자가 못 하는 일(예: Gemini 앱의 코드 수정)은 분담표대로 갑니다. 작업자가 하다가 못 하는 일이면 스스로 다른 쪽에 넘깁니다. 텔레그램: /route (분담 보기) · /route gemini · /away 3 · /office · /out 요청ID aside</p>
     </div>
 
     <div class="card out-guide">
@@ -1652,18 +1717,26 @@ function renderOutsourcingSettings(force = false) {
 
     <div class="card out-guide">
       <div class="card-head"><h3 class="card-title">작업자 연결</h3></div>
-      <div class="out-guide-grid" style="grid-template-columns:repeat(2,minmax(0,1fr));">
+      <div class="out-guide-grid">
         <div>
-          <h4>Antigravity (노트북·모바일)</h4>
-          <p class="routine-desc">"설정 프롬프트 복사"를 Antigravity 에이전트에게 그대로 보내면 MCP 서버 등록·스킬 설치·30분 자동 실행까지 합니다. 직접 하려면 IDE는 에이전트 패널 … → MCP Servers → Manage MCP Servers → View raw config, App은 ~/.gemini/config/mcp_config.json 에 "MCP 설정 복사" 내용을 넣으세요.</p>
+          <h4>Gemini 앱 (자문·리서치·문서)</h4>
+          <p class="routine-desc">gemini.google.com → 설정 → Personal Intelligence → Connected Apps → Custom → "연결 주소 복사" 내용을 붙여넣고 이름을 "CEO Office 외주창구"로 저장. 그다음 Scheduled(예약)에서 새 작업을 만들고 "예약 지시문 복사" 내용을 넣으세요 (예: 매일 10시·14시·18시). 처음 한 번은 도구 실행 시 "항상 허용"을 눌러야 자동으로 돕니다.</p>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <button type="button" class="btn btn-primary btn-sm" data-out-copy-gemini-url="1">연결 주소 복사</button>
+            <button type="button" class="btn btn-ghost btn-sm" data-out-copy-gemini-prompt="1">예약 지시문 복사</button>
+          </div>
+        </div>
+        <div>
+          <h4>Antigravity (코드 수정)</h4>
+          <p class="routine-desc">"설정 프롬프트 복사"를 Antigravity 에이전트에게 그대로 보내면 MCP 서버 등록·스킬 설치·30분 자동 실행까지 합니다. 직접 하려면 App은 왼쪽 Customizations → MCP Servers, IDE는 에이전트 패널 … → MCP Servers에 "MCP 설정 복사" 내용을 넣으세요.</p>
           <div style="display:flex;gap:6px;flex-wrap:wrap;">
             <button type="button" class="btn btn-primary btn-sm" data-out-copy-setup="1">설정 프롬프트 복사</button>
             <button type="button" class="btn btn-ghost btn-sm" data-out-copy-mcp="1">MCP 설정 복사</button>
           </div>
         </div>
         <div>
-          <h4>Aside (회사 PC)</h4>
-          <p class="routine-desc">Aside 정기 루틴이 매일 9~21시 매시간 Aside에 배정된 요청만 처리합니다. 바로 시키려면 Aside에 "CEO Office 외주 처리해줘"라고 하세요.</p>
+          <h4>Aside (회사 PC · 계정 작업)</h4>
+          <p class="routine-desc">Aside 정기 루틴이 매일 9~21시 30분마다(매시 20분·50분) Aside에 배정된 요청만 처리합니다. PC와 Aside가 켜져 있어야 합니다. 바로 시키려면 Aside에 "CEO Office 외주 처리해줘"라고 하세요.</p>
         </div>
       </div>
     </div>`;
@@ -2768,7 +2841,7 @@ function bindEvents() {
         renderAll();
         refreshIcons();
         renderOutsourcingSettings(true);
-        toast(hours > 0 ? `이동 중 모드 ${hours}시간: 외주는 ${res.routing.label}로 갑니다.` : `이동 중 모드 해제: 지금 ${res.routing.label}`);
+        toast(hours > 0 ? `이동 중 모드 ${hours}시간: Aside 몫은 ${res.routing.label}로 갑니다 (Gemini 앱 몫은 그대로).` : `이동 중 모드 해제: 시간대 담당 ${res.routing.label}`);
       } catch (err) {
         toast(err.message, true);
       }
@@ -2782,6 +2855,8 @@ function bindEvents() {
           method: 'POST',
           body: JSON.stringify({
             routing: document.getElementById('out-route-mode')?.value || 'auto',
+            roles: Object.fromEntries([...document.querySelectorAll('[data-out-role]')].map((el) => [el.dataset.outRole, el.value])),
+            geminiWaitMinutes: Number(document.getElementById('out-gemini-wait')?.value ?? 180),
             officeHours: {
               ...(days ? { days } : {}),
               start: document.getElementById('out-route-start')?.value || '09:00',
@@ -2794,10 +2869,18 @@ function bindEvents() {
         renderAll();
         refreshIcons();
         renderOutsourcingSettings(true);
-        toast(`저장했습니다. 지금 외주 대상: ${res.routing.label} (${res.routing.why})`);
+        toast(`저장했습니다. ${Object.entries(res.routing.byKind || {}).map(([k, v]) => `${OUT_KIND_LABELS[k]} ${v.label}`).join(' · ')}`);
       } catch (err) {
         toast(err.message, true);
       }
+      return;
+    }
+    if (target.dataset.outCopyGeminiUrl) {
+      await copyText(geminiConnectorUrl(), 'Gemini 앱 연결 주소를 복사했습니다 (토큰 포함, 공유 금지). Connected Apps → Custom에 붙여넣으세요.');
+      return;
+    }
+    if (target.dataset.outCopyGeminiPrompt) {
+      await copyText(geminiSchedulePrompt(), 'Gemini 예약 지시문을 복사했습니다. Gemini → Scheduled → 새 작업에 붙여넣으세요.');
       return;
     }
     if (target.dataset.outCopySetup) {

@@ -6,7 +6,7 @@ import { notifyWebhook } from './orchestrator.js';
 import { sendTelegramApprovalCard } from './telegram.js';
 import { sendWebPushNotification } from './push.js';
 import { buildCompanyContext } from './lead-engine.js';
-import { listRequests, summarizeRequest, claimRequest, findRequest, buildPacket, submitResult, requestCeoAction, resolveTarget, describeRouting } from './outsourcing.js';
+import { listRequests, summarizeRequest, claimRequest, findRequest, buildPacket, submitResult, requestCeoAction, resolveTarget, describeRouting, passRequest } from './outsourcing.js';
 
 export const MCP_TOOL_CATALOG = [
   {
@@ -25,11 +25,12 @@ export const MCP_TOOL_CATALOG = [
     name: 'request_ceo_approval',
     description: '결제, 예약 확정, 외부 발송 등 중요 의사결정에 대해 즉시 CEO 결재 안건을 상신합니다.'
   },
-  { name: 'list_outsourcing_requests', description: '외부 AI 외주·자문 요청 목록 조회 (Antigravity·Aside용)' },
+  { name: 'list_outsourcing_requests', description: '외부 AI 외주·자문 요청 목록 조회 (Antigravity·Aside·Gemini 앱용)' },
   { name: 'claim_outsourcing_request', description: '외주 요청을 잡고 요청서 전문 받기' },
   { name: 'get_outsourcing_request', description: '외주 요청서 전문 조회' },
   { name: 'submit_outsourcing_result', description: '외주 결과 문서·PR 제출' },
-  { name: 'request_ceo_action', description: '로그인 등 대표님 개입이 필요할 때 멈추고 알림' }
+  { name: 'request_ceo_action', description: '로그인 등 대표님 개입이 필요할 때 멈추고 알림' },
+  { name: 'pass_outsourcing_request', description: '내가 못 하는 외주를 다른 작업자에게 넘기기' }
 ];
 
 /**
@@ -282,7 +283,7 @@ export function createCeoMcpServer() {
     'list_outsourcing_requests',
     'CEO Office가 외부 AI에 맡긴 외주·자문 요청 목록을 조회합니다. 무료 AI 팀이 할 수 없는 일(코드 대규모 수정, 계정·콘솔 작업, 반복 실패 작업)과 팀장 결과물 자문이 올라옵니다.',
     {
-      worker: z.string().optional().describe('작업자 이름 (antigravity, aside 등). 권장 작업자가 맞는 것 + 아무나 가능한 것만 보여줌'),
+      worker: z.string().optional().describe('작업자 이름 (antigravity, aside, gemini). 지금 그 작업자에게 배정된 것만 보여줌'),
       status: z.string().optional().describe('active(기본: 대기·진행) / open / claimed / submitted / accepted / all')
     },
     async ({ worker = '', status = 'active' }) => {
@@ -308,7 +309,7 @@ export function createCeoMcpServer() {
     '외주 요청을 내가 처리하겠다고 잡습니다(다른 작업자와 중복 방지, 몇 시간 뒤 자동 해제). 요청서 전문(마크다운)을 돌려줍니다.',
     {
       request_id: z.string().describe('요청 ID (예: OUT-261126-AB12)'),
-      worker: z.string().describe('작업자 이름 (antigravity 또는 aside 등)')
+      worker: z.string().describe('작업자 이름 (antigravity, aside, gemini)')
     },
     async ({ request_id, worker }) => {
       try {
@@ -337,7 +338,7 @@ export function createCeoMcpServer() {
     '외주 결과를 제출합니다. 코드 작업이면 저장소에 브랜치 out/{요청ID}로 PR을 열고 pr_url을 함께 보내세요(대표님 결재 후 자동 머지·배포). 자문이면 document에 검토 의견을 쓰세요.',
     {
       request_id: z.string().describe('요청 ID'),
-      worker: z.string().describe('작업자 이름 (antigravity, aside 등)'),
+      worker: z.string().describe('작업자 이름 (antigravity, aside, gemini)'),
       summary: z.string().describe('결과 요약 2~4문장'),
       document: z.string().describe('결과 문서 전문 (마크다운). 실제 확인한 사실과 추정을 구분'),
       pr_url: z.string().optional().describe('코드 작업 PR 주소 (https://github.com/owner/repo/pull/번호)')
@@ -365,6 +366,25 @@ export function createCeoMcpServer() {
       try {
         const req = await requestCeoAction(request_id, { worker, action, detail });
         return { content: [{ type: 'text', text: `대표님께 알렸습니다: ${req.id} — ${action}. 이 요청은 재개될 때까지 멈춥니다. 다른 요청을 처리하세요.` }] };
+      } catch (err) {
+        return { isError: true, content: [{ type: 'text', text: err.message }] };
+      }
+    }
+  );
+
+  server.tool(
+    'pass_outsourcing_request',
+    '이 외주가 내 환경에서 할 수 없는 일이면(예: Gemini 앱인데 코드 저장소 수정이나 로그인이 필요한 사이트 작업) 다른 작업자에게 넘깁니다. 억지로 하거나 그럴듯하게 지어내지 말고 넘기세요.',
+    {
+      request_id: z.string().describe('요청 ID'),
+      worker: z.string().describe('내 작업자 이름 (gemini, aside, antigravity)'),
+      to: z.string().optional().describe('넘길 곳: antigravity(코드 수정) / aside(로그인·콘솔 작업) / auto(시간대 담당)'),
+      reason: z.string().describe('왜 넘기는지, 지금까지 한 것과 남은 일 (다음 작업자가 이어받을 수 있게)')
+    },
+    async ({ request_id, worker, to = 'auto', reason }) => {
+      try {
+        const req = passRequest(request_id, { worker, to, reason });
+        return { content: [{ type: 'text', text: `넘겼습니다: ${req.id} → ${req.pinnedWorker}. 다음 요청을 처리하세요.` }] };
       } catch (err) {
         return { isError: true, content: [{ type: 'text', text: err.message }] };
       }
