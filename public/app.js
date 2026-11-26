@@ -2405,8 +2405,107 @@ function setOfficeMobileTab() {
   closeParticipantsDrawer();
 }
 
+/* ==================== 모바일 뒤로가기: 앱 안에서 이동 · 마지막엔 종료 확인 ==================== */
+// 휴대폰 웹앱(홈 화면에 추가)에서 뒤로가기를 누르면 바로 앱이 닫히던 문제:
+// 화면 이동을 브라우저 기록에 남겨 뒤로가기 = 이전 화면, 열린 창(작업 상세·메뉴·팝업)은 먼저 닫고,
+// 홈에서 한 번 더 누르면 "종료하시겠습니까?"를 묻습니다.
+let backNavArmed = false;
+let backNavSilent = false;
+let exitConfirmOpen = false;
+
+function closeTopOverlay() {
+  const hire = document.getElementById('hire-modal-backdrop');
+  if (hire?.classList.contains('open')) {
+    hire.classList.remove('open');
+    hire.setAttribute('aria-hidden', 'true');
+    return true;
+  }
+  if (document.getElementById('task-drawer-backdrop')?.classList.contains('open')) {
+    closeDrawer();
+    return true;
+  }
+  if (document.querySelector('.sidebar')?.classList.contains('mobile-open')) {
+    closeMobileSidebar();
+    return true;
+  }
+  if (document.getElementById('office-participants-panel')?.classList.contains('open')) {
+    closeParticipantsDrawer();
+    return true;
+  }
+  return false;
+}
+
+function pushViewHistory(viewName) {
+  if (!backNavArmed || backNavSilent) return;
+  if (history.state?.ceoView === viewName && !history.state?.root) return;
+  history.pushState({ ceoView: viewName }, '');
+}
+
+// Chrome(안드로이드)은 사용자 동작 없이 넣은 기록을 뒤로가기에서 건너뛰므로, 첫 터치 때 기록을 준비합니다.
+function armBackNav() {
+  if (backNavArmed) return;
+  backNavArmed = true;
+  history.replaceState({ ceoView: 'command', root: true }, '');
+  history.pushState({ ceoView: currentView || 'command' }, '');
+}
+
+function showViewSilently(viewName) {
+  backNavSilent = true;
+  try {
+    switchView(viewName);
+  } finally {
+    backNavSilent = false;
+  }
+}
+
+window.addEventListener('popstate', (e) => {
+  if (!backNavArmed) return;
+  const st = e.state || {};
+  // 1) 열린 창이 있으면 그것만 닫고 현재 화면 유지
+  if (closeTopOverlay()) {
+    history.pushState({ ceoView: currentView }, '');
+    return;
+  }
+  // 2) 이전 화면으로
+  if (st.ceoView && !st.root) {
+    showViewSilently(st.ceoView);
+    return;
+  }
+  // 3) 맨 처음 기록에 도달: 홈이 아니면 홈으로, 홈이면 종료 확인
+  if (currentView !== 'command') {
+    showViewSilently('command');
+    history.pushState({ ceoView: 'command' }, '');
+    return;
+  }
+  if (exitConfirmOpen) return;
+  exitConfirmOpen = true;
+  const leave = window.confirm('CEO Office를 종료하시겠습니까?');
+  exitConfirmOpen = false;
+  if (!leave) {
+    history.pushState({ ceoView: 'command' }, '');
+    return;
+  }
+  backNavArmed = false;
+  // 홈 화면 앱(standalone)은 창 닫기를 시도하고, 닫히지 않으면 한 번 더 뒤로가기로 종료
+  try {
+    window.close();
+  } catch {
+    // ignore
+  }
+  setTimeout(() => toast('한 번 더 뒤로가기를 누르면 종료됩니다.'), 300);
+  // 종료하지 않고 계속 쓰면 다음 터치 때 다시 준비
+  setTimeout(() => {
+    document.addEventListener('pointerdown', armBackNav, { capture: true, once: true });
+  }, 3000);
+});
+
+document.addEventListener('pointerdown', armBackNav, { capture: true, once: true });
+document.addEventListener('keydown', armBackNav, { capture: true, once: true });
+
 function switchView(viewName) {
+  const prevView = currentView;
   currentView = viewName;
+  if (prevView !== viewName) pushViewHistory(viewName);
   if (viewName === 'projects') missionKindFilter = 'project';
   else if (viewName === 'missions') missionKindFilter = 'one_off';
 
