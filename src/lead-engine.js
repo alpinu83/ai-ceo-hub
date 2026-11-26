@@ -788,9 +788,9 @@ export function collectFollowUps(db, now = Date.now()) {
       idle &&
       !pendingAny &&
       !st.closedAt &&
-      // 운영 사이클(v3)은 마일스톤별 시도 횟수로 제한하므로 자율 라운드 제한을 쓰지 않음
-      (m.opsMode === 'v3' || Number(st.autoRounds || 0) < Math.max(0, Number(cfg.maxAutoRounds) || 0)) &&
-      tasks.every((t) => ['completed', 'rejected', ...(m.opsMode === 'v3' ? ['blocked'] : [])].includes(t.status)) &&
+      // 프로젝트(운영 사이클)는 마일스톤별 시도 횟수로 제한하므로 자율 라운드 제한을 쓰지 않음
+      (m.mode === 'project' || Number(st.autoRounds || 0) < Math.max(0, Number(cfg.maxAutoRounds) || 0)) &&
+      tasks.every((t) => ['completed', 'rejected', ...(m.mode === 'project' ? ['blocked'] : [])].includes(t.status)) &&
       ageMs(lastTouch) > 5 * 60 * 1000 &&
       String(st.lastPlanAt || '') < lastTouch;
 

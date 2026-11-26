@@ -1,0 +1,199 @@
+// hub/agent-inbox.js: server.js에서 분리 (공유 로직)
+import { appendLog, appendMessage, flushCloudBackup, loadDb, recordAgentHeartbeat, saveDb, uid } from '../store.js';
+import { sendWebPushNotification } from '../push.js';
+import { autoStartLiveMissionTasks, updateMissionStatus } from './missions.js';
+import { notifyAllApprovalChannels } from './notify.js';
+import { processTaskResult } from './task-results.js';
+
+// ==================== ASYNC AGENT INBOX HTTPS API (Pickle / Cue / Vooy / Instinct) ====================
+export function resolveInboxAgent(db, rawKey) {
+  const key = String(rawKey || '').trim().toLowerCase();
+  const alias = {
+    pickle: 'agent_pickle',
+    alex: 'agent_pickle',
+    '피클': 'agent_pickle',
+    '알렉스': 'agent_pickle',
+    vooy: 'agent_vooy',
+    '부이': 'agent_vooy',
+    instinct: 'agent_instinct',
+    '인스팅스': 'agent_instinct',
+    muse: 'agent_muse',
+    cue: 'agent_cue',
+    manus: 'agent_cue',
+    exaone: 'agent_exaone',
+    groq: 'agent_groq',
+    gemini: 'agent_gemini_neon',
+    neon: 'agent_gemini_neon'
+  };
+  const targetId = alias[key] || rawKey;
+  return db.agents.find((a) => a.id === targetId) || null;
+}
+
+export function normalizeTokenCandidate(val = '') {
+  return String(val || '')
+    .trim()
+    .replace(/^["']|["']$/g, '')
+    .replace(/^(?:Bearer|Token)\s+/i, '')
+    .replace(/^(?:Bearer|Token)\s+/i, '')
+    .trim();
+}
+
+export function checkInboxToken(c, db, body = {}) {
+  const expected = db.settings?.mcpToken;
+  if (!expected) return true;
+  const candidates = [
+    c.req.query('token'),
+    c.req.query('api_key'),
+    c.req.query('key'),
+    c.req.header('authorization'),
+    c.req.header('x-api-key'),
+    c.req.header('x-token'),
+    c.req.header('x-mcp-token'),
+    body?.token,
+    body?.apiKey,
+    body?.api_key
+  ]
+    .map(normalizeTokenCandidate)
+    .filter(Boolean);
+  return candidates.some((cand) => cand === expected);
+}
+
+export async function handleAgentInboxReply(c) {
+  let body = {};
+  const rawText = await c.req.text().catch(() => '');
+  if (rawText.trim()) {
+    try {
+      body = JSON.parse(rawText);
+    } catch {
+      body = { message: rawText.trim() };
+    }
+  }
+  const db = loadDb();
+  if (!checkInboxToken(c, db, body)) {
+    return c.json({ error: '유효한 토큰이 필요합니다.' }, 401);
+  }
+  const agent = resolveInboxAgent(db, c.req.param('agentKey'));
+  if (!agent) {
+    return c.json({ error: `알 수 없는 에이전트입니다: ${c.req.param('agentKey')}` }, 404);
+  }
+
+  recordAgentHeartbeat(db, agent.id, 'POST reply');
+
+  const message = String(
+    body.message || body.text || body.reply || body.content || body.summary || body.deliverable || body.result || ''
+  ).trim();
+  if (!message) {
+    saveDb(db);
+    return c.json({ error: 'message 또는 deliverable 내용을 보내주세요.' }, 400);
+  }
+
+  const deliverable = String(body.deliverable || body.result || body.content || message).trim();
+  const requestApproval = Boolean(body.requestApproval || body.requiresApproval || body.request_approval);
+  const estimatedCostKRW = Number(body.estimatedCostKRW || body.estimated_cost_krw || 0) || 0;
+  const now = new Date().toISOString();
+
+  let task = body.taskId || body.task_id ? db.tasks.find((t) => t.id === (body.taskId || body.task_id)) : null;
+  if (!task && (body.deliverable || body.result || requestApproval)) {
+    task = db.tasks.find((t) => t.assigneeId === agent.id && t.status !== 'completed' && t.status !== 'rejected') || null;
+  }
+
+  const postedMsg = appendMessage(db, {
+    missionId: body.missionId || task?.missionId || db.missions[0]?.id || '',
+    senderId: agent.id,
+    senderName: agent.name,
+    senderRole: `${agent.roleTitle} · 실제 앱 보고`,
+    senderShortCode: agent.shortCode,
+    senderAccent: agent.accent,
+    targetAgentId: 'ceo',
+    statusText: requestApproval ? '실제 앱 결재 상신' : '실제 앱 보고 (LIVE)',
+    type: requestApproval ? 'approval' : 'reply',
+    text: message
+  });
+
+  let approvalId = null;
+  if (task) {
+    task.output = deliverable;
+    task.executionModeUsed = 'external_agent_https';
+    task.updatedAt = now;
+    if (estimatedCostKRW > 0) task.estimatedCostKRW = estimatedCostKRW;
+
+    const shouldPause = requestApproval || task.requiresApproval;
+    if (shouldPause) {
+      task.status = 'awaiting_approval';
+      const existing = db.approvals.find((a) => a.taskId === task.id && a.status === 'pending');
+      if (!existing) {
+        const apr = {
+          id: uid('apr'),
+          missionId: task.missionId,
+          taskId: task.id,
+          agentId: agent.id,
+          title: body.approvalTitle || `${task.title} — ${agent.name} 실행 승인 요청`,
+          category: (task.estimatedCostKRW || 0) > 0 ? '예약 · 결제' : '외부 에이전트 실행 승인',
+          riskLevel: (task.estimatedCostKRW || 0) >= 100000 ? 'high' : 'medium',
+          estimatedCostKRW: task.estimatedCostKRW || 0,
+          depositKRW: 0,
+          summary: message.slice(0, 260),
+          proposedAction: `승인 시 ${agent.name}에서 최종 확정 처리`,
+          status: 'pending',
+          ceoNote: '',
+          createdAt: now,
+          decidedAt: null
+        };
+        db.approvals.unshift(apr);
+        approvalId = apr.id;
+        notifyAllApprovalChannels(db.settings, apr, agent.name);
+      } else {
+        approvalId = existing.id;
+      }
+      appendLog(db, `${agent.name} (HTTPS 보고)`, `"${task.title}" 실제 보고 접수 → CEO 결재함 상신.`, 'approval');
+    } else {
+      // 외부 봇 결과도 같은 처리 경로: 지침 위반·팀장 검수·결과물 등록
+      const missionX = db.missions.find((m) => m.id === task.missionId);
+      const outX = await processTaskResult(db, task, agent, missionX, { output: deliverable, executionModeUsed: 'external_agent_https' }, { message: false });
+      appendLog(db, `${agent.name} (HTTPS 보고)`, `"${task.title}" 결과 보고 → ${task.status === 'completed' ? '검수 통과' : task.status === 'queued' || task.status === 'awaiting_bridge' ? '보완 요청' : task.status}.`, 'info');
+      if (outX.requeued) setTimeout(() => autoStartLiveMissionTasks(task.missionId).catch(() => {}), 1500);
+    }
+    updateMissionStatus(db, task.missionId);
+  } else if (requestApproval) {
+    const apr = {
+      id: uid('apr'),
+      missionId: db.missions[0]?.id || '',
+      taskId: '',
+      agentId: agent.id,
+      title: body.approvalTitle || `${agent.name} CEO 결재 요청`,
+      category: estimatedCostKRW > 0 ? '예약 · 결제' : '외부 에이전트 승인 요청',
+      riskLevel: estimatedCostKRW >= 100000 ? 'high' : 'medium',
+      estimatedCostKRW,
+      depositKRW: 0,
+      summary: message.slice(0, 260),
+      proposedAction: `승인 시 ${agent.name} 실행 확정`,
+      status: 'pending',
+      ceoNote: '',
+      createdAt: now,
+      decidedAt: null
+    };
+    db.approvals.unshift(apr);
+    approvalId = apr.id;
+    notifyAllApprovalChannels(db.settings, apr, agent.name);
+    appendLog(db, `${agent.name} (HTTPS 보고)`, `실제 결재 안건 상신: "${apr.title}"`, 'approval');
+  } else {
+    appendLog(db, `${agent.name} (HTTPS 보고)`, `사내 회의실에 실제 답변을 올렸습니다.`, 'success');
+    sendWebPushNotification({
+      title: `[새 보고] ${agent.name}`,
+      body: message.slice(0, 100),
+      view: 'office',
+      tag: `msg-${postedMsg.id}`
+    }).catch(() => {});
+  }
+
+  saveDb(db);
+  await flushCloudBackup(db);
+  return c.json({
+    ok: true,
+    agent: agent.name,
+    postedMessageId: postedMsg.id,
+    taskId: task?.id || null,
+    taskStatus: task?.status || null,
+    approvalId
+  });
+}
