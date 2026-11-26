@@ -346,6 +346,7 @@ async function runTests() {
           title: '지속 성장 프로젝트 테스트',
           domain: 'business',
           mode: 'project',
+          opsMode: 'legacy',
           directive: '웹사이트 트래픽과 수익을 단계적으로 키우는 장기 전략을 실행해줘'
         })
       })
@@ -372,6 +373,26 @@ async function runTests() {
       (t) => t.missionId === projCreated.mission.id && Number(t.phase) === 2
     );
     assert.ok(phase2Tasks.length >= 2, 'Phase 2 must automatically create follow-up tasks');
+
+    // 운영 사이클 v3: 새 프로젝트 기본값, 단계 제안서 대신 작전 계획, 결재는 한 번만 처리
+    const v3Created = await (
+      await fetch(`${BASE}/api/missions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: '운영 사이클 테스트', domain: 'business', mode: 'project', directive: '새 수익 모델을 발굴하고 검증해줘' })
+      })
+    ).json();
+    assert.equal(v3Created.mission.opsMode, 'v3', 'new projects use the v3 operating cycle');
+    const v3Prop = await (await fetch(`${BASE}/api/missions/${v3Created.mission.id}/propose-next`, { method: 'POST' })).json();
+    assert.ok(!v3Prop.approval || v3Prop.approval.kind !== 'next_phase', 'v3 projects do not create phase proposals');
+    const cycleRes = await fetch(`${BASE}/api/missions/${v3Created.mission.id}/ops-cycle`, { method: 'POST' });
+    assert.equal(cycleRes.status, 200, 'ops cycle can be triggered');
+    const legacySwitch = await (
+      await fetch(`${BASE}/api/missions/${projCreated.mission.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ opsMode: 'v3' }) })
+    ).json();
+    assert.equal(legacySwitch.state.missions.find((m) => m.id === projCreated.mission.id).opsMode, 'v3', 'opsMode can be switched');
+    const reDecide = await fetch(`${BASE}/api/approvals/${propRes.approval.id}/decide`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision: 'approved' }) });
+    assert.equal(reDecide.status, 409, 'already decided approvals are not processed twice');
 
     // 외부 AI 외주 창구: 요청 → 목록 → 잡기 → 요청서 → 결과 제출 → 반영
     const outCreated = await (
