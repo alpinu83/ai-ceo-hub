@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
@@ -400,22 +401,39 @@ export function createCeoMcpServer() {
  */
 export async function handleOfficialMcpHttp(req, res, parsedBody) {
   const db = loadDb();
-  const expectedToken = db.settings?.mcpToken;
-  const authHeader = req.headers.authorization || '';
-
-  if (authHeader && expectedToken) {
-    const provided = authHeader.replace(/^Bearer\s+/i, '').trim();
-    if (provided && provided !== expectedToken) {
-      res.writeHead(401, { 'Content-Type': 'application/json' });
-      res.end(
-        JSON.stringify({
-          jsonrpc: '2.0',
-          id: parsedBody?.id ?? null,
-          error: { code: -32001, message: 'Invalid MCP Bearer token' }
-        })
-      );
-      return;
-    }
+  // Security: a valid token is ALWAYS required (Bearer header, x-api-key / x-mcp-token header, or ?token= query).
+  // The env MCP_TOKEN wins over the stored value. If no token is configured at all, every call is rejected.
+  const expectedToken = String(process.env.MCP_TOKEN || '').trim() || String(db.settings?.mcpToken || '').trim();
+  let queryToken = '';
+  try {
+    const u = new URL(req.url || '/', 'http://localhost');
+    queryToken = u.searchParams.get('token') || u.searchParams.get('api_key') || u.searchParams.get('key') || '';
+  } catch {
+    queryToken = '';
+  }
+  const candidates = [
+    req.headers.authorization,
+    req.headers['x-api-key'],
+    req.headers['x-mcp-token'],
+    queryToken
+  ]
+    .map((v) => String(v || '').replace(/^(?:Bearer|Token)\s+/i, '').trim())
+    .filter(Boolean);
+  const tokenOk = (cand) => {
+    const a = Buffer.from(cand);
+    const b = Buffer.from(expectedToken);
+    return a.length === b.length && crypto.timingSafeEqual(a, b);
+  };
+  if (!expectedToken || !candidates.some(tokenOk)) {
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: parsedBody?.id ?? null,
+        error: { code: -32001, message: 'Valid MCP token required (Authorization: Bearer <token> or ?token=<token>)' }
+      })
+    );
+    return;
   }
 
   // Ensure Accept header satisfies official MCP StreamableHTTP transport when called from simple clients
