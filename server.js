@@ -2861,10 +2861,12 @@ async function handleOutsourceNeedsCeo(id) {
 }
 setOutsourcingHandlers({ onNeedsCeo: handleOutsourceNeedsCeo });
 
-function updateOutsourceRouting(db, { routing, awayHours, officeHours, leaseMinutes, roles, geminiWaitMinutes } = {}) {
+function updateOutsourceRouting(db, { routing, awayHours, officeHours, leaseMinutes, roles, geminiWaitMinutes, priorities, waitMinutes } = {}) {
   const os = { ...getOutsourcingSettings(db.settings) };
   if (['auto', 'aside', 'antigravity', 'gemini'].includes(routing)) os.routing = routing;
   if (roles && typeof roles === 'object') os.roles = { ...os.roles, ...roles };
+  if (priorities && typeof priorities === 'object') os.priorities = { ...os.priorities, ...priorities };
+  if (waitMinutes !== undefined && Number.isFinite(Number(waitMinutes))) os.waitMinutes = Number(waitMinutes);
   if (geminiWaitMinutes !== undefined && Number.isFinite(Number(geminiWaitMinutes))) os.geminiWaitMinutes = Number(geminiWaitMinutes);
   if (awayHours !== undefined) {
     const h = Number(awayHours);
@@ -2896,7 +2898,7 @@ async function handleOutsourceTelegramCommand(cmd, args = '') {
     const mode = /anti|agy|안티/i.test(a) ? 'antigravity' : /aside|어사이드|회사/i.test(a) ? 'aside' : /gemini|제미/i.test(a) ? 'gemini' : /auto|자동/i.test(a) ? 'auto' : '';
     if (!mode) {
       const r = describeRouting(db.settings);
-      return `<b>외주 분담</b> (${escapeTelegramHtml(r.why)})\n${escapeTelegramHtml(describeRolesLine(db.settings))}\n바꾸기: /route auto (분담표대로) · /route aside · /route antigravity · /route gemini · /away 3 (3시간 이동 중) · /office (이동 중 해제)`;
+      return `<b>외주 분담</b> (${escapeTelegramHtml(r.why)})\n${escapeTelegramHtml(describeRolesLine(db.settings))}\n바꾸기: /route auto (우선순위대로) · /route aside · /route antigravity · /route gemini · /away 3 (3시간 PC 자리비움: Aside 건너뜀) · /office (해제)`;
     }
     updateOutsourceRouting(db, { routing: mode, awayHours: mode === 'auto' ? undefined : 0 });
     saveDb(db);
@@ -2908,13 +2910,13 @@ async function handleOutsourceTelegramCommand(cmd, args = '') {
     const r = updateOutsourceRouting(db, { routing: 'auto', awayHours: h });
     saveDb(db);
     await flushCloudBackup(db);
-    return `이동 중 모드: ${h}시간 동안 Aside 몫은 <b>${r.label}</b>로 갑니다 (Gemini 앱 몫은 그대로). 돌아오면 /office`;
+    return `PC 자리비움: ${h}시간 동안 Aside를 건너뛰고 다음 순위로 바로 넘깁니다. 돌아오면 /office`;
   }
   if (cmd === 'office') {
     const r = updateOutsourceRouting(db, { routing: 'auto', awayHours: 0 });
     saveDb(db);
     await flushCloudBackup(db);
-    return `이동 중 모드를 껐습니다. 지금 외주 대상: <b>${r.label}</b> (${escapeTelegramHtml(r.why)})`;
+    return `자리비움을 껐습니다. 다시 우선순위대로 Aside도 받습니다.`;
   }
   if (cmd === 'out') {
     const m = a.match(/(OUT-\d{6}-[A-Z0-9]{4})\s*(\S+)?/i);
@@ -3052,7 +3054,7 @@ function getTelegramCallbacks() {
         `• 진행 중 업무: ${activeMissions}건`,
         `• CEO 결재 대기: <b>${pending}건</b>`,
         ``,
-        `명령어: /approvals · /order 지시내용 · /out (외주 현황) · /away 3 (이동 중, Aside 몫→Antigravity) · /office · /route`,
+        `명령어: /approvals · /order 지시내용 · /out (외주 현황) · /away 3 (PC 자리비움, Aside 건너뜀) · /office · /route`,
         `자유 대화: 그냥 메시지를 보내면 총괄 팀장이 답하고, 지시면 실제 업무로 등록합니다. (#업무명 으로 채널 지정, #전체 로 해제)`,
         `알림: /notify 상태 · /report on|off · /quiet 23:00-08:00 · /quiet off`
       ].join('\n');
@@ -5044,7 +5046,7 @@ app.put('/api/settings', async (c) => {
     }
     if (['off', 'proposals', 'proposals_and_reports'].includes(body.outsourcing.consultMode)) os.consultMode = body.outsourcing.consultMode;
     s.outsourcing = { ...(s.outsourcing || {}), ...os };
-    updateOutsourceRouting(db, { routing: body.outsourcing.routing, officeHours: body.outsourcing.officeHours, leaseMinutes: body.outsourcing.leaseMinutes, awayHours: body.outsourcing.awayHours, roles: body.outsourcing.roles, geminiWaitMinutes: body.outsourcing.geminiWaitMinutes });
+    updateOutsourceRouting(db, { routing: body.outsourcing.routing, officeHours: body.outsourcing.officeHours, leaseMinutes: body.outsourcing.leaseMinutes, awayHours: body.outsourcing.awayHours, roles: body.outsourcing.roles, geminiWaitMinutes: body.outsourcing.geminiWaitMinutes, priorities: body.outsourcing.priorities, waitMinutes: body.outsourcing.waitMinutes });
   }
   if (body.leadEngine && typeof body.leadEngine === 'object') {
     const le = getLeadSettings(s);
