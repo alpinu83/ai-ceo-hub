@@ -60,7 +60,76 @@ export function getMissionScope(mission) {
     .map((x) => String(x).trim())
     .filter((x) => x.length >= 2)
     .slice(0, 20);
-  return { focus: String(s.focus || '').trim().slice(0, 600), exclude };
+  return { focus: String(s.focus || '').trim().slice(0, 600), exclude, noCode: Boolean(s.noCode) };
+}
+
+const NEGATION_NEAR_RE = /(제외|말고|빼고|아닌|아니라|금지|않|없이|대신|보류)/;
+const CODE_PLAN_RE = /(\bPR\b|풀\s*리퀘|브랜치|커밋|배포|저장소에|레포에|컴포넌트\s*구현|코드\s*(작성|구현|수정)|git\s+(push|commit))/i;
+
+/**
+ * 결과물·계획이 이 업무의 지침을 어겼는지 (금지 키워드 사용 · 코드 금지 단계에서 코드·PR 계획)
+ * "세무는 제외했습니다"처럼 부정 문맥에서 언급한 것은 위반으로 보지 않음
+ */
+export function findOutputViolations(mission, text = '') {
+  const { exclude, noCode } = getMissionScope(mission);
+  const src = String(text || '');
+  const out = [];
+  for (const k of exclude) {
+    const re = new RegExp(k.replace(/[.*+?^${}()|[\]\\]/g, (ch) => '\\' + ch), 'gi');
+    let m;
+    while ((m = re.exec(src))) {
+      const around = src.slice(Math.max(0, m.index - 20), m.index + k.length + 20);
+      if (!NEGATION_NEAR_RE.test(around)) {
+        out.push(`금지 범위 "${k}" 사용`);
+        break;
+      }
+    }
+  }
+  if (noCode) {
+    const m = src.match(CODE_PLAN_RE);
+    if (m) {
+      const around = src.slice(Math.max(0, m.index - 20), m.index + 30);
+      if (!NEGATION_NEAR_RE.test(around)) out.push(`코드·PR 금지 단계인데 "${m[0]}" 계획`);
+    }
+  }
+  return out;
+}
+
+/** 작업 제목·설명이 코드 금지 단계에 맞지 않는지 */
+export function isForbiddenCodeTask(mission, spec = {}) {
+  const { noCode } = getMissionScope(mission);
+  if (!noCode) return false;
+  return Boolean(spec.isCodeChange) || CODE_PLAN_RE.test(`${spec.title || ''} ${spec.description || ''}`);
+}
+
+/** 맨 앞에 두는 업무 브리핑: 목표 · 지금 단계 · 절대 하지 말 것 (작은 모델도 놓치지 않게 짧고 단정하게) */
+export function buildMissionBrief(mission, otherProjects = []) {
+  if (!mission) return '';
+  const { focus, exclude, noCode } = getMissionScope(mission);
+  const g = getMissionGoal(mission);
+  const lines = [`[이번 업무 브리핑 — "${mission.title}" · 아래와 다르게 하면 결과물은 반려됨]`];
+  lines.push(`- 목표: ${g.objective || oneLine(mission.directive, 160)}${g.metric && g.target !== null ? ` (${g.metric} ${g.target}${g.unit ? ` ${g.unit}` : ''})` : ''}`);
+  if (focus) lines.push(`- 지금 단계에서 할 일: ${focus}`);
+  const nots = [];
+  if (exclude.length) nots.push(`${exclude.join(', ')} 관련 내용·데이터·사례`);
+  if (noCode) nots.push('코드 작성·PR·배포·저장소 작업 계획 (지금은 기획·조사 단계)');
+  if (otherProjects.length) nots.push(`다른 프로젝트(${otherProjects.join(', ')})의 데이터·결과·사례`);
+  if (nots.length) lines.push(`- 절대 하지 말 것: ${nots.join(' / ')}`);
+  if (!mission.siteUrl) lines.push('- 이 업무에는 연결된 사이트·분석 데이터가 없음 (수치는 웹 근거나 가정으로만)');
+  return lines.join('\n');
+}
+
+/** 맨 뒤에 두는 제출 전 자가 점검 */
+export function buildComplianceChecklist(mission) {
+  if (!mission) return '';
+  const { exclude, noCode, focus } = getMissionScope(mission);
+  const items = [];
+  if (focus) items.push('결과물이 "지금 단계에서 할 일"에 직접 기여하는가?');
+  if (exclude.length) items.push(`${exclude.join(', ')} 관련 내용·데이터가 하나도 없는가?`);
+  if (noCode) items.push('코드·PR·배포·저장소 작업을 계획하거나 쓰지 않았는가?');
+  items.push('확인하지 않은 수치를 사실처럼 쓰지 않았는가? (모르면 "가정:")');
+  items.push('정보를 달라는 말만 하지 않고 실제 결과물을 만들었는가?');
+  return `[제출 전 자가 점검 — 하나라도 "아니오"면 고쳐서 제출]\n${items.map((x, i) => `${i + 1}. ${x}`).join('\n')}`;
 }
 
 /** 작업/제안 텍스트가 미션의 금지 범위에 걸리면 걸린 키워드를 돌려줌 */
@@ -254,7 +323,10 @@ export function classifyBlocker(reason = '', { repoLinked = false } = {}) {
 }
 
 /** 팀장 피드백: 다시 맡길 때 무엇을 어떻게 만들라고 할지 */
-export function triageGuidance(blocker, { repoLinked = false } = {}) {
+export function triageGuidance(blocker, { repoLinked = false, violations = [] } = {}) {
+  if (blocker === 'scope') {
+    return `결과물이 이 업무의 지침을 어겼습니다(${violations.join(', ')}). 맨 위 "이번 업무 브리핑"의 "절대 하지 말 것"을 지켜서, 해당 내용을 빼고 "지금 단계에서 할 일"에 맞게 다시 만드세요.`;
+  }
   if (blocker === 'repo') {
     return '이 업무에는 연결된 저장소가 없습니다. 저장소·PR을 기다리지 말고, 바로 쓸 수 있는 결과물(새로 만들 파일의 경로와 전체 내용을 코드 블록으로, 또는 완성된 문서)을 만드세요. 저장소 연결은 팀장이 대표님께 따로 요청합니다.';
   }
@@ -460,8 +532,15 @@ export function buildCompanyContext(db, missionId = '', { compact = false } = {}
   const global = facts.filter((f) => !usedIds.has(f.id) && !f.missionId).slice(0, compact ? 3 : 6);
 
   const parts = [];
-  if (directives) parts.push(`[CEO 전역 지침 — 모든 AI 팀원 공통, 항상 최우선 적용]\n${directives}`);
   const missionObj = missionId ? (db.missions || []).find((m) => m.id === missionId) : null;
+  // 다른 프로젝트 이름·저장소·사이트 (이 업무에 섞이면 그 일을 따라 하게 됨)
+  const others = missionObj ? (db.missions || []).filter((m) => m.id !== missionObj.id) : [];
+  const otherMarkers = others
+    .flatMap((m) => [m.title, m.githubRepo, String(m.githubRepo || '').split('/')[1], String(m.siteUrl || '').replace(/^https?:\/\//, '').replace(/\/.*$/, '')])
+    .map((x) => String(x || '').trim().toLowerCase())
+    .filter((x) => x.length >= 4);
+  if (missionObj) parts.push(buildMissionBrief(missionObj, others.map((m) => m.title).slice(0, 4)));
+  if (directives) parts.push(`[CEO 전역 지침 — 모든 AI 팀원 공통, 항상 최우선 적용]\n${directives}`);
   const scope = getMissionScope(missionObj);
   if (missionObj && (scope.focus || scope.exclude.length || missionPinned.length)) {
     const sl = [];
@@ -471,7 +550,14 @@ export function buildCompanyContext(db, missionId = '', { compact = false } = {}
     parts.push(`["${missionObj.title}" 업무에 대한 대표님 고정 지침 — 최우선, 어기면 안 됨]\n${sl.join('\n')}`);
   }
   if (missionObj) parts.push(`["${missionObj.title}" 목표 — 모든 판단·계획·보고의 기준]\n${describeMissionGoal(missionObj)}`);
-  const memLines = [...globalPinned, ...own, ...global].map((f) => formatFact(f, missionTitles));
+  // 이 업무에 관계없는 전역 기억(다른 프로젝트 이야기·금지 범위 언급)은 빼서 엉뚱한 일을 따라 하지 않게
+  const scopeEx = getMissionScope(missionObj).exclude.map((k) => k.toLowerCase());
+  const relevant = (f) => {
+    if (!missionObj || f.missionId) return true;
+    const t = String(f.text || '').toLowerCase();
+    return !otherMarkers.some((x) => t.includes(x)) && !scopeEx.some((k) => t.includes(k));
+  };
+  const memLines = [...globalPinned.filter(relevant), ...own, ...global.filter(relevant)].map((f) => formatFact(f, missionTitles));
   if (memLines.length) parts.push(`[회사 기억 — 이전 지시·결정·결과 (최신순)]\n${memLines.join('\n')}`);
 
   const mission = missionId ? (db.missions || []).find((m) => m.id === missionId) : null;
