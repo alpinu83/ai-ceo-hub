@@ -234,7 +234,8 @@ const STATUS_META = {
   outsourced: { label: '외주 진행 중', cls: 'badge-blue' },
   awaiting_approval: { label: 'CEO 결재 대기', cls: 'badge-amber' },
   completed: { label: '완료', cls: 'badge-green' },
-  rejected: { label: '반려', cls: 'badge-red' }
+  rejected: { label: '반려', cls: 'badge-red' },
+  blocked: { label: '대표님 확인 필요', cls: 'badge-amber' }
 };
 
 const RENDER_BACKEND_URL = 'https://ai-ceo-hub.onrender.com';
