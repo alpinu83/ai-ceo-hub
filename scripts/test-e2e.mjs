@@ -364,8 +364,8 @@ async function runTests() {
     const tokQ = `token=${encodeURIComponent(mcpToken)}`;
     const outDenied = await fetch(`${BASE}/api/outsourcing`);
     assert.equal(outDenied.status, 401, 'outsourcing list must require a token');
-    const outList = await (await fetch(`${BASE}/api/outsourcing?${tokQ}&worker=antigravity`)).json();
-    assert.ok(outList.requests.some((r) => r.id === outId), 'open request should be listed for any worker');
+    const outList = await (await fetch(`${BASE}/api/outsourcing?${tokQ}`)).json();
+    assert.ok(outList.requests.some((r) => r.id === outId), 'open request should be listed');
     const claimed = await (
       await fetch(`${BASE}/api/outsourcing/${outId}/claim?${tokQ}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ worker: 'antigravity' }) })
     ).json();
