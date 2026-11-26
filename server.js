@@ -111,6 +111,7 @@ import {
   buildPacket,
   resolveTarget,
   describeRouting,
+  describeRolesLine,
   requestCeoAction,
   resumeRequest,
   assignRequest,
@@ -2636,7 +2637,7 @@ function notifyOutsourceCreated(db, req) {
   sendTelegramReport(
     db.settings,
     `${req.kind === 'consult' ? '외부 자문 요청' : '외주 요청'} ${req.id}`,
-    `${OUTSOURCE_KIND_LABELS[req.kind]} · ${req.title}\n배정: ${workerLabel}\n사유: ${req.reason}\n다른 쪽에 맡기려면: /out ${req.id} antigravity (또는 aside)`,
+    `${OUTSOURCE_KIND_LABELS[req.kind]} · ${req.title}\n배정: ${workerLabel}\n사유: ${req.reason}\n다른 쪽에 맡기려면: /out ${req.id} antigravity (또는 aside, gemini)`,
     `out:${req.id}`
   ).catch(() => {});
 }
@@ -2851,6 +2852,7 @@ async function handleOutsourceNeedsCeo(id) {
           { text: 'Antigravity로 재개', callback_data: `out:ag:${req.id}` },
           { text: 'Aside로 재개', callback_data: `out:as:${req.id}` }
         ],
+        ...(['task', 'consult', 'research'].includes(req.kind) ? [[{ text: 'Gemini 앱으로 재개', callback_data: `out:gm:${req.id}` }]] : []),
         [{ text: '❌ 이 외주 취소', callback_data: `out:cancel:${req.id}` }]
       ]
     }).catch(() => {});
@@ -2858,9 +2860,11 @@ async function handleOutsourceNeedsCeo(id) {
 }
 setOutsourcingHandlers({ onNeedsCeo: handleOutsourceNeedsCeo });
 
-function updateOutsourceRouting(db, { routing, awayHours, officeHours, leaseMinutes } = {}) {
+function updateOutsourceRouting(db, { routing, awayHours, officeHours, leaseMinutes, roles, geminiWaitMinutes } = {}) {
   const os = { ...getOutsourcingSettings(db.settings) };
-  if (['auto', 'aside', 'antigravity'].includes(routing)) os.routing = routing;
+  if (['auto', 'aside', 'antigravity', 'gemini'].includes(routing)) os.routing = routing;
+  if (roles && typeof roles === 'object') os.roles = { ...os.roles, ...roles };
+  if (geminiWaitMinutes !== undefined && Number.isFinite(Number(geminiWaitMinutes))) os.geminiWaitMinutes = Number(geminiWaitMinutes);
   if (awayHours !== undefined) {
     const h = Number(awayHours);
     os.awayUntil = h > 0 ? new Date(Date.now() + Math.min(24, h) * 3600 * 1000).toISOString() : '';
@@ -2876,9 +2880,10 @@ function updateOutsourceRouting(db, { routing, awayHours, officeHours, leaseMinu
   }
   if (Number.isFinite(Number(leaseMinutes))) os.leaseMinutes = Math.min(240, Math.max(15, Math.round(Number(leaseMinutes))));
   db.settings.outsourcing = { ...(db.settings.outsourcing || {}), ...os };
+  db.settings.outsourcing = { ...db.settings.outsourcing, ...getOutsourcingSettings(db.settings) }; // 못 하는 일 배정 등 잘못된 값 정리
   shortenForeignLeases(db);
   const r = describeRouting(db.settings);
-  appendLog(db, '외주 창구', `외주 대상: 지금 ${r.label} (${r.why})`, 'info');
+  appendLog(db, '외주 창구', `외주 분담: ${describeRolesLine(db.settings)} (${r.why})`, 'info');
   return r;
 }
 
@@ -2887,22 +2892,22 @@ async function handleOutsourceTelegramCommand(cmd, args = '') {
   const db = loadDb();
   const a = String(args || '').trim();
   if (cmd === 'route') {
-    const mode = /anti|agy|안티/i.test(a) ? 'antigravity' : /aside|어사이드|회사/i.test(a) ? 'aside' : /auto|자동/i.test(a) ? 'auto' : '';
+    const mode = /anti|agy|안티/i.test(a) ? 'antigravity' : /aside|어사이드|회사/i.test(a) ? 'aside' : /gemini|제미/i.test(a) ? 'gemini' : /auto|자동/i.test(a) ? 'auto' : '';
     if (!mode) {
       const r = describeRouting(db.settings);
-      return `지금 외주 대상: <b>${r.label}</b> (${escapeTelegramHtml(r.why)})\n바꾸기: /route auto · /route aside · /route antigravity · /away 3 (3시간 이동 중) · /office (이동 중 해제)`;
+      return `<b>외주 분담</b> (${escapeTelegramHtml(r.why)})\n${escapeTelegramHtml(describeRolesLine(db.settings))}\n바꾸기: /route auto (분담표대로) · /route aside · /route antigravity · /route gemini · /away 3 (3시간 이동 중) · /office (이동 중 해제)`;
     }
-    const r = updateOutsourceRouting(db, { routing: mode, awayHours: mode === 'auto' ? undefined : 0 });
+    updateOutsourceRouting(db, { routing: mode, awayHours: mode === 'auto' ? undefined : 0 });
     saveDb(db);
     await flushCloudBackup(db);
-    return `외주 대상을 바꿨습니다: 지금 <b>${r.label}</b> (${escapeTelegramHtml(r.why)})`;
+    return `외주 분담을 바꿨습니다\n${escapeTelegramHtml(describeRolesLine(db.settings))}`;
   }
   if (cmd === 'away') {
     const h = Number((a.match(/[\d.]+/) || ['3'])[0]) || 3;
     const r = updateOutsourceRouting(db, { routing: 'auto', awayHours: h });
     saveDb(db);
     await flushCloudBackup(db);
-    return `이동 중 모드: ${h}시간 동안 외주는 <b>${r.label}</b>로 갑니다. 돌아오면 /office`;
+    return `이동 중 모드: ${h}시간 동안 Aside 몫은 <b>${r.label}</b>로 갑니다 (Gemini 앱 몫은 그대로). 돌아오면 /office`;
   }
   if (cmd === 'office') {
     const r = updateOutsourceRouting(db, { routing: 'auto', awayHours: 0 });
@@ -2914,7 +2919,7 @@ async function handleOutsourceTelegramCommand(cmd, args = '') {
     const m = a.match(/(OUT-\d{6}-[A-Z0-9]{4})\s*(\S+)?/i);
     if (m) {
       const id = m[1].toUpperCase();
-      const w = /anti|agy|안티/i.test(m[2] || '') ? 'antigravity' : /aside/i.test(m[2] || '') ? 'aside' : 'auto';
+      const w = /anti|agy|안티/i.test(m[2] || '') ? 'antigravity' : /aside/i.test(m[2] || '') ? 'aside' : /gemini|제미/i.test(m[2] || '') ? 'gemini' : 'auto';
       const req = findRequest(db, id);
       if (req?.status === 'needs_ceo') resumeRequest(id, '텔레그램에서 재개', w === 'auto' ? '' : w);
       else assignRequest(id, w);
@@ -2925,10 +2930,10 @@ async function handleOutsourceTelegramCommand(cmd, args = '') {
     if (!list.length) return '진행 중인 외주가 없습니다.';
     const rr = describeRouting(db.settings);
     return [
-      `<b>진행 중 외주</b> (기본 대상: ${rr.label})`,
+      `<b>진행 중 외주</b> (${escapeTelegramHtml(describeRolesLine(db.settings))})`,
       ...list.map((r) => `• <code>${r.id}</code> ${escapeTelegramHtml(oneLineText(r.title, 40))} — ${r.status === 'needs_ceo' ? '🙋 대표님 필요' : r.status === 'claimed' ? `${escapeTelegramHtml(r.claimedBy)} 작업 중` : `대기 → ${OUTSOURCE_WORKER_LABELS[resolveTarget(db.settings, r)]}`}`),
       '',
-      '대상 바꾸기: /out OUT-ID antigravity (또는 aside, auto)'
+      '대상 바꾸기: /out OUT-ID antigravity (또는 aside, gemini, auto)'
     ].join('\n');
   }
   return '';
@@ -2939,6 +2944,7 @@ async function handleOutsourceTelegramCallback(action, id) {
     if (action === 'resume') resumeRequest(id, '텔레그램에서 처리 완료');
     else if (action === 'ag') resumeRequest(id, '텔레그램에서 처리 완료', 'antigravity');
     else if (action === 'as') resumeRequest(id, '텔레그램에서 처리 완료', 'aside');
+    else if (action === 'gm') resumeRequest(id, '텔레그램에서 처리 완료', 'gemini');
     else if (action === 'cancel') cancelRequest(id, 'CEO');
     else return { ok: false, text: '알 수 없는 동작' };
     const req = findRequest(loadDb(), id);
@@ -2966,7 +2972,7 @@ async function outsourcingWatch() {
     if (!r.reminded && now - Date.parse(r.updatedAt || r.createdAt) > 2 * 3600 * 1000) {
       r.reminded = true;
       const tgt = OUTSOURCE_WORKER_LABELS[resolveTarget(db.settings, r)];
-      sendTelegramReport(db.settings, `외주 대기 ${r.id}`, `"${r.title}"이(가) 2시간째 ${tgt}에서 처리되지 않았습니다. 다른 쪽으로 넘기려면: /out ${r.id} antigravity (또는 aside) · 이동 중이면 /away 3`, `outremind:${r.id}`).catch(() => {});
+      sendTelegramReport(db.settings, `외주 대기 ${r.id}`, `"${r.title}"이(가) 2시간째 ${tgt}에서 처리되지 않았습니다. 다른 쪽으로 넘기려면: /out ${r.id} antigravity (또는 aside, gemini) · 이동 중이면 /away 3`, `outremind:${r.id}`).catch(() => {});
     }
   }
   saveDb(db);
@@ -3045,7 +3051,7 @@ function getTelegramCallbacks() {
         `• 진행 중 업무: ${activeMissions}건`,
         `• CEO 결재 대기: <b>${pending}건</b>`,
         ``,
-        `명령어: /approvals · /order 지시내용 · /out (외주 현황) · /away 3 (이동 중, 외주→Antigravity) · /office · /route`,
+        `명령어: /approvals · /order 지시내용 · /out (외주 현황) · /away 3 (이동 중, Aside 몫→Antigravity) · /office · /route`,
         `자유 대화: 그냥 메시지를 보내면 총괄 팀장이 답하고, 지시면 실제 업무로 등록합니다. (#업무명 으로 채널 지정, #전체 로 해제)`,
         `알림: /notify 상태 · /report on|off · /quiet 23:00-08:00 · /quiet off`
       ].join('\n');
@@ -4777,7 +4783,7 @@ app.post('/api/outsourcing', async (c) => {
     const kind = ['task', 'code', 'browser', 'research'].includes(body.kind) ? body.kind : mission && getMissionRepoCfg(db.settings, mission) && isCodeTask(task, db.agents.find((a) => a.id === task.assigneeId)) ? 'code' : 'task';
     req = outsourceTask(db, task, {
       kind,
-      worker: ['antigravity', 'aside', 'any'].includes(body.worker) ? body.worker : kind === 'code' ? 'antigravity' : kind === 'browser' ? 'aside' : 'any',
+      worker: ['antigravity', 'aside', 'gemini', 'any'].includes(body.worker) ? body.worker : kind === 'code' ? 'antigravity' : kind === 'browser' ? 'aside' : 'any',
       reason: String(body.reason || '대표님이 외부 AI에 직접 맡김').slice(0, 400),
       createdBy: 'CEO'
     });
@@ -4795,7 +4801,7 @@ app.post('/api/outsourcing', async (c) => {
       deliverable: body.deliverable || '',
       missionId: mission?.id || '',
       reason: String(body.reason || '대표님 직접 요청').slice(0, 400),
-      worker: ['antigravity', 'aside', 'any'].includes(body.worker) ? body.worker : 'any',
+      worker: ['antigravity', 'aside', 'gemini', 'any'].includes(body.worker) ? body.worker : 'any',
       repo: kind === 'code' || kind === 'task' ? repoCfg?.repo || '' : '',
       branch: repoCfg?.branch || 'main',
       siteUrl: mission?.siteUrl || '',
@@ -4803,7 +4809,7 @@ app.post('/api/outsourcing', async (c) => {
       createdBy: 'CEO'
     });
     req = made.request;
-    if (['antigravity', 'aside'].includes(body.worker)) req.pinnedWorker = body.worker;
+    if (['antigravity', 'aside', 'gemini'].includes(body.worker)) req.pinnedWorker = body.worker;
     if (made.created) notifyOutsourceCreated(db, req);
   }
   saveDb(db);
@@ -5021,7 +5027,7 @@ app.put('/api/settings', async (c) => {
     }
     if (['off', 'proposals', 'proposals_and_reports'].includes(body.outsourcing.consultMode)) os.consultMode = body.outsourcing.consultMode;
     s.outsourcing = { ...(s.outsourcing || {}), ...os };
-    updateOutsourceRouting(db, { routing: body.outsourcing.routing, officeHours: body.outsourcing.officeHours, leaseMinutes: body.outsourcing.leaseMinutes, awayHours: body.outsourcing.awayHours });
+    updateOutsourceRouting(db, { routing: body.outsourcing.routing, officeHours: body.outsourcing.officeHours, leaseMinutes: body.outsourcing.leaseMinutes, awayHours: body.outsourcing.awayHours, roles: body.outsourcing.roles, geminiWaitMinutes: body.outsourcing.geminiWaitMinutes });
   }
   if (body.leadEngine && typeof body.leadEngine === 'object') {
     const le = getLeadSettings(s);
