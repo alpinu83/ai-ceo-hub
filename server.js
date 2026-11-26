@@ -59,7 +59,9 @@ import {
   describeTeamLoad,
   buildPlanningRoster,
   rebalanceAssignments,
-  ASSIGNMENT_RULES
+  ASSIGNMENT_RULES,
+  findOutputViolations,
+  isForbiddenCodeTask
 } from './src/lead-engine.js';
 import { describeSkillsForClient, getSkillSettings, selectSkills, renderSkills } from './src/skills.js';
 import { testGoogleDataConnection, buildAnalyticsContext, describeGoogleDataStatus } from './src/google-data.js';
@@ -651,6 +653,13 @@ async function submitNextPhaseProposal(missionId, { leadAssessment = '' } = {}) 
     }
   }
 
+  // 코드 금지 단계면 코드·PR·배포 단계는 제안에서 뺌
+  if (getMissionScope(mission).noCode) {
+    const beforeN = (proposal.suggestedSteps || []).length;
+    proposal.suggestedSteps = (proposal.suggestedSteps || []).filter((st) => !isForbiddenCodeTask(mission, { title: st }));
+    if ((proposal.suggestedSteps || []).length < beforeN) proposal.rationale = `${proposal.rationale}\n(코드 금지 단계라 코드·PR 단계 ${beforeN - proposal.suggestedSteps.length}건 자동 제외)`;
+  }
+
   // 제안서 사실 확인: 없는 파일·PR을 전제로 하거나, 이미 끝난 작업을 다시 하자는 제안이면 한 번 다시 씁니다
   const snap = mission.githubRepo
     ? await getRepoSnapshot({ repo: mission.githubRepo, branch: mission.githubBranch || 'main', token: getGithubRepoConfig(db.settings).token }).catch(() => null)
@@ -857,7 +866,8 @@ async function decomposeIntoPhaseTasks(missionId, combinedDirective) {
   plan.tasks = plan.tasks.filter((t) => {
     const hit = findScopeViolations(mission, `${t.title} ${t.description}`);
     if (hit.length) droppedOutOfScope.push(`${t.title}(${hit.join(',')})`);
-    return !hit.length;
+    else if (isForbiddenCodeTask(mission, t)) droppedOutOfScope.push(`${t.title}(코드 금지 단계)`);
+    return !hit.length && !isForbiddenCodeTask(mission, t);
   });
   if (droppedOutOfScope.length) {
     appendLog(db, '총괄 팀장', `"${mission.title}" 업무 범위 밖 작업 ${droppedOutOfScope.length}건 제외: ${droppedOutOfScope.join(' / ')}`.slice(0, 600), 'warning');
@@ -1411,6 +1421,7 @@ function createLeadTasks(db, mission, specs = [], source = 'lead_followup') {
   for (const spec of specs) {
     if (!spec?.title || existing.has(spec.title)) continue;
     if (findScopeViolations(mission, `${spec.title} ${spec.description || ''}`).length) continue; // 업무 범위 밖
+    if (isForbiddenCodeTask(mission, spec)) continue; // 코드 금지 단계
     let assigneeId = spec.assigneeId;
     if (spec.isCodeChange && repoLinked && agentMap.agent_it_dev?.active) assigneeId = 'agent_it_dev';
     const ag = agentMap[assigneeId] || agentMap[mission.leadAgentId] || db.agents[0];
@@ -2703,6 +2714,31 @@ function notifyOutsourceCreated(db, req) {
  * - 재배정 후에도 안 되면: 저장소·정보 문제는 대표님께 요청하고 보류, 능력 문제는 외주
  */
 function leadTriageResult(db, task, agent, mission, output, osFlag = '') {
+  // 1) 지침 위반 검사: 금지 범위(예: 세무)·코드 금지 단계의 코드·PR 계획 → 완료로 인정하지 않고 고쳐 오게 함
+  const violations = findOutputViolations(mission, output);
+  if (violations.length) {
+    task.triage = task.triage || { retries: 0, tried: [] };
+    if (agent?.id && !task.triage.tried.includes(agent.id)) task.triage.tried.push(agent.id);
+    task.triage.scopeRetries = Number(task.triage.scopeRetries || 0);
+    const nowIso0 = new Date().toISOString();
+    if (task.triage.scopeRetries < 1) {
+      task.triage.scopeRetries += 1;
+      task.description = `${task.description || ''}\n\n[팀장 피드백] ${triageGuidance('scope', { violations })}`.slice(0, 6000);
+      task.status = 'queued';
+      task.previousOutput = String(output || '').slice(0, 1500);
+      task.output = '';
+      task.updatedAt = nowIso0;
+      leadSay(db, mission, '팀장 검토', `"${task.title}" 결과가 업무 지침을 어겨(${violations.join(', ')}) ${agent?.name || '담당자'}에게 고쳐 오도록 다시 맡겼습니다.`);
+      appendLog(db, '총괄 팀장', `"${task.title}" 지침 위반으로 재작업: ${violations.join(', ')}`, 'info');
+      return { handled: true, requeued: true };
+    }
+    task.status = 'blocked';
+    task.blockedReason = `지침 위반 반복: ${violations.join(', ')}`;
+    task.output = String(output || '');
+    task.updatedAt = nowIso0;
+    appendLog(db, '총괄 팀장', `"${task.title}" 지침 위반이 반복돼 완료 처리하지 않고 보류: ${violations.join(', ')}`, 'warning');
+    return { handled: true };
+  }
   const nr = detectNonResult(output, osFlag);
   if (!nr.nonResult) return { handled: false };
   const repoLinked = Boolean(getMissionRepoCfg(db.settings, mission));
@@ -3764,6 +3800,11 @@ async function intakeChatDirective(text, missionId) {
     assignmentRules: ASSIGNMENT_RULES
   });
   if (cls.kind !== 'directive') return { note: '' };
+  if (Array.isArray(cls.tasks) && cls.tasks.length && mission) {
+    const before = cls.tasks.length;
+    cls.tasks = cls.tasks.filter((t) => !findScopeViolations(mission, `${t.title} ${t.description || ''}`).length && !isForbiddenCodeTask(mission, t));
+    if (cls.tasks.length < before) appendLog(db, '총괄 팀장', `회의실 지시 중 업무 범위 밖·코드 금지 단계 작업 ${before - cls.tasks.length}건 제외`, 'info');
+  }
   if (Array.isArray(cls.tasks) && cls.tasks.length) {
     const rb = rebalanceAssignments(db, cls.tasks);
     cls.tasks = rb.tasks;
