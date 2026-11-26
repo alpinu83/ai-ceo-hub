@@ -106,6 +106,14 @@ async function runTests() {
       'pass_outsourcing_request'
     ]);
 
+    // MCP는 토큰 필수 (헤더 없음·가짜 토큰·가짜 ?token= 모두 거부, 올바른 ?token=은 통과)
+    const mcpBody = JSON.stringify({ jsonrpc: '2.0', id: 9, method: 'tools/list', params: {} });
+    const plainHeaders = { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' };
+    assert.equal((await fetch(`${BASE}/api/mcp`, { method: 'POST', headers: plainHeaders, body: mcpBody })).status, 401, 'MCP without token must be rejected');
+    assert.equal((await fetch(`${BASE}/api/mcp?token=bogus`, { method: 'POST', headers: plainHeaders, body: mcpBody })).status, 401, 'MCP with wrong query token must be rejected');
+    assert.equal((await fetch(`${BASE}/api/mcp`, { method: 'POST', headers: { ...plainHeaders, Authorization: 'Bearer bogus' }, body: mcpBody })).status, 401, 'MCP with wrong bearer must be rejected');
+    assert.equal((await fetch(`${BASE}/api/mcp?token=${encodeURIComponent(mcpToken)}`, { method: 'POST', headers: plainHeaders, body: mcpBody })).status, 200, 'MCP with query token must work');
+
     const briefRes = await (
       await fetch(`${BASE}/api/mcp`, {
         method: 'POST',

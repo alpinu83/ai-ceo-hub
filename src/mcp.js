@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
@@ -400,22 +401,30 @@ export function createCeoMcpServer() {
  */
 export async function handleOfficialMcpHttp(req, res, parsedBody) {
   const db = loadDb();
-  const expectedToken = db.settings?.mcpToken;
-  const authHeader = req.headers.authorization || '';
-
-  if (authHeader && expectedToken) {
-    const provided = authHeader.replace(/^Bearer\s+/i, '').trim();
-    if (provided && provided !== expectedToken) {
-      res.writeHead(401, { 'Content-Type': 'application/json' });
-      res.end(
-        JSON.stringify({
-          jsonrpc: '2.0',
-          id: parsedBody?.id ?? null,
-          error: { code: -32001, message: 'Invalid MCP Bearer token' }
-        })
-      );
-      return;
+  const expectedToken = String(db.settings?.mcpToken || '').trim();
+  const authHeader = String(req.headers.authorization || '');
+  // 토큰 필수: Authorization: Bearer <토큰> 또는 ?token=<토큰> (Gemini 앱 맞춤 연결 앱은 주소에 토큰을 넣음)
+  let provided = authHeader.replace(/^Bearer\s+/i, '').trim();
+  if (!provided) {
+    try {
+      provided = new URL(req.url || '/', 'http://localhost').searchParams.get('token') || '';
+    } catch {
+      provided = '';
     }
+  }
+  const a = Buffer.from(String(provided));
+  const b = Buffer.from(expectedToken);
+  const valid = expectedToken.length > 0 && a.length === b.length && timingSafeEqual(a, b);
+  if (!valid) {
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: parsedBody?.id ?? null,
+        error: { code: -32001, message: provided ? 'Invalid MCP token' : 'MCP token required (Authorization: Bearer <token> or ?token=<token>)' }
+      })
+    );
+    return;
   }
 
   // Ensure Accept header satisfies official MCP StreamableHTTP transport when called from simple clients
