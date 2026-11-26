@@ -1413,7 +1413,14 @@ function renderApprovalsView() {
 const OUT_KIND_LABELS = { task: '실무 작업', code: '코드 수정', consult: '외부 자문', browser: '브라우저·계정', research: '심층 리서치' };
 const OUT_WORKER_LABELS = { antigravity: 'Antigravity', aside: 'Aside', gemini: 'Gemini 앱', any: '먼저 잡는 쪽' };
 // 서버 WORKER_CAPS와 같음: 작업자별로 할 수 있는 일
-const OUT_WORKER_CAPS = { antigravity: ['task', 'code', 'consult', 'browser', 'research'], aside: ['task', 'consult', 'browser', 'research'], gemini: ['task', 'consult', 'research'] };
+const OUT_WORKER_CAPS = { antigravity: ['task', 'code', 'consult', 'browser', 'research'], aside: ['task', 'code', 'consult', 'browser', 'research'], gemini: ['task', 'consult', 'research'] };
+const OUT_DEFAULT_PRIORITIES = {
+  consult: ['gemini', 'aside', 'antigravity'],
+  research: ['gemini', 'aside', 'antigravity'],
+  task: ['gemini', 'aside', 'antigravity'],
+  browser: ['aside', 'antigravity'],
+  code: ['antigravity', 'aside']
+};
 const OUT_ROLE_LABELS = { time: '시간대 담당 (업무 시간 Aside · 그 외 Antigravity)', gemini: 'Gemini 앱', aside: 'Aside', antigravity: 'Antigravity' };
 const OUT_DEFAULT_ROLES = { consult: 'gemini', research: 'gemini', task: 'gemini', browser: 'time', code: 'antigravity' };
 const OUT_EFFORT_LABELS = { deep: '깊은 판단', light: '단순·조사' };
@@ -1454,22 +1461,36 @@ function outsourcingSettingsClient() {
     officeHours: { days: Array.isArray(oh.days) && oh.days.length ? oh.days : [1, 2, 3, 4, 5], start: oh.start || '09:00', end: oh.end || '19:00' },
     awayUntil: o.awayUntil && Date.parse(o.awayUntil) > Date.now() ? o.awayUntil : '',
     roles: { ...OUT_DEFAULT_ROLES, ...(o.roles || {}) },
+    priorities: { ...OUT_DEFAULT_PRIORITIES, ...(o.priorities || {}) },
+    waitMinutes: Number(o.waitMinutes) || 30,
     geminiWaitMinutes: o.geminiWaitMinutes ?? 180
   };
 }
 
 /** 서버와 같은 규칙으로 요청별 현재 대상 계산 (화면 표시용) */
+function outChainClient(r) {
+  const cfg = outsourcingSettingsClient();
+  let chain = [...(cfg.priorities[r.kind] || OUT_DEFAULT_PRIORITIES[r.kind] || OUT_DEFAULT_PRIORITIES.task)].filter((w) => OUT_WORKER_CAPS[w]?.includes(r.kind));
+  if (cfg.awayUntil && chain.length > 1) chain = chain.filter((w) => w !== 'aside');
+  const rest = chain.filter((w) => !(r.skipWorkers || []).includes(w));
+  return rest.length ? rest : chain;
+}
+
+/** 서버와 같은 규칙으로 요청별 현재 대상과 다음 순위로 넘어가는 시각 계산 (화면 표시용) */
+function outTargetInfo(r) {
+  if (r.pinnedWorker) return { target: r.pinnedWorker, next: null };
+  const cfg = outsourcingSettingsClient();
+  if (cfg.routing !== 'auto' && OUT_WORKER_CAPS[cfg.routing]?.includes(r.kind)) return { target: cfg.routing, next: null };
+  const chain = outChainClient(r);
+  const since = r.queuedAt || r.createdAt ? Date.parse(r.queuedAt || r.createdAt) : 0;
+  let stage = 0;
+  if (r.status === 'open' && since) stage = Math.max(0, Math.min(chain.length - 1, Math.floor((Date.now() - since) / (cfg.waitMinutes * 60000))));
+  const next = r.status === 'open' && since && stage < chain.length - 1 ? { at: since + (stage + 1) * cfg.waitMinutes * 60000, worker: chain[stage + 1] } : null;
+  return { target: chain[stage] || chain[0], next };
+}
+
 function outTargetClient(r) {
-  if (r.pinnedWorker) return r.pinnedWorker;
-  const by = lastOutRouting?.byKind?.[r.kind];
-  if (by?.worker === 'gemini' && r.status === 'open') {
-    const wait = Number(lastOutRouting?.geminiWaitMinutes ?? 180);
-    const since = Date.parse(r.updatedAt || r.createdAt || 0);
-    if (wait && Number.isFinite(since) && Date.now() - since > wait * 60000) return lastOutRouting?.target || 'aside';
-  }
-  if (by?.worker) return by.worker;
-  if (r.kind === 'code') return 'antigravity';
-  return lastOutRouting?.target || 'aside';
+  return outTargetInfo(r).target;
 }
 
 function geminiConnectorUrl() {
@@ -1554,6 +1575,7 @@ function outCardHtml(r) {
             </div>`
           : ''
       }
+      ${(() => { const nx = open ? outTargetInfo(r).next : null; return nx ? `<p class="routine-sub" style="margin:6px 0 0;">${esc(new Date(nx.at).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }))}까지 안 가져가면 → ${esc(OUT_WORKER_LABELS[nx.worker] || nx.worker)}</p>` : ''; })()}
       ${r.reason && r.status !== 'needs_ceo' && !res ? `<p class="routine-desc">사유: ${esc(r.reason)}</p>` : ''}
       ${
         outSubmitOpenId === r.id && open
@@ -1653,72 +1675,67 @@ function renderOutsourcingSettings(force = false) {
   const cfg = outsourcingSettingsClient();
   const rt = lastOutRouting || { label: '-', why: '' };
   const daysVal = cfg.officeHours.days.length === 7 ? 'all' : cfg.officeHours.days.join(',') === '1,2,3,4,5' ? 'weekdays' : 'custom';
-  const roleRows = Object.keys(OUT_DEFAULT_ROLES)
+  const prio = cfg.priorities;
+  const roleRows = Object.keys(OUT_DEFAULT_PRIORITIES)
     .map((kind) => {
-      const cur = cfg.roles[kind] || OUT_DEFAULT_ROLES[kind];
-      const opts = ['time', 'gemini', 'aside', 'antigravity'].filter((w) => (w === 'time' ? OUT_WORKER_CAPS.aside.includes(kind) && OUT_WORKER_CAPS.antigravity.includes(kind) : OUT_WORKER_CAPS[w].includes(kind)));
+      const capable = ['gemini', 'aside', 'antigravity'].filter((w) => OUT_WORKER_CAPS[w].includes(kind));
+      const cur = prio[kind] || OUT_DEFAULT_PRIORITIES[kind];
+      const cells = [0, 1, 2]
+        .map((i) => {
+          if (i >= capable.length) return '<td class="routine-sub" style="padding:4px;">-</td>';
+          const val = cur[i] || '';
+          return `<td style="padding:4px;"><select data-out-prio="${kind}" data-out-prio-idx="${i}">
+              ${i > 0 ? `<option value="" ${!val ? 'selected' : ''}>없음</option>` : ''}
+              ${capable.map((w) => `<option value="${w}" ${val === w ? 'selected' : ''}>${esc(OUT_WORKER_LABELS[w])}</option>`).join('')}
+            </select></td>`;
+        })
+        .join('');
       const now = rt.byKind?.[kind]?.label;
       return `<tr>
-          <td><strong>${esc(OUT_KIND_LABELS[kind])}</strong><div class="routine-sub">${esc(OUT_KIND_HINTS[kind])}</div></td>
-          <td><select data-out-role="${kind}">${opts.map((w) => `<option value="${w}" ${cur === w ? 'selected' : ''}>${esc(OUT_ROLE_LABELS[w])}</option>`).join('')}</select></td>
-          <td class="routine-sub">${now ? `지금 → ${esc(now)}` : ''}</td>
+          <td style="padding:4px;"><strong>${esc(OUT_KIND_LABELS[kind])}</strong><div class="routine-sub">${esc(OUT_KIND_HINTS[kind])}</div></td>
+          ${cells}
+          <td class="routine-sub" style="padding:4px;">${now ? `새 요청 → ${esc(now)}` : ''}</td>
         </tr>`;
     })
     .join('');
   root.innerHTML = `
     <div class="card out-route">
-      <div class="card-head"><h3 class="card-title">역할 분담</h3></div>
-      <p class="routine-desc" style="margin-top:0;">작업자마다 연결된 도구가 달라서 일의 종류별로 나눠 맡깁니다. Gemini 앱은 웹 검색·Deep Research·긴 글 작성이 강하지만 저장소 수정과 로그인 작업은 못 해서, 그런 일은 Aside·Antigravity가 맡습니다. Antigravity는 사용량 한도가 빡빡해 코드 수정 위주로 둡니다.</p>
+      <div class="card-head"><h3 class="card-title">역할 분담 (우선순위)</h3></div>
+      <p class="routine-desc" style="margin-top:0;">일의 종류마다 맡길 순서를 정합니다. 1순위가 정해진 시간 안에 안 가져가면 2순위, 그래도 안 되면 3순위로 자동으로 넘어갑니다. 잡고 끝내지 못한 작업자는 그 요청에서 건너뜁니다. 작업자가 못 하는 일(Gemini 앱의 로그인·코드 작업)은 목록에 나오지 않습니다.</p>
       <div style="overflow-x:auto;"><table class="out-role-table" style="width:100%;border-collapse:collapse;font-size:13px;">
-        <thead><tr><th style="text-align:left;padding:6px 4px;">일의 종류</th><th style="text-align:left;padding:6px 4px;">담당</th><th style="text-align:left;padding:6px 4px;">현재</th></tr></thead>
+        <thead><tr><th style="text-align:left;padding:6px 4px;">일의 종류</th><th style="text-align:left;padding:6px 4px;">1순위</th><th style="text-align:left;padding:6px 4px;">2순위</th><th style="text-align:left;padding:6px 4px;">3순위</th><th style="text-align:left;padding:6px 4px;">현재</th></tr></thead>
         <tbody>${roleRows}</tbody>
       </table></div>
       <div class="out-settings">
-        <label class="out-check">Gemini 앱이 안 가져가면
-          <select id="out-gemini-wait">
-            ${[[60, '1시간 뒤'], [120, '2시간 뒤'], [180, '3시간 뒤'], [360, '6시간 뒤'], [720, '12시간 뒤'], [0, '넘기지 않음']].map(([v, t]) => `<option value="${v}" ${Number(cfg.geminiWaitMinutes) === v ? 'selected' : ''}>${t}</option>`).join('')}
+        <label class="out-check">다음 순위로 넘기기까지
+          <select id="out-wait-min">
+            ${[[15, '15분'], [30, '30분'], [60, '1시간'], [120, '2시간']].map(([v, t]) => `<option value="${v}" ${Number(cfg.waitMinutes) === v ? 'selected' : ''}>${t}</option>`).join('')}
           </select>
-          시간대 담당에게 넘김
+        </label>
+        <label class="out-check">한 곳에 몰기
+          <select id="out-route-mode">
+            <option value="auto" ${cfg.routing === 'auto' ? 'selected' : ''}>안 함 (우선순위대로)</option>
+            <option value="gemini" ${cfg.routing === 'gemini' ? 'selected' : ''}>Gemini 앱에 몰기</option>
+            <option value="aside" ${cfg.routing === 'aside' ? 'selected' : ''}>Aside에 몰기</option>
+            <option value="antigravity" ${cfg.routing === 'antigravity' ? 'selected' : ''}>Antigravity에 몰기</option>
+          </select>
         </label>
         <span class="routine-sub" id="out-route-dirty" style="display:none;color:var(--accent-amber);font-weight:600;">바꾼 내용이 아직 저장되지 않았습니다</span>
         <button type="button" class="btn btn-primary btn-sm" data-out-route-save="1">역할 분담 저장</button>
       </div>
       <div class="out-route-now" style="margin-top:12px;">
         <div>
-          <div class="routine-sub">시간대 담당 (지금)</div>
-          <div class="out-route-target">${esc(rt.label || '-')}</div>
-          <div class="routine-sub">${esc(rt.why || '')}</div>
+          <div class="routine-sub">PC 자리비움 (Aside를 기다리지 않고 바로 건너뜀)</div>
+          <div class="routine-sub">${cfg.awayUntil ? `${esc(new Date(cfg.awayUntil).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }))}까지 Aside 건너뛰는 중` : '꺼짐'}</div>
         </div>
         <div class="out-away">
-          <span class="routine-sub">이동 중이면</span>
           <button type="button" class="btn btn-ghost btn-sm" data-out-away="1">1시간</button>
           <button type="button" class="btn btn-ghost btn-sm" data-out-away="3">3시간</button>
           <button type="button" class="btn btn-ghost btn-sm" data-out-away="8">8시간</button>
-          ${cfg.awayUntil ? `<button type="button" class="btn btn-primary btn-sm" data-out-away="0">이동 중 해제</button>` : ''}
+          ${cfg.awayUntil ? `<button type="button" class="btn btn-primary btn-sm" data-out-away="0">해제</button>` : ''}
         </div>
       </div>
-      <div class="out-settings">
-        <label class="out-check">한 곳에 몰기
-          <select id="out-route-mode">
-            <option value="auto" ${cfg.routing === 'auto' ? 'selected' : ''}>안 함 (분담표대로)</option>
-            <option value="gemini" ${cfg.routing === 'gemini' ? 'selected' : ''}>Gemini 앱에 몰기</option>
-            <option value="aside" ${cfg.routing === 'aside' ? 'selected' : ''}>Aside에 몰기</option>
-            <option value="antigravity" ${cfg.routing === 'antigravity' ? 'selected' : ''}>Antigravity에 몰기</option>
-          </select>
-        </label>
-        <label class="out-check">업무 시간
-          <select id="out-route-days">
-            <option value="weekdays" ${daysVal === 'weekdays' ? 'selected' : ''}>평일</option>
-            <option value="all" ${daysVal === 'all' ? 'selected' : ''}>매일</option>
-            ${daysVal === 'custom' ? '<option value="custom" selected>사용자 지정</option>' : ''}
-          </select>
-          <input type="time" id="out-route-start" value="${esc(cfg.officeHours.start)}" />
-          ~
-          <input type="time" id="out-route-end" value="${esc(cfg.officeHours.end)}" />
-        </label>
-        <button type="button" class="btn btn-primary btn-sm" data-out-route-save="1">저장</button>
-      </div>
-      <p class="routine-sub" style="margin:8px 0 0;">한 곳에 몰아도 그 작업자가 못 하는 일(예: Gemini 앱의 코드 수정)은 분담표대로 갑니다. 작업자가 하다가 못 하는 일이면 스스로 다른 쪽에 넘깁니다. 텔레그램: /route (분담 보기) · /route gemini · /away 3 · /office · /out 요청ID aside</p>
+      <p class="routine-sub" style="margin:8px 0 0;">한 곳에 몰아도 그 작업자가 못 하는 일은 우선순위대로 갑니다. 작업자가 하다가 못 하는 일이면 스스로 다음 순위로 넘깁니다. 텔레그램: /route (분담 보기) · /route gemini · /away 3 (PC 자리비움) · /office · /out 요청ID aside</p>
     </div>
 
     <div class="card out-guide">
@@ -1761,7 +1778,7 @@ function renderOutsourcingSettings(force = false) {
         </div>
         <div>
           <h4>Aside (회사 PC · 계정 작업)</h4>
-          <p class="routine-desc">Aside 정기 루틴이 매일 9~21시 30분마다(매시 20분·50분) Aside에 배정된 요청만 처리합니다. PC와 Aside가 켜져 있어야 합니다. 바로 시키려면 Aside에 "CEO Office 외주 처리해줘"라고 하세요.</p>
+          <p class="routine-desc">Aside 정기 루틴이 매일 9~21시 30분마다(매시 20분·50분) Aside 차례인 요청만 처리합니다. 코드 수정은 Antigravity 다음 순위로, GitHub 웹에서 PR을 엽니다. PC와 Aside가 켜져 있어야 합니다. 바로 시키려면 Aside에 "CEO Office 외주 처리해줘"라고 하세요.</p>
         </div>
       </div>
     </div>`;
@@ -2879,27 +2896,27 @@ function bindEvents() {
         renderAll();
         refreshIcons();
         renderOutsourcingSettings(true);
-        toast(hours > 0 ? `이동 중 모드 ${hours}시간: Aside 몫은 ${res.routing.label}로 갑니다 (Gemini 앱 몫은 그대로).` : `이동 중 모드 해제: 시간대 담당 ${res.routing.label}`);
+        toast(hours > 0 ? `PC 자리비움 ${hours}시간: Aside를 건너뛰고 다음 순위로 바로 넘깁니다.` : 'PC 자리비움을 해제했습니다.');
       } catch (err) {
         toast(err.message, true);
       }
       return;
     }
     if (target.dataset.outRouteSave) {
-      const daysSel = document.getElementById('out-route-days')?.value;
-      const days = daysSel === 'all' ? [0, 1, 2, 3, 4, 5, 6] : daysSel === 'weekdays' ? [1, 2, 3, 4, 5] : undefined;
+      const priorities = {};
+      document.querySelectorAll('[data-out-prio]').forEach((el) => {
+        const k = el.dataset.outPrio;
+        priorities[k] = priorities[k] || [];
+        priorities[k][Number(el.dataset.outPrioIdx)] = el.value;
+      });
+      for (const k of Object.keys(priorities)) priorities[k] = priorities[k].filter(Boolean).filter((w, i, a) => a.indexOf(w) === i);
       try {
         const res = await api('/api/outsourcing/route', {
           method: 'POST',
           body: JSON.stringify({
             routing: document.getElementById('out-route-mode')?.value || 'auto',
-            roles: Object.fromEntries([...document.querySelectorAll('[data-out-role]')].map((el) => [el.dataset.outRole, el.value])),
-            geminiWaitMinutes: Number(document.getElementById('out-gemini-wait')?.value ?? 180),
-            officeHours: {
-              ...(days ? { days } : {}),
-              start: document.getElementById('out-route-start')?.value || '09:00',
-              end: document.getElementById('out-route-end')?.value || '19:00'
-            }
+            priorities,
+            waitMinutes: Number(document.getElementById('out-wait-min')?.value || 30)
           })
         });
         applyStateKeepingHealth(res.state);
@@ -2907,7 +2924,7 @@ function bindEvents() {
         renderAll();
         refreshIcons();
         renderOutsourcingSettings(true);
-        toast(`저장했습니다. ${Object.entries(res.routing.byKind || {}).map(([k, v]) => `${OUT_KIND_LABELS[k]} ${v.label}`).join(' · ')}`);
+        toast('역할 분담을 저장했습니다.');
       } catch (err) {
         toast(err.message, true);
       }
