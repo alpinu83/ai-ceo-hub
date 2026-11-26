@@ -1416,6 +1416,13 @@ const OUT_WORKER_LABELS = { antigravity: 'Antigravity', aside: 'Aside', gemini: 
 const OUT_WORKER_CAPS = { antigravity: ['task', 'code', 'consult', 'browser', 'research'], aside: ['task', 'consult', 'browser', 'research'], gemini: ['task', 'consult', 'research'] };
 const OUT_ROLE_LABELS = { time: '시간대 담당 (업무 시간 Aside · 그 외 Antigravity)', gemini: 'Gemini 앱', aside: 'Aside', antigravity: 'Antigravity' };
 const OUT_DEFAULT_ROLES = { consult: 'gemini', research: 'gemini', task: 'gemini', browser: 'time', code: 'antigravity' };
+const OUT_EFFORT_LABELS = { deep: '깊은 판단', light: '단순·조사' };
+function outEffortModel(r, target) {
+  const e = r.effort === 'deep' ? 'deep' : 'light';
+  if (target === 'gemini') return e === 'deep' ? 'Neon' : 'Hydrogen';
+  if (target === 'antigravity') return e === 'deep' ? 'Carbon 주도' : 'Hydrogen 위주';
+  return '';
+}
 const OUT_KIND_HINTS = {
   consult: '결재안 검토·의견',
   research: '시장·경쟁·키워드 조사',
@@ -1470,13 +1477,15 @@ function geminiConnectorUrl() {
 }
 
 /** Gemini 앱 예약 작업(Scheduled)에 넣을 지시문 */
-function geminiSchedulePrompt() {
+function geminiSchedulePrompt(effort = 'light') {
+  const deep = effort === 'deep';
   return [
-    '@CEO Office 외주창구 앱으로 CEO Office 외주를 처리해줘.',
-    '1) list_outsourcing_requests를 worker "gemini"로 호출해서 나한테 배정된 대기 요청을 확인해. 없으면 "처리할 외주 없음" 한 줄로 끝내.',
+    `연결된 앱 "CEO Office 외주창구"(맞춤 MCP 앱)의 도구로 CEO Office 외주를 처리해줘. 너는 ${deep ? 'Neon 담당: 판단·추론이 필요한 요청' : 'Hydrogen 담당: 자료 조사·단순 작업 요청'}만 처리해.`,
+    `1) list_outsourcing_requests를 worker "gemini", effort "${deep ? 'deep' : 'light'}"로 호출해서 대기 요청을 확인해. 없으면 "처리할 외주 없음" 한 줄로 끝내.`,
     '2) 가장 오래된 요청 1건을 claim_outsourcing_request(worker "gemini")로 잡고, 돌려받은 요청서를 끝까지 읽어.',
     '3) 요청서의 "해야 할 일"과 "제출물" 기준대로 작업해. 웹 검색으로 근거를 확인하고 수치·주장에는 출처 링크를 붙여. 확인한 사실과 추정은 구분해.',
     '4) 코드 저장소 수정이나 로그인이 필요한 사이트 작업이면 직접 하지 말고 pass_outsourcing_request로 넘겨 (코드 → antigravity, 로그인·콘솔 → aside). 결제·발송·광고비 집행은 하지 마.',
+    ...(deep ? [] : ['4-1) 하다 보니 판단·추론이 많이 필요하면 억지로 끝내지 말고 pass_outsourcing_request(to "deep")로 Neon 담당에 올려. 지금까지 조사한 내용은 reason에 요약해.']),
     '5) 끝나면 submit_outsourcing_result로 제출해 (worker "gemini", summary 2~4문장, document 마크다운 전문). 대화창에 답만 쓰고 끝내지 마.',
     '6) 시간이 남으면 다음 요청도 같은 방법으로 최대 2건까지 처리해.'
   ].join('\n');
@@ -1504,6 +1513,7 @@ function outCardHtml(r) {
             <span class="badge badge-neutral">${esc(OUT_KIND_LABELS[r.kind] || r.kind)}</span>
             <span class="badge ${cls}">${esc(label)}${r.claimedBy && r.status === 'claimed' ? ` · ${esc(r.claimedBy)}` : ''}</span>
             ${open || r.status === 'needs_ceo' ? `<span class="badge badge-blue">→ ${esc(OUT_WORKER_LABELS[target] || target)}${r.pinnedWorker ? ' (지정)' : ''}</span>` : ''}
+            ${r.effort ? `<span class="badge badge-neutral" title="난이도에 따라 상위·하위 모델이 나눠 처리">${esc(OUT_EFFORT_LABELS[r.effort] || r.effort)}${open && outEffortModel(r, target) ? ` · ${esc(outEffortModel(r, target))}` : ''}</span>` : ''}
             ${res?.by ? `<span class="badge badge-neutral">작업: ${esc(res.by)}</span>` : ''}
           </div>
           <h3 class="routine-title">${esc(r.title)}</h3>
@@ -1517,6 +1527,10 @@ function outCardHtml(r) {
                   <option value="aside" ${r.pinnedWorker === 'aside' ? 'selected' : ''}>대상: Aside</option>
                   <option value="antigravity" ${r.pinnedWorker === 'antigravity' ? 'selected' : ''}>대상: Antigravity</option>
                   ${OUT_WORKER_CAPS.gemini.includes(r.kind) ? `<option value="gemini" ${r.pinnedWorker === 'gemini' ? 'selected' : ''}>대상: Gemini 앱</option>` : ''}
+                </select>
+                <select class="out-assign" data-out-effort="${esc(r.id)}" title="난이도: 깊은 판단은 상위 모델(Neon·Carbon), 단순·조사는 Hydrogen">
+                  <option value="deep" ${r.effort === 'deep' ? 'selected' : ''}>난이도: 깊은 판단</option>
+                  <option value="light" ${r.effort !== 'deep' ? 'selected' : ''}>난이도: 단순·조사</option>
                 </select>`
               : ''
           }
@@ -1628,13 +1642,21 @@ function renderOutsourcingSettings(force = false) {
   // 대표님이 이 탭을 보고 있는 동안에는 자동 새로고침으로 입력값이 지워지지 않게 다시 그리지 않음
   if (!force && root.dataset.rendered === '1' && currentView === 'integrations' && currentHubTab === 'outsourcing') return;
   root.dataset.rendered = '1';
+  if (!root.dataset.dirtyBound) {
+    root.dataset.dirtyBound = '1';
+    root.addEventListener('change', (e) => {
+      if (!e.target.closest('.out-route')) return;
+      const d = document.getElementById('out-route-dirty');
+      if (d) d.style.display = '';
+    });
+  }
   const cfg = outsourcingSettingsClient();
   const rt = lastOutRouting || { label: '-', why: '' };
   const daysVal = cfg.officeHours.days.length === 7 ? 'all' : cfg.officeHours.days.join(',') === '1,2,3,4,5' ? 'weekdays' : 'custom';
   const roleRows = Object.keys(OUT_DEFAULT_ROLES)
     .map((kind) => {
       const cur = cfg.roles[kind] || OUT_DEFAULT_ROLES[kind];
-      const opts = ['time', 'gemini', 'aside', 'antigravity'].filter((w) => w === 'time' || OUT_WORKER_CAPS[w].includes(kind));
+      const opts = ['time', 'gemini', 'aside', 'antigravity'].filter((w) => (w === 'time' ? OUT_WORKER_CAPS.aside.includes(kind) && OUT_WORKER_CAPS.antigravity.includes(kind) : OUT_WORKER_CAPS[w].includes(kind)));
       const now = rt.byKind?.[kind]?.label;
       return `<tr>
           <td><strong>${esc(OUT_KIND_LABELS[kind])}</strong><div class="routine-sub">${esc(OUT_KIND_HINTS[kind])}</div></td>
@@ -1658,6 +1680,8 @@ function renderOutsourcingSettings(force = false) {
           </select>
           시간대 담당에게 넘김
         </label>
+        <span class="routine-sub" id="out-route-dirty" style="display:none;color:var(--accent-amber);font-weight:600;">바꾼 내용이 아직 저장되지 않았습니다</span>
+        <button type="button" class="btn btn-primary btn-sm" data-out-route-save="1">역할 분담 저장</button>
       </div>
       <div class="out-route-now" style="margin-top:12px;">
         <div>
@@ -1692,7 +1716,7 @@ function renderOutsourcingSettings(force = false) {
           ~
           <input type="time" id="out-route-end" value="${esc(cfg.officeHours.end)}" />
         </label>
-        <button type="button" class="btn btn-primary btn-sm" data-out-route-save="1">분담 저장</button>
+        <button type="button" class="btn btn-primary btn-sm" data-out-route-save="1">저장</button>
       </div>
       <p class="routine-sub" style="margin:8px 0 0;">한 곳에 몰아도 그 작업자가 못 하는 일(예: Gemini 앱의 코드 수정)은 분담표대로 갑니다. 작업자가 하다가 못 하는 일이면 스스로 다른 쪽에 넘깁니다. 텔레그램: /route (분담 보기) · /route gemini · /away 3 · /office · /out 요청ID aside</p>
     </div>
@@ -1719,16 +1743,17 @@ function renderOutsourcingSettings(force = false) {
       <div class="card-head"><h3 class="card-title">작업자 연결</h3></div>
       <div class="out-guide-grid">
         <div>
-          <h4>Gemini 앱 (자문·리서치·문서)</h4>
-          <p class="routine-desc">gemini.google.com → 설정 → Personal Intelligence → Connected Apps → Custom → "연결 주소 복사" 내용을 붙여넣고 이름을 "CEO Office 외주창구"로 저장. 그다음 Scheduled(예약)에서 새 작업을 만들고 "예약 지시문 복사" 내용을 넣으세요 (예: 매일 10시·14시·18시). 처음 한 번은 도구 실행 시 "항상 허용"을 눌러야 자동으로 돕니다.</p>
+          <h4>Gemini 앱 (자문·리서치·문서 · Neon/Hydrogen)</h4>
+          <p class="routine-desc">gemini.google.com → 설정 → Personal Intelligence → Connected Apps → Custom → "연결 주소 복사" 내용을 붙여넣고 이름을 "CEO Office 외주창구"로 저장. 예약은 두 개로 나눕니다: 깊은 판단 요청은 Neon 예약(메인 화면 Task 모드에서 Neon을 고르고 지시문 + "매시간 30분에 반복 예약해줘"), 자료 조사·단순 작업은 Hydrogen 예약(Scheduled 화면, 매시 정각). Gemini 예약은 한 대화 안에서 모델을 나눠 쓸 수 없어서 요청 단위로 나눕니다. 연결 앱 설정에서 외주 도구는 "항상 허용"이어야 자동으로 돕니다.</p>
           <div style="display:flex;gap:6px;flex-wrap:wrap;">
             <button type="button" class="btn btn-primary btn-sm" data-out-copy-gemini-url="1">연결 주소 복사</button>
-            <button type="button" class="btn btn-ghost btn-sm" data-out-copy-gemini-prompt="1">예약 지시문 복사</button>
+            <button type="button" class="btn btn-ghost btn-sm" data-out-copy-gemini-prompt="deep">Neon 예약 지시문</button>
+            <button type="button" class="btn btn-ghost btn-sm" data-out-copy-gemini-prompt="light">Hydrogen 예약 지시문</button>
           </div>
         </div>
         <div>
-          <h4>Antigravity (코드 수정)</h4>
-          <p class="routine-desc">"설정 프롬프트 복사"를 Antigravity 에이전트에게 그대로 보내면 MCP 서버 등록·스킬 설치·30분 자동 실행까지 합니다. 직접 하려면 App은 왼쪽 Customizations → MCP Servers, IDE는 에이전트 패널 … → MCP Servers에 "MCP 설정 복사" 내용을 넣으세요.</p>
+          <h4>Antigravity (코드 수정 · Carbon > Neon > Hydrogen)</h4>
+          <p class="routine-desc">모델 계층: Carbon이 계획·판단·최종 검토, Neon 하위 에이전트가 여러 파일 구현·디버깅, Hydrogen이 조사·검색·단순 수정·테스트. Settings > Models > Orchestrator Settings에서 Orchestrator=Carbon, Executor=Hydrogen으로 두세요. 설정 프롬프트에 이 내용과 자동 실행 지시가 들어 있으니, 이미 연결했어도 한 번 다시 보내 주세요. "설정 프롬프트 복사"를 Antigravity 에이전트에게 그대로 보내면 MCP 서버 등록·스킬 설치·30분 자동 실행까지 합니다. 직접 하려면 App은 왼쪽 Customizations → MCP Servers, IDE는 에이전트 패널 … → MCP Servers에 "MCP 설정 복사" 내용을 넣으세요.</p>
           <div style="display:flex;gap:6px;flex-wrap:wrap;">
             <button type="button" class="btn btn-primary btn-sm" data-out-copy-setup="1">설정 프롬프트 복사</button>
             <button type="button" class="btn btn-ghost btn-sm" data-out-copy-mcp="1">MCP 설정 복사</button>
@@ -2626,6 +2651,19 @@ function bindEvents() {
 
   // 외주 요청별 대상 변경 (select)
   document.getElementById('content-area')?.addEventListener('change', async (e) => {
+    const effSel = e.target.closest('[data-out-effort]');
+    if (effSel) {
+      try {
+        const res = await api(`/api/outsourcing/${effSel.dataset.outEffort}/effort`, { method: 'POST', body: JSON.stringify({ effort: effSel.value }) });
+        applyStateKeepingHealth(res.state);
+        renderAll();
+        refreshIcons();
+        toast(effSel.value === 'deep' ? '깊은 판단으로 바꿨습니다 (Gemini는 Neon, Antigravity는 Carbon 주도).' : '단순·조사로 바꿨습니다 (Hydrogen 위주).');
+      } catch (err) {
+        toast(err.message, true);
+      }
+      return;
+    }
     const sel = e.target.closest('[data-out-assign]');
     if (!sel) return;
     try {
@@ -2880,7 +2918,8 @@ function bindEvents() {
       return;
     }
     if (target.dataset.outCopyGeminiPrompt) {
-      await copyText(geminiSchedulePrompt(), 'Gemini 예약 지시문을 복사했습니다. Gemini → Scheduled → 새 작업에 붙여넣으세요.');
+      const eff = target.dataset.outCopyGeminiPrompt === 'deep' ? 'deep' : 'light';
+      await copyText(geminiSchedulePrompt(eff), eff === 'deep' ? 'Neon 예약 지시문을 복사했습니다. Gemini 메인 화면 Task 모드에서 Neon을 고르고 붙여넣은 뒤 "매시간 30분에 반복 예약해줘"를 덧붙이세요.' : 'Hydrogen 예약 지시문을 복사했습니다. Gemini → Scheduled → 새 작업에 붙여넣으세요.');
       return;
     }
     if (target.dataset.outCopySetup) {
