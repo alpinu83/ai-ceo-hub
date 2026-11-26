@@ -303,6 +303,32 @@ async function runTests() {
     });
     assert.equal(tgRes.status, 200, 'Telegram webhook should acknowledge updates with 200');
 
+    // 9-1. 결재 성과품 묶음 (텔레그램 📎 버튼·/doc 명령이 파일로 보내는 문서)
+    const { buildApprovalDeliverable } = await import('../src/hub/deliverables.js');
+    const fakeDb = {
+      missions: [{ id: 'msn_t', title: '테스트 업무', deliverables: [{ taskId: 'tsk_t2' }] }],
+      agents: [{ id: 'agent_t', name: '기획 팀원' }],
+      tasks: [
+        { id: 'tsk_t1', title: '랜딩 시안', assigneeId: 'agent_t', output: '# 시안\n헤드라인 A/B' },
+        { id: 'tsk_t2', title: '실행 계획서', output: '1주차: 색인 요청' }
+      ],
+      outsourcing: [{ id: 'OUT-T', title: '자문', approvalId: 'apr_t1', result: { by: 'aside', summary: '수정 후 승인', document: '근거 문서' } }],
+      approvals: [
+        { id: 'apr_t1', missionId: 'msn_t', taskId: 'tsk_t1', title: '랜딩 시안 승인', summary: '요약', proposedAction: '게시', status: 'pending' },
+        { id: 'apr_t2', missionId: 'msn_t', kind: 'stage_gate', title: '관문', summary: 's', status: 'pending' },
+        { id: 'apr_t3', missionId: 'msn_t', kind: 'next_phase', title: '다음 단계', summary: 's', proposedSteps: ['A', 'B'], kpi: '노출 100', status: 'pending' },
+        { id: 'apr_t4', missionId: 'msn_t', title: '요약만', summary: 's', status: 'pending' }
+      ]
+    };
+    const d1 = buildApprovalDeliverable(fakeDb, 'apr_t1');
+    assert.ok(d1.markdown.includes('헤드라인 A/B') && d1.markdown.includes('근거 문서'), 'task output and outsourcing result must be bundled');
+    assert.equal(d1.sectionCount, 2);
+    assert.equal(d1.filename, 'deliverable-apr_t1.md');
+    assert.ok(buildApprovalDeliverable(fakeDb, 'apr_t2').markdown.includes('1주차: 색인 요청'), 'stage gate must bundle mission deliverables');
+    assert.ok(buildApprovalDeliverable(fakeDb, 'apr_t3').markdown.includes('노출 100'), 'next phase plan must be included');
+    assert.equal(buildApprovalDeliverable(fakeDb, 'apr_t4').sectionCount, 0, 'summary-only approval has nothing to attach');
+    assert.equal(buildApprovalDeliverable(fakeDb, 'nope'), null);
+
     // 10. Async External Agent HTTPS Inbox (Pickle / Vooy real pull, flexible POST, & heartbeat tracking)
     const inboxRes = await fetch(`${BASE}/api/agent-inbox/pickle?token=${encodeURIComponent(mcpToken)}`);
     const inbox = await inboxRes.json();
