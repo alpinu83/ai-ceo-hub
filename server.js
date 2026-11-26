@@ -3183,9 +3183,18 @@ app.use('/api/*', async (c, next) => {
 // Telegram login: the CEO's own Telegram chat receives a one-time code + link, so no key needs to be typed or remembered.
 const telegramLogins = new Map(); // id -> { token, code, expiresAt, attempts }
 let lastTelegramLoginAt = 0;
+// Global brute-force guard for the 6-digit Telegram login code: 10 wrong codes in an hour locks Telegram login for an hour.
+const telegramLoginGuard = { fails: [], lockedUntil: 0 };
+function telegramLoginLocked(now) {
+  telegramLoginGuard.fails = telegramLoginGuard.fails.filter((t) => now - t < 60 * 60 * 1000);
+  return telegramLoginGuard.lockedUntil > now;
+}
 app.post('/api/auth/telegram-request', async (c) => {
   if (!CEO_ADMIN_KEY) return c.json({ ok: true, unlocked: true });
   const now = Date.now();
+  if (telegramLoginLocked(now)) {
+    return c.json({ ok: false, error: '로그인 시도가 너무 많아 1시간 동안 텔레그램 로그인이 잠겼습니다. 관리자 키를 직접 입력해 주세요.' }, 429);
+  }
   if (now - lastTelegramLoginAt < 20000) {
     return c.json({ ok: false, error: '방금 보냈습니다. 텔레그램을 확인해 주세요. (20초 후 재요청 가능)' }, 429);
   }
@@ -3218,6 +3227,9 @@ app.post('/api/auth/telegram-verify', async (c) => {
   const token = String(body.token || '').trim();
   const code = String(body.code || '').replace(/\D/g, '');
   const now = Date.now();
+  if (telegramLoginLocked(now)) {
+    return c.json({ ok: false, error: '로그인 시도가 너무 많아 1시간 동안 텔레그램 로그인이 잠겼습니다.' }, 429);
+  }
   for (const [id, v] of telegramLogins) {
     if (v.expiresAt < now || v.attempts >= 5) {
       telegramLogins.delete(id);
@@ -3229,6 +3241,13 @@ app.post('/api/auth/telegram-verify', async (c) => {
     }
   }
   if (code) for (const v of telegramLogins.values()) v.attempts += 1;
+  if (code || token) {
+    telegramLoginGuard.fails.push(now);
+    if (telegramLoginGuard.fails.length >= 10) {
+      telegramLoginGuard.lockedUntil = now + 60 * 60 * 1000;
+      telegramLogins.clear();
+    }
+  }
   return c.json({ ok: false, error: '코드가 맞지 않거나 만료됐습니다. 다시 요청해 주세요.' }, 401);
 });
 
@@ -3386,10 +3405,12 @@ app.get('/api/oss-stack', (c) => {
 
 app.get('/api/mcp/info', (c) => {
   const db = loadDb();
+  // Security: never expose the MCP token publicly. Only an unlocked server or a valid CEO key gets it.
+  const canSeeToken = !CEO_ADMIN_KEY || safeEqual(c.req.header('x-ceo-key'), CEO_ADMIN_KEY);
   return c.json({
     endpoint: '/api/mcp',
     sdk: '@modelcontextprotocol/sdk (Official Streamable HTTP)',
-    token: db.settings.mcpToken,
+    ...(canSeeToken ? { token: db.settings.mcpToken } : { tokenHint: 'CEO Office 설정 화면에서 확인하세요.' }),
     tools: MCP_TOOL_CATALOG
   });
 });
