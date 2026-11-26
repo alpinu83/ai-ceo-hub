@@ -605,7 +605,7 @@ function renderSidebarTree() {
         const tasks = state.tasks.filter((t) => t.missionId === m.id);
         const done = tasks.filter((t) => t.status === 'completed').length;
         const isActive = currentView === viewKey && selectedMissionId === m.id;
-        const prefix = viewKey === 'projects' ? `P${Number(m.phase) || 1} ` : '';
+        const prefix = viewKey === 'projects' && msProgress(m) ? `${msProgress(m)} ` : '';
         return `<button type="button" class="nav-subitem ${isActive ? 'active' : ''}" data-sidebar-mission="${esc(m.id)}" data-sidebar-view="${viewKey}" title="${esc(m.title)}">
           <span class="nav-subitem-title">${esc(prefix + m.title)}</span>
           <span class="nav-subitem-meta">${done}/${tasks.length}</span>
@@ -667,7 +667,7 @@ function renderHomeView() {
         const pct = tasks.length ? Math.round((done / tasks.length) * 100) : 0;
         const kindBadge =
           m.mode === 'project'
-            ? `<span class="badge badge-blue">프로젝트 P${Number(m.phase) || 1}</span>`
+            ? `<span class="badge badge-blue">프로젝트${msProgress(m) ? ` ${msProgress(m)}` : ''}</span>`
             : '<span class="badge badge-neutral">일반 업무</span>';
         return `<div class="home-item">
           <div class="home-item-top">
@@ -724,7 +724,7 @@ function renderCommandView() {
         const tasks = state.tasks.filter((t) => t.missionId === m.id);
         const done = tasks.filter((t) => t.status === 'completed').length;
         const active = m.id === selectedMissionId ? 'active' : '';
-        const prefix = m.mode === 'project' ? `<span class="badge badge-blue" style="padding:1px 6px;font-size:10.5px;">P${Number(m.phase) || 1}</span>` : '';
+        const prefix = m.mode === 'project' && msProgress(m) ? `<span class="badge badge-blue" style="padding:1px 6px;font-size:10.5px;">${msProgress(m)}</span>` : '';
         return `<button class="mission-tab ${active}" data-select-mission="${esc(m.id)}" title="${esc(m.title)}">
           ${prefix}
           <span class="mission-tab-title">${esc(m.title)}</span>
@@ -1082,7 +1082,7 @@ function renderUnifiedTasksView(tasks, mission = null) {
             <p class="task-desc">${esc(t.description)}</p>
           </div>
           <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;align-items:flex-start;">
-            ${isProject ? `<span class="badge badge-neutral">P${Number(t.phase) || 1}</span>` : ''}
+            ${isProject && t.milestoneId ? `<span class="badge badge-neutral">${esc(milestoneLabel(t))}</span>` : ''}
             ${t.requiresApproval && t.status !== 'awaiting_approval' ? '<span class="badge badge-amber">CEO 결재</span>' : ''}
             <span class="badge ${st.cls}">${esc(st.label)}</span>
           </div>
@@ -1206,7 +1206,7 @@ function renderMissionReportAndFlow(mission, lead, tasks) {
           ${mission.phaseHistory
             .map(
               (h) => `<details style="margin-bottom:8px;">
-                <summary style="cursor:pointer;font-weight:700;font-size:13.5px;">Phase ${h.phase} 완료 보고 (${esc(formatTime(h.completedAt))})</summary>
+                <summary style="cursor:pointer;font-weight:700;font-size:13.5px;">이전 방식 ${h.phase}단계 완료 보고 (${esc(formatTime(h.completedAt))})</summary>
                 <div class="markdown-body" style="margin-top:8px;">${renderMarkdown(h.report || '')}</div>
               </details>`
             )
@@ -1273,7 +1273,7 @@ function renderApprovalsView() {
         const ag = getAgent(a.agentId);
         const msn = state.missions.find((m) => m.id === a.missionId);
         const msnLabel = msn
-          ? `${msn.mode === 'project' ? `프로젝트 P${Number(msn.phase) || 1}` : '일반 업무'} · ${msn.title}`
+          ? `${msn.mode === 'project' ? '프로젝트' : '일반 업무'} · ${msn.title}`
           : a.category;
         const sel = a.id === selectedApprovalId ? 'selected' : '';
         return `<button type="button" class="queue-item ${sel} ${isPending ? 'pending-stripe' : ''}" data-select-approval="${esc(a.id)}">
@@ -1450,6 +1450,19 @@ const OUT_STATUS = {
 };
 let outSubmitOpenId = null;
 let lastOutRouting = null;
+
+/** 프로젝트 진행도: 현재 마일스톤 번호/전체 (예: M2/4) */
+function msProgress(mission) {
+  const ms = mission?.plan?.milestones || [];
+  if (!ms.length) return '';
+  const idx = ms.findIndex((x) => x.status !== 'done');
+  return idx < 0 ? '완료' : `M${idx + 1}/${ms.length}`;
+}
+function milestoneLabel(task) {
+  const ms = state.missions.find((m) => m.id === task.missionId)?.plan?.milestones || [];
+  const i = ms.findIndex((x) => x.id === task.milestoneId);
+  return i < 0 ? '작전' : `M${i + 1}`;
+}
 
 /** 작전 계획(운영 사이클): 단계 · 마일스톤 상태 · 결과물 */
 const MS_STATUS = { todo: ['badge-neutral', '대기'], doing: ['badge-blue', '진행 중'], gate: ['badge-amber', '관문 결재 대기'], blocked: ['badge-red', '보류'], done: ['badge-green', '완료'] };
