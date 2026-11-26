@@ -799,6 +799,7 @@ function renderActiveMission(mission) {
             <button type="button" class="btn-inline-edit" id="btn-rename-mission" data-mission-id="${esc(mission.id)}" title="이름 수정">이름 수정</button>
             <button type="button" class="btn-inline-edit" id="btn-bind-mission-repo" data-mission-id="${esc(mission.id)}" title="GitHub 저장소 · 라이브 사이트 연결">연동 설정</button>
             <button type="button" class="btn-inline-edit" id="btn-mission-scope" data-mission-id="${esc(mission.id)}" title="이 업무가 집중할 일과 하지 말 일">${mission.scope?.exclude?.length || mission.scope?.focus ? '업무 범위 ✓' : '업무 범위'}</button>
+            <button type="button" class="btn-inline-edit" id="btn-mission-goal" data-mission-id="${esc(mission.id)}" title="숫자 목표: 팀장의 모든 판단 기준">${mission.goal?.metric && mission.goal?.target !== null && mission.goal?.target !== undefined ? '목표 ✓' : '목표 설정'}</button>
           </div>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;">
@@ -836,6 +837,7 @@ function renderActiveMission(mission) {
       </div>
 
       <div class="mission-directive-quote"><strong>지시:</strong> ${esc(mission.directive)}</div>
+      ${missionGoalHtml(mission)}
 
       <div class="progress-row">
         <span class="mono">진척도 ${pct}% (${completed}/${tasks.length} 완료)</span>
@@ -1448,6 +1450,26 @@ const OUT_STATUS = {
 };
 let outSubmitOpenId = null;
 let lastOutRouting = null;
+
+/** 프로젝트 목표 표시: 지표 현재값 → 목표치, 진척, 기한 */
+function missionGoalHtml(mission) {
+  const g = mission.goal || {};
+  const has = g.metric && g.target !== null && g.target !== undefined && g.target !== '';
+  if (!has) {
+    return `<div class="mission-directive-quote" style="border-left-color:var(--accent-amber);"><strong>목표:</strong> 숫자 목표가 없습니다. 팀장이 무엇을 기준으로 추진할지 모르니 <button type="button" class="btn-inline-edit" id="btn-mission-goal-2" data-mission-id="${esc(mission.id)}">목표 설정</button></div>`;
+  }
+  const fmt = (n) => (n === null || n === undefined || n === '' ? '미확인' : `${Number(n).toLocaleString('ko-KR')}${g.unit ? ` ${g.unit}` : ''}`);
+  let pct = null;
+  if (g.current !== null && g.current !== undefined && g.baseline !== null && g.baseline !== undefined && Number(g.target) !== Number(g.baseline)) {
+    pct = Math.max(0, Math.min(100, Math.round(((Number(g.current) - Number(g.baseline)) / (Number(g.target) - Number(g.baseline))) * 100)));
+  }
+  let dday = '';
+  if (g.deadline) {
+    const d = Math.ceil((Date.parse(`${g.deadline}T23:59:59+09:00`) - Date.now()) / 86400000);
+    dday = d >= 0 ? ` · D-${d}` : ` · 기한 ${-d}일 지남`;
+  }
+  return `<div class="mission-directive-quote"><strong>목표:</strong> ${esc(g.objective || '')} <span class="mono">${esc(g.metric)} ${esc(fmt(g.current))} → ${esc(fmt(g.target))}${pct !== null ? ` (${pct}%)` : ''}${esc(dday)}</span>${g.updatedAt ? ` <span class="routine-sub">갱신 ${esc(formatTime(g.updatedAt))}</span>` : ''}</div>`;
+}
 
 function outsourcingSettingsClient() {
   const o = state?.settings?.outsourcing || {};
@@ -3233,6 +3255,49 @@ function bindEvents() {
         state = res.state;
         renderAll();
         toast('이름을 수정했습니다.');
+      } catch (err) {
+        toast(err.message, true);
+      }
+      return;
+    }
+
+    if (target.id === 'btn-mission-goal' || target.id === 'btn-mission-goal-2') {
+      const missionId = target.dataset.missionId;
+      const m = state.missions.find((x) => x.id === missionId);
+      if (!m) return;
+      const g = m.goal || {};
+      const ask = (q, v) => window.prompt(q, v === null || v === undefined ? '' : String(v));
+      const objective = ask('목표를 한 문장으로 (예: 연말정산 시즌 전 검색 유입 확보)', g.objective || '');
+      if (objective === null) return;
+      const metric = ask('핵심 지표 (예: 월 자연검색 클릭, 월 수익)', g.metric || '');
+      if (metric === null) return;
+      const unit = ask('단위 (예: 회, 원, 명)', g.unit || '');
+      if (unit === null) return;
+      const current = ask('현재값 (모르면 비워 두세요)', g.current);
+      if (current === null) return;
+      const target2 = ask('목표치 (숫자)', g.target);
+      if (target2 === null) return;
+      const deadline = ask('기한 (YYYY-MM-DD, 없으면 비워 두세요)', g.deadline || '');
+      if (deadline === null) return;
+      const num = (v) => (String(v).trim() === '' ? null : Number(String(v).replace(/[,\s]/g, '')));
+      try {
+        const res = await api(`/api/missions/${missionId}`, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            goal: {
+              objective: objective.trim(),
+              metric: metric.trim(),
+              unit: unit.trim(),
+              current: num(current),
+              baseline: g.baseline ?? num(current),
+              target: num(target2),
+              deadline: deadline.trim()
+            }
+          })
+        });
+        state = res.state;
+        renderAll();
+        toast('목표를 저장했습니다. 팀장의 모든 계획·제안이 이 목표를 기준으로 움직입니다.');
       } catch (err) {
         toast(err.message, true);
       }

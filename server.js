@@ -50,7 +50,8 @@ import {
   escapeTelegramHtml,
   isStandingOrder,
   getMissionScope,
-  findScopeViolations
+  findScopeViolations,
+  getMissionGoal
 } from './src/lead-engine.js';
 import { describeSkillsForClient, getSkillSettings, selectSkills, renderSkills } from './src/skills.js';
 import { testGoogleDataConnection, buildAnalyticsContext, describeGoogleDataStatus } from './src/google-data.js';
@@ -691,7 +692,18 @@ async function submitNextPhaseProposal(missionId, { leadAssessment = '' } = {}) 
     riskLevel: 'low',
     estimatedCostKRW: 0,
     depositKRW: 0,
-    summary: `${proposal.rationale}\n\n기대 효과: ${proposal.expectedImpact}`,
+    summary: [
+      proposal.goalGap ? `목표까지 남은 차이·병목: ${proposal.goalGap}` : '',
+      proposal.rationale,
+      proposal.kpi ? `이번 단계 지표·목표치: ${proposal.kpi}` : '',
+      proposal.doneCriteria ? `완료 기준: ${proposal.doneCriteria}` : '',
+      `기대 효과: ${proposal.expectedImpact}`
+    ]
+      .filter(Boolean)
+      .join('\n\n'),
+    goalGap: proposal.goalGap || '',
+    kpi: proposal.kpi || '',
+    doneCriteria: proposal.doneCriteria || '',
     proposedAction: `승인 시 총괄 팀장(${lead?.name || 'Gemini 4 Hydrogen'})이 Phase ${proposal.nextPhase} 작업을 자동 분배·착수합니다:\n${stepsText}`,
     status: 'pending',
     ceoNote: '',
@@ -701,6 +713,8 @@ async function submitNextPhaseProposal(missionId, { leadAssessment = '' } = {}) 
 
   db.approvals.unshift(apr);
   mission.status = 'waiting_approval';
+  // 다음 제안 때 "지표가 움직였는지" 비교할 수 있도록 지금 지표를 남김
+  if (proposal.metricsText) mission.lastMetricsSnapshot = { at: now, phase: currentPhase, text: String(proposal.metricsText).slice(0, 2000) };
 
   appendLog(
     db,
@@ -4212,9 +4226,21 @@ app.patch('/api/missions/:id', async (c) => {
     typeof body.siteUrl === 'string' ||
     Array.isArray(body.extraRepos);
   const hasScope = body.scope && typeof body.scope === 'object';
+  const hasGoal = body.goal && typeof body.goal === 'object';
 
-  if (!hasTitle && !hasBindingUpdate && !hasScope && typeof body.directive !== 'string') {
+  if (!hasTitle && !hasBindingUpdate && !hasScope && !hasGoal && typeof body.directive !== 'string') {
     return c.json({ error: '수정할 내용을 입력해 주세요.' }, 400);
+  }
+  if (hasGoal) {
+    // 목표: 지표·목표치·현재값·기한. 모든 AI 호출에 "판단 기준"으로 들어감
+    const prevGoal = getMissionGoal(mission);
+    const merged = { ...(mission.goal || {}), ...body.goal };
+    mission.goal = { ...getMissionGoal({ goal: merged }), updatedAt: new Date().toISOString() };
+    const g = mission.goal;
+    appendLog(db, 'CEO', `"${mission.title}" 목표 설정: ${g.metric || '-'} ${g.current ?? '?'} → ${g.target ?? '?'}${g.unit ? ` ${g.unit}` : ''}${g.deadline ? ` (기한 ${g.deadline})` : ''}`, 'info');
+    if (prevGoal.target !== g.target || prevGoal.metric !== g.metric) {
+      rememberFact(db, { text: `목표 설정: ${g.objective || mission.title} — ${g.metric} ${g.target}${g.unit ? ` ${g.unit}` : ''}${g.deadline ? ` (기한 ${g.deadline})` : ''}`, kind: 'directive', missionId: mission.id, pinned: true, source: 'goal' });
+    }
   }
   if (hasScope) {
     // 업무 범위: 집중할 일 / 하지 말 일(키워드). 모든 AI 호출에 최우선 지침으로 들어가고, 범위 밖 작업은 자동 제외

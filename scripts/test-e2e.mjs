@@ -267,6 +267,19 @@ async function runTests() {
     const scopedCtx = await (await fetch(`${BASE}/api/memory?missionId=${created.mission.id}`)).json();
     assert.ok(scopedCtx.context.includes('하지 말 것'), 'mission scope must be in the AI context');
 
+    // 8f. Mission goal (metric / target / deadline) is saved and becomes the yardstick in every AI call
+    const goalRes = await (
+      await fetch(`${BASE}/api/missions/${created.mission.id}`, {
+        method: 'PATCH',
+        headers: jsonHeaders,
+        body: JSON.stringify({ goal: { objective: '첫 수익', metric: '월 수익', unit: '원', current: 0, baseline: 0, target: 1000000, deadline: '2027-03-31' } })
+      })
+    ).json();
+    const goaled = goalRes.state.missions.find((m) => m.id === created.mission.id);
+    assert.equal(goaled.goal.target, 1000000, 'mission goal must be saved');
+    const goalCtx = await (await fetch(`${BASE}/api/memory?missionId=${created.mission.id}`)).json();
+    assert.ok(goalCtx.context.includes('남은 차이'), 'mission goal must be in the AI context');
+
     const standupRes = await (
       await fetch(`${BASE}/api/missions/${created.mission.id}/standup`, { method: 'POST' })
     ).json();
