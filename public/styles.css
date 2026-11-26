@@ -2129,3 +2129,8 @@ button.simple-row.clickable:hover { background: var(--bg-subtle); }
 .out-assign { font-size: 12.5px; padding: 4px 6px; }
 .out-card-ceo { border: 1px solid var(--accent-danger); }
 .out-ceo-box { margin-top: 10px; padding: 10px 12px; border-radius: 8px; background: var(--accent-danger-soft); font-size: 13px; display: grid; gap: 6px; }
+
+.out-topbar { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.out-tabs { margin-bottom: 12px; }
+.out-settings-root { display: grid; gap: 14px; }
+.out-settings-root .card { padding: 16px 18px; }
