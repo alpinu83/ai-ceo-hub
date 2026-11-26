@@ -9,6 +9,7 @@ import { buildMissionLiveContext } from './live-context.js';
 import { isProviderCooling } from './ai-guard.js';
 import { selectSkills, renderSkills, skillBlock, shouldReview, buildReviewRubric, getSkillSettings } from './skills.js';
 import { getRepoSnapshot, buildCodeEvidence, factCheckOutput } from './grounding.js';
+import { buildAnalyticsContext } from './google-data.js';
 
 function repoTokenFrom(settings) {
   return String(settings?.providers?.githubRepo?.apiKey || process.env.GITHUB_REPO_TOKEN || '').trim();
@@ -1287,16 +1288,26 @@ export async function proposeNextProjectPhase({ mission, tasks, agents, settings
   if (chain.length) {
     try {
       const schema = z.object({
+        goalGap: z.string().min(6).describe('목표까지 남은 차이와 지금 가장 큰 병목 (실제 데이터 근거)'),
         nextPhaseTitle: z.string().min(4),
         rationale: z.string().min(10),
+        kpi: z.string().min(6).describe('이번 단계에서 움직일 지표 1~2개와 목표치, 확인 시점'),
+        doneCriteria: z.string().min(6).describe('이번 단계가 끝났다고 판단할 검증 가능한 완료 기준'),
         expectedImpact: z.string().min(6),
         nextDirective: z.string().min(15),
         suggestedSteps: z.array(z.string()).min(2).max(5)
       });
 
       const system = `당신은 AI 조직의 총괄 팀장(${leadAgent.name})입니다.
-지속 프로젝트의 Phase ${currentPhase} 결과를 분석하고, 목표를 한 단계 더 진전시킬 **Phase ${nextPhase} 후속 추진 제안서**를 작성하세요.
-- 이미 완료된 리서치/초안을 반복하지 말고, 실제 성과·전환·개선·확장으로 이어지는 구체적 다음 단계를 제안하세요.
+지속 프로젝트의 Phase ${currentPhase} 결과와 실제 지표를 보고, 목표를 향해 가장 크게 전진할 **Phase ${nextPhase} 추진 제안서**를 작성하세요.
+목표 추진 원칙 (반드시 이 순서로 생각하세요):
+1. goalGap: [목표] 블록의 목표치와 [실제 지표]를 비교해 남은 차이를 숫자로 쓰고, 그 차이를 만드는 가장 큰 병목 1~2개를 데이터 근거로 지목하세요. (예: 검색 노출이 거의 없으면 콘텐츠·기능 추가보다 색인·검색 노출이 먼저)
+2. 그 병목을 직접 줄이는 일만 단계에 넣으세요. 병목과 무관한 기능 추가·문서 작성·리서치 반복은 넣지 마세요.
+3. kpi: 이번 단계에서 움직일 지표 1~2개, 목표치, 확인 시점(날짜)을 쓰세요.
+4. doneCriteria: "보고서 작성"이 아니라 배포·게시·색인·지표 변화처럼 검증 가능한 완료 기준을 쓰세요.
+5. [직전 지표]와 비교해 두 단계 연속 지표가 그대로면 같은 방향을 반복하지 말고 전략 전환안을 제안하세요. 진전할 방법이 없으면 그렇다고 쓰세요.
+6. 목표가 숫자로 없으면 이번 단계의 첫 단계로 "측정 가능한 목표(지표·현재값·목표치·기한) 확정"을 넣으세요.
+- 문서·초안 자체는 성과가 아닙니다. 실제 성과·전환·배포로 이어지는 일을 제안하세요.
 - nextDirective는 CEO가 승인하는 즉시 팀원들에게 분배해 자동 실행할 수 있는 명확한 한국어 지시문으로 작성하세요.
 - 대표님만 할 수 있는 일(외부 계정·결제·키 발급)은 nextDirective에 넣지 말고 rationale에 "대표님 요청"으로 분리하세요.
 - 팀원 보고서의 주장과 [회사 기억]이 충돌하면 회사 기억을 따르세요.
@@ -1304,9 +1315,14 @@ ${leadAssessment ? `\n[팀장 사전 검토]\n${String(leadAssessment).slice(0, 
 ${skillBlock({ agent: leadAgent, mission, task: { title: '다음 단계 전략 제안 Phase 계획' }, purpose: 'lead_plan', settings, compact: true, max: 1 })}
 ${companyContextFor(mission?.id, { compact: true })}`;
 
+      const metricsNow = await buildAnalyticsContext(settings, { siteUrl: mission.siteUrl || '' }).catch(() => '');
+      const prevMetrics = mission.lastMetricsSnapshot;
       const prompt = `프로젝트명: ${mission.title}
-원래 목표: ${mission.directive}
+원래 지시: ${mission.directive}
 현재 완료 단계: Phase ${currentPhase}
+[실제 지표 — 지금]
+${metricsNow || '(연결된 지표 데이터 없음: 측정 수단 확보를 고려하세요)'}
+${prevMetrics?.text ? `\n[직전 지표 — Phase ${prevMetrics.phase || '?'} 제안 시점 ${String(prevMetrics.at || '').slice(0, 10)}]\n${String(prevMetrics.text).slice(0, 1500)}\n` : ''}
 [Phase ${currentPhase} 결과 요약]
 ${digest}
 ${mission.finalReport ? `\n[임원 보고서 발췌]\n${mission.finalReport.slice(0, 700)}` : ''}`;
@@ -1320,6 +1336,10 @@ ${mission.finalReport ? `\n[임원 보고서 발췌]\n${mission.finalReport.slic
       return {
         nextPhase,
         nextPhaseTitle: object.nextPhaseTitle.trim(),
+        goalGap: String(object.goalGap || '').trim(),
+        kpi: String(object.kpi || '').trim(),
+        doneCriteria: String(object.doneCriteria || '').trim(),
+        metricsText: metricsNow || '',
         rationale: object.rationale.trim(),
         expectedImpact: object.expectedImpact.trim(),
         nextDirective: object.nextDirective.trim(),
@@ -1896,7 +1916,8 @@ export async function planLeadFollowUp({ mission, digest, agents, settings }) {
   const system = withCompanyContext(
     `당신은 총괄 팀장(${leadAgent.name})입니다. 팀원들의 작업이 모두 끝난 상태입니다. 대표님이 물어보기 전에 다음 행동을 스스로 정하세요.
 규칙:
-- 원래 지시가 이미 달성됐으면 goalStatus=done, nextTasks는 빈 배열.
+- [목표] 블록의 숫자 목표를 달성했을 때만 goalStatus=done. 작업이 다 끝났어도 목표 지표가 안 움직였으면 done이 아닙니다.
+- 다음 작업은 목표까지 남은 차이를 가장 크게 줄일 병목을 겨냥하세요. 각 작업 description에 "어떤 지표를 얼마나 움직이려는지"를 한 줄 넣으세요.
 - 팀이 직접 끝낼 수 있는 구체적 후속 작업만 nextTasks에 넣으세요(최대 3개). 이미 한 일을 반복하거나 막연한 리서치·보고서만 늘리는 작업은 금지.
 - 결제·광고비·외부 발송·외부 계정(애드센스·GA4·서치콘솔 등) 조작은 nextTasks가 아니라 ceoRequests에 구체적 절차로 쓰세요.
 - 권한·키 부족 등으로 막혔으면 goalStatus=blocked로 하고 필요한 조치를 ceoRequests에 쓰세요.

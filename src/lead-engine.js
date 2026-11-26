@@ -15,12 +15,22 @@
  */
 import { uid } from './store.js';
 
+/** 목표 추진 원칙 (팀장이 Goal을 향해 밀고 나가도록) */
+export const GOAL_DIRECTIVES = [
+  '6. [목표 우선] 모든 판단의 기준은 프로젝트 목표(지표·목표치·기한)다. 계획·제안은 "목표까지 남은 차이 → 그 차이를 가장 크게 줄일 병목 1~2개 → 이번 단계에서 움직일 지표와 목표치" 순서로 쓴다. 목표가 숫자로 없으면 첫 과제로 측정 가능한 목표를 제안한다.',
+  '7. [성과의 정의] 문서·초안·분석 보고서는 성과가 아니다. 성과는 실제 배포·게시·색인·트래픽·전환·수익처럼 측정 가능한 변화다. 보고할 때 "무엇을 만들었다"가 아니라 "지표가 어떻게 바뀌었다(또는 언제 확인 가능)"로 쓴다.',
+  '8. [데이터로 판단] GA4·서치콘솔 등 실제 데이터를 먼저 보고 가장 큰 병목을 고른다. 측정 수단이 없으면 측정 수단 확보가 최우선이다. 확인하지 않은 수치를 쓰지 않는다.',
+  '9. [안 되면 방향 전환] 두 단계 연속 목표 지표가 움직이지 않았으면 같은 방향의 일을 반복하지 말고, 원인 진단과 함께 전략 전환안 또는 중단안을 대표님께 올린다.',
+  '10. [우선순위·속도] 일의 순서는 목표 기여도 × 실행 가능성 ÷ 비용(대표님 손이 필요한 정도 포함)으로 정한다. 대표님 손이 필요한 일은 가장 먼저 한 번에 묶어 요청한다. 한 단계는 1~2주 안에 끝나고, 끝났는지 검증할 수 있는 완료 기준을 미리 정한다.'
+];
+
 export const DEFAULT_GLOBAL_DIRECTIVES = [
   '1. 지시받은 일이 끝나면(성공·실패·보류 모두) 총괄 팀장이 대표님께 먼저 결과를 보고한다. 대표님이 물어볼 때까지 기다리지 않는다.',
   '2. 막힌 일은 원인·대안·대표님이 해줘야 할 일(권한·키·결정)을 구체적으로 요청한다. 말없이 대기하지 않는다.',
   '3. 실제로 확인한 사실만 보고한다. 확인하지 않은 것은 "미확인"이라고 쓴다.',
   '4. 이전 지시·결재 결정·반려 사유를 기억하고 같은 실수를 반복하지 않는다.',
-  '5. 결제·외부 발송·실배포처럼 되돌리기 어려운 일만 결재를 받고, 나머지 일반 실무는 팀장 전결로 끝까지 추진한다.'
+  '5. 결제·외부 발송·실배포처럼 되돌리기 어려운 일만 결재를 받고, 나머지 일반 실무는 팀장 전결로 끝까지 추진한다.',
+  ...GOAL_DIRECTIVES
 ].join('\n');
 
 export const LEAD_ENGINE_DEFAULTS = {
@@ -211,10 +221,61 @@ function formatFact(f, missionTitles) {
  * The shared context block injected into every AI call (team member work, team-lead chat, reports, IT PRs).
  * compact=true keeps it small for free tiers with tight per-minute token budgets.
  */
+/** 프로젝트 목표 (지표·목표치·현재값·기한) 정리 */
+export function getMissionGoal(mission) {
+  const g = (mission && mission.goal) || {};
+  const num = (v) => (v === '' || v === null || v === undefined || !Number.isFinite(Number(v)) ? null : Number(v));
+  const str = (v, n) => String(v || '').trim().slice(0, n);
+  return {
+    objective: str(g.objective, 300),
+    metric: str(g.metric, 120),
+    unit: str(g.unit, 20),
+    target: num(g.target),
+    baseline: num(g.baseline),
+    current: num(g.current),
+    deadline: /^\d{4}-\d{2}-\d{2}$/.test(String(g.deadline || '')) ? g.deadline : '',
+    note: str(g.note, 400),
+    updatedAt: g.updatedAt || ''
+  };
+}
+
+export function hasMeasurableGoal(mission) {
+  const g = getMissionGoal(mission);
+  return Boolean(g.metric && g.target !== null);
+}
+
+/** 목표 블록: 모든 AI 호출에 들어가는 "판단 기준" */
+export function describeMissionGoal(mission, now = Date.now()) {
+  if (!mission) return '';
+  const g = getMissionGoal(mission);
+  const fmt = (n) => (n === null ? '미확인' : `${Number(n).toLocaleString('ko-KR')}${g.unit ? ` ${g.unit}` : ''}`);
+  if (!g.metric || g.target === null) {
+    return [
+      `- 목표 문장: ${g.objective || oneLine(mission.directive, 200)}`,
+      '- ⚠️ 숫자 목표 미설정: 지표·목표치·기한이 없습니다. 팀장은 첫 과제로 측정 가능한 목표(지표, 현재값, 목표치, 기한)를 제안하고, 그 전까지는 가장 측정하기 쉬운 선행 지표를 기준으로 판단하세요.'
+    ].join('\n');
+  }
+  const lines = [`- 목표: ${g.objective || oneLine(mission.directive, 200)}`, `- 핵심 지표: ${g.metric}`];
+  lines.push(`- 현재 ${fmt(g.current)} → 목표 ${fmt(g.target)}${g.baseline !== null ? ` (시작 ${fmt(g.baseline)})` : ''}`);
+  if (g.current !== null) {
+    const gap = g.target - g.current;
+    let prog = '';
+    if (g.baseline !== null && g.target !== g.baseline) prog = ` · 진척 ${Math.max(0, Math.min(100, Math.round(((g.current - g.baseline) / (g.target - g.baseline)) * 100)))}%`;
+    lines.push(`- 남은 차이: ${fmt(gap)}${prog}`);
+  }
+  if (g.deadline) {
+    const days = Math.ceil((Date.parse(`${g.deadline}T23:59:59+09:00`) - now) / 86400000);
+    lines.push(`- 기한: ${g.deadline} (${days >= 0 ? `${days}일 남음` : `${-days}일 지남`})`);
+  }
+  if (g.note) lines.push(`- 참고: ${g.note}`);
+  if (g.updatedAt) lines.push(`- 현재값 갱신: ${kstShort(g.updatedAt)}`);
+  return lines.join('\n');
+}
+
 export function buildCompanyContext(db, missionId = '', { compact = false } = {}) {
   if (!db) return '';
   ensureLeadDefaults(db);
-  const maxChars = compact ? 2400 : 4000;
+  const maxChars = compact ? 2900 : 4600;
   const missionTitles = Object.fromEntries((db.missions || []).map((m) => [m.id, m.title]));
   const directives = String(db.settings.globalDirectives || '').trim();
   const facts = db.memory.facts || [];
@@ -239,6 +300,7 @@ export function buildCompanyContext(db, missionId = '', { compact = false } = {}
     for (const f of missionPinned) sl.push(`- (${kstShort(f.createdAt)}) ${f.text}`);
     parts.push(`["${missionObj.title}" 업무에 대한 대표님 고정 지침 — 최우선, 어기면 안 됨]\n${sl.join('\n')}`);
   }
+  if (missionObj) parts.push(`["${missionObj.title}" 목표 — 모든 판단·계획·보고의 기준]\n${describeMissionGoal(missionObj)}`);
   const memLines = [...globalPinned, ...own, ...global].map((f) => formatFact(f, missionTitles));
   if (memLines.length) parts.push(`[회사 기억 — 이전 지시·결정·결과 (최신순)]\n${memLines.join('\n')}`);
 
@@ -474,6 +536,7 @@ export function buildMissionDigest(db, missionId, maxChars = 2600) {
   return [
     `업무: ${mission.title}`,
     `원래 지시: ${oneLine(mission.directive, 500)}`,
+    `목표:\n${describeMissionGoal(mission)}`,
     ceoMsgs.length ? `최근 CEO 발언:\n${ceoMsgs.join('\n')}` : '',
     `작업 현황(최신순):\n${lines.join('\n')}`
   ]
