@@ -761,10 +761,8 @@ function renderActiveMission(mission) {
   const pct = tasks.length ? Math.round((completed / tasks.length) * 100) : 0;
   const lead = getAgent(mission.leadAgentId);
   const isProject = mission.mode === 'project';
-  const currentPhase = Number(mission.phase) || 1;
-  const pendingNextPhase = state.approvals.find(
-    (a) => a.missionId === mission.id && a.kind === 'next_phase' && a.status === 'pending'
-  );
+  const pendingGate = state.approvals.find((a) => a.missionId === mission.id && a.kind === 'stage_gate' && a.status === 'pending');
+  const currentStage = mission.plan?.milestones?.find((m) => m.status !== 'done');
   const openStatuses = new Set(['queued', 'running', 'awaiting_bridge', 'awaiting_approval']);
   const busyAgentIds = new Set(tasks.filter((t) => openStatuses.has(t.status)).map((t) => t.assigneeId));
   const idleCount = state.agents.filter((a) => a.active && a.tier !== 'lead' && !busyAgentIds.has(a.id)).length;
@@ -780,7 +778,7 @@ function renderActiveMission(mission) {
           <div class="mission-meta-row">
             ${
               isProject
-                ? `<span class="badge badge-blue">프로젝트 · Phase ${currentPhase}</span>`
+                ? `<span class="badge badge-blue">프로젝트${currentStage ? ` · ${esc(currentStage.title.slice(0, 24))}` : ''}</span>`
                 : `<span class="badge badge-neutral">${esc(DOMAIN_LABELS[mission.domain] || mission.domain)}</span>`
             }
             <span class="badge badge-green">총괄 팀장: ${esc(lead?.name || '팀장')}</span>
@@ -805,13 +803,11 @@ function renderActiveMission(mission) {
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;">
           ${
-            pendingNextPhase
-              ? `<button type="button" class="btn btn-amber btn-sm" data-jump-view="approvals">Phase ${pendingNextPhase.proposedPhase} 제안 결재</button>`
-              : isProject && mission.opsMode === 'v3'
+            pendingGate
+              ? `<button type="button" class="btn btn-amber btn-sm" data-jump-view="approvals">관문 결재 대기</button>`
+              : isProject
                 ? `<button type="button" class="btn btn-primary btn-sm" id="btn-ops-cycle" data-mission-id="${esc(mission.id)}">팀장 운영 사이클 실행</button>`
-                : isProject
-                  ? `<button type="button" class="btn btn-primary btn-sm" id="btn-propose-next-phase" data-mission-id="${esc(mission.id)}">다음 단계 제안</button>`
-                  : ''
+                : ''
           }
           ${
             idleCount > 0
@@ -1174,7 +1170,7 @@ function renderMissionReportAndFlow(mission, lead, tasks) {
       <div class="flow-step-title">
         ${
           mission.mode === 'project'
-            ? `지속 프로젝트 (Phase ${Number(mission.phase) || 1}) — 단계 완료 시 팀장이 다음 단계 전략을 결재함에 자동 제안`
+            ? '지속 프로젝트 — 팀장이 작전 계획대로 추진하고, 관문(대표님 결정)에서만 결재함에 상신'
             : approvalTasks.length > 0
               ? `중대 의사결정 ${approvalTasks.length}건만 총괄 팀장 검토 후 CEO 결재함 상신`
               : '전 항목 일반 실무 — 총괄 팀장 전결 자동 처리'
@@ -1186,7 +1182,7 @@ function renderMissionReportAndFlow(mission, lead, tasks) {
   const reportHtml = mission.finalReport
     ? `<div class="sheet final-report-sheet">
         <div class="sheet-header compact">
-          <h3 class="sheet-title">총괄 팀장 최종 임원 보고서${mission.mode === 'project' ? ` (Phase ${Number(mission.phase) || 1})` : ''}</h3>
+          <h3 class="sheet-title">총괄 팀장 최종 임원 보고서</h3>
           <div style="display:flex;gap:6px;flex-wrap:wrap;">
             <button type="button" class="btn btn-ghost btn-sm" id="btn-synthesize-report" data-mission-id="${esc(mission.id)}">갱신</button>
             <button type="button" class="btn btn-ghost btn-sm" id="btn-copy-final-report">복사</button>
@@ -1307,7 +1303,7 @@ function renderApprovalsView() {
 
   const ag = getAgent(apr.agentId);
   const msn = state.missions.find((m) => m.id === apr.missionId);
-  const msnKind = msn?.mode === 'project' ? `프로젝트 · Phase ${Number(msn.phase) || 1}` : '일반 업무';
+  const msnKind = msn?.mode === 'project' ? '프로젝트' : '일반 업무';
   const task = state.tasks.find((t) => t.id === apr.taskId);
   const stampLabels = {
     pending: { text: 'CEO 결재 대기', cls: 'pending' },
@@ -1455,13 +1451,10 @@ const OUT_STATUS = {
 let outSubmitOpenId = null;
 let lastOutRouting = null;
 
-/** 작전 계획(운영 사이클 v3): 단계 · 마일스톤 상태 · 결과물 */
+/** 작전 계획(운영 사이클): 단계 · 마일스톤 상태 · 결과물 */
 const MS_STATUS = { todo: ['badge-neutral', '대기'], doing: ['badge-blue', '진행 중'], gate: ['badge-amber', '관문 결재 대기'], blocked: ['badge-red', '보류'], done: ['badge-green', '완료'] };
 function missionPlanHtml(mission) {
   if (mission.mode !== 'project') return '';
-  if (mission.opsMode !== 'v3') {
-    return `<div class="mission-directive-quote" style="border-left-color:var(--accent-amber);"><strong>운영 방식:</strong> 단계마다 제안서 결재(구버전). <button type="button" class="btn-inline-edit" id="btn-ops-mode" data-mission-id="${esc(mission.id)}" data-ops-mode="v3">작전 계획 방식으로 전환</button></div>`;
-  }
   const plan = mission.plan;
   const deliverables = (mission.deliverables || []).slice(0, 6);
   const msRows = (plan?.milestones || [])
@@ -1471,8 +1464,7 @@ function missionPlanHtml(mission) {
     })
     .join('');
   return `<details class="mission-directive-quote" open>
-      <summary style="cursor:pointer;"><strong>작전 계획${plan?.stage ? ` — ${esc(plan.stage)}` : ''}</strong> <span class="routine-sub">관문(대표님 결정)에서만 결재를 받고 나머지는 팀장이 바로 진행합니다</span>
-        <button type="button" class="btn-inline-edit" id="btn-ops-mode" data-mission-id="${esc(mission.id)}" data-ops-mode="legacy" title="단계별 제안서 결재 방식으로 되돌리기">구버전으로</button></summary>
+      <summary style="cursor:pointer;"><strong>작전 계획${plan?.stage ? ` — ${esc(plan.stage)}` : ''}</strong> <span class="routine-sub">관문(대표님 결정)에서만 결재를 받고 나머지는 팀장이 바로 진행합니다</span></summary>
       ${msRows ? `<ol style="list-style:none;padding:0;margin:8px 0 0;">${msRows}</ol>` : '<div class="routine-sub" style="margin-top:6px;">아직 작전 계획이 없습니다. "팀장 운영 사이클 실행"을 누르면 팀장이 계획을 세웁니다.</div>'}
       ${deliverables.length ? `<div style="margin-top:10px;"><strong>최근 결과물</strong><ul style="margin:4px 0 0;padding-left:18px;">${deliverables.map((d) => `<li class="routine-sub">${esc(d.title)} · ${esc(d.agentName || '')}${d.score != null ? ` · 검수 ${d.score}/10` : ''}${d.gaps?.length ? ' · 부족한 점 있음' : ''}</li>`).join('')}</ul></div>` : ''}
     </details>`;
@@ -1788,8 +1780,8 @@ function renderOutsourcingSettings(force = false) {
         <label class="out-check">외부 자문
           <select id="out-cfg-consult">
             <option value="off" ${cfg.consultMode === 'off' ? 'selected' : ''}>끄기</option>
-            <option value="proposals" ${cfg.consultMode === 'proposals' ? 'selected' : ''}>다음 단계 제안서만</option>
-            <option value="proposals_and_reports" ${cfg.consultMode === 'proposals_and_reports' ? 'selected' : ''}>제안서 + 완료 보고</option>
+            <option value="proposals" ${cfg.consultMode === 'proposals' ? 'selected' : ''}>관문 결재만</option>
+            <option value="proposals_and_reports" ${cfg.consultMode === 'proposals_and_reports' ? 'selected' : ''}>관문 결재 + 완료 보고</option>
           </select>
         </label>
         <button type="button" class="btn btn-primary btn-sm" data-out-settings-save="1">설정 저장</button>
@@ -2076,7 +2068,6 @@ function renderLeadEngineSettings() {
   setVal('set-global-directives', s.globalDirectives || '');
   setChk('set-lead-enabled', le.enabled !== false);
   setChk('set-lead-autofollow', le.autoFollowUp !== false);
-  setVal('set-lead-advance', le.advanceMode || 'propose');
 
   // 텔레그램 알림 종류·방해금지
   const nt = s.telegram?.notify || {};
@@ -3303,20 +3294,6 @@ function bindEvents() {
       return;
     }
 
-    if (target.id === 'btn-ops-mode') {
-      const mode = target.dataset.opsMode;
-      if (mode === 'legacy' && !window.confirm('단계마다 제안서를 결재하는 구버전 방식으로 되돌릴까요?')) return;
-      try {
-        const res = await api(`/api/missions/${target.dataset.missionId}`, { method: 'PATCH', body: JSON.stringify({ opsMode: mode }) });
-        state = res.state;
-        renderAll();
-        toast(mode === 'v3' ? '작전 계획 방식으로 바꿨습니다. 팀장이 곧 작전 계획을 세웁니다.' : '구버전(단계별 제안서) 방식으로 되돌렸습니다.');
-      } catch (err) {
-        toast(err.message, true);
-      }
-      return;
-    }
-
     if (target.id === 'btn-mission-goal' || target.id === 'btn-mission-goal-2') {
       const missionId = target.dataset.missionId;
       const m = state.missions.find((x) => x.id === missionId);
@@ -3480,31 +3457,6 @@ function bindEvents() {
       } catch (err) {
         toast(err.message, true);
         target.disabled = false;
-      }
-      return;
-    }
-
-    if (target.id === 'btn-propose-next-phase') {
-      const missionId = target.dataset.missionId;
-      target.disabled = true;
-      target.textContent = '다음 단계 구상 중…';
-      try {
-        const res = await api(`/api/missions/${missionId}/propose-next`, { method: 'POST' });
-        state = res.state;
-        if (res.approval?.id) selectedApprovalId = res.approval.id;
-        renderAll();
-        switchView('approvals');
-        renderApprovalsView();
-        refreshIcons();
-        toast(
-          res.alreadyPending
-            ? '이미 결재 대기 중인 다음 단계 제안이 있습니다.'
-            : '총괄 팀장이 다음 단계 제안을 결재함에 올렸습니다.'
-        );
-      } catch (err) {
-        toast(err.message, true);
-        target.disabled = false;
-        target.textContent = '다음 단계 제안';
       }
       return;
     }
@@ -3982,8 +3934,7 @@ function bindEvents() {
             leadEngine: {
               enabled: document.getElementById('set-lead-enabled').checked,
               autoFollowUp: document.getElementById('set-lead-autofollow').checked,
-              advanceMode: document.getElementById('set-lead-advance')?.value || 'propose',
-              maxAutoRounds: Number(document.getElementById('set-lead-maxrounds').value),
+                    maxAutoRounds: Number(document.getElementById('set-lead-maxrounds').value),
               followUpMinutes: Number(document.getElementById('set-lead-interval').value)
             }
           }
