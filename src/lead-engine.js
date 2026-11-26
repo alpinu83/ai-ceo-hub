@@ -274,11 +274,94 @@ const ROLE_HINTS = [
 ];
 const INTERNAL_PROVIDERS = new Set(['exaone', 'gemini', 'groq', 'openrouter']);
 
+/**
+ * 팀원별 실제 역량 (팀장이 적재적소에 배정하도록 계획 프롬프트에 그대로 들어감)
+ * async: 외부 앱이 업무를 가져가 처리(즉시 응답 아님) · web: 실제 웹 조사 가능 · simpleOnly: 단순 업무만
+ */
+export const AGENT_PROFILES = {
+  agent_gemma: { good: '기획안·UX 개선·카피·문서 초안', bad: '웹 직접 조사 불가 → 실제 수치·사례가 필요한 조사는 맡기지 말 것' },
+  agent_deepseek: { good: '수익 모델 설계·비교 분석·리스크 검토 같은 추론', bad: '웹 직접 조사 불가' },
+  agent_qwen: { good: '코드·스크립트·HTML/CSS·SEO 파일 작성', bad: '전략 판단' },
+  agent_groq: { good: '빠른 기획·마케팅 문서·구조화·체크리스트', bad: '웹 직접 조사 불가' },
+  agent_exaone: { good: '짧은 한국어 요약·정리·번역·이메일 초안', bad: '분석·전략·코드·조사는 품질이 낮아 맡기지 말 것', simpleOnly: true },
+  agent_it_dev: { good: '코드 수정·버그 수정·리팩토링(연결 저장소 있을 때 PR까지)', bad: '비즈니스 기획' },
+  agent_it_sec: { good: '보안 감사·코드 리뷰·배포 전 점검', bad: '비즈니스 기획' },
+  agent_it_qa: { good: '테스트 시나리오·QA 체크리스트·릴리스 노트', bad: '비즈니스 기획' },
+  agent_cue: { good: '실제 웹 딥리서치(가상 컴퓨터로 사이트 방문)·시장·경쟁·가격 조사·외부 메일 초안', bad: '즉시 응답 아님(외부 앱이 가져가 몇 시간 내 처리). 메일 실제 발송은 대표님 승인', async: true, web: true },
+  agent_muse: { good: '대표님 취향·제약 기억 정리, 프로젝트 보드·체크리스트, 개인화 기획', bad: '즉시 응답 아님(외부 앱이 가져가 처리)', async: true },
+  agent_pickle: { good: '국내 전화 문의·예약 실행(결제 전 대표님 승인)', bad: '문서·분석 업무 불가. 실제 전화가 필요한 일만', async: true, realWorld: true },
+  agent_instinct: { good: '문자·전화로 빠른 확인·심부름', bad: '문서·분석 업무 불가', async: true, realWorld: true },
+  agent_vooy: { good: '매일 같은 조건의 뉴스·가격 반복 수집', bad: '연동 대기 중', async: true }
+};
+const COMPLEX_RE = /(분석|전략|설계|조사|리서치|코드|구현|개발|비교|진단|수익|기획안|검증|아키텍처|리스크)/;
+
+function lastSeenHours(db, id) {
+  const at = db.agentConnections?.[id]?.lastSeenAt;
+  return at ? (Date.now() - Date.parse(at)) / 3600000 : Infinity;
+}
+
+/** 계획용 조직도: 잘하는 일·맡기면 안 되는 일·응답 방식·현재 업무량 */
+export function buildPlanningRoster(db) {
+  const active = (db.agents || []).filter((a) => a.active && a.tier !== 'lead');
+  return active
+    .map((a) => {
+      const p = AGENT_PROFILES[a.id] || { good: a.strengths || a.roleTitle, bad: '' };
+      const busy = (db.tasks || []).filter((t) => t.assigneeId === a.id && ['queued', 'running', 'awaiting_bridge'].includes(t.status)).length;
+      let mode = '즉시 응답(API)';
+      if (p.async) {
+        const h = lastSeenHours(db, a.id);
+        mode = h < 48 ? `외부 앱(최근 ${h < 1 ? '1시간 내' : `${Math.round(h)}시간 전`} 접속 · 몇 시간 내 처리)` : '외부 앱(최근 접속 없음 → 배정 금지)';
+      }
+      return `- id: "${a.id}", ${a.name} — 잘함: ${p.good}${p.bad ? ` / 주의: ${p.bad}` : ''} / ${mode} / 진행 ${busy}건${busy === 0 ? ' (대기 중, 우선 배정)' : ''}`;
+    })
+    .join('\n');
+}
+
+/** 계획 프롬프트에 붙는 배정 원칙 */
+export const ASSIGNMENT_RULES = [
+  '배정 원칙(적재적소):',
+  '- 위 조직도의 "잘함/주의"를 보고 업무 성격에 가장 맞는 사람에게 배정하세요. 한 사람에게 몰지 말고, 한 단계에서 한 팀원은 최대 2건까지.',
+  '- "대기 중, 우선 배정" 팀원을 먼저 쓰세요. 같은 팀원만 반복해서 쓰지 마세요.',
+  '- 실제 웹 조사(시장·경쟁·가격·사례)가 필요한 일은 웹 조사가 되는 팀원(Manus Cue)에게 맡기세요. 웹을 못 보는 API 팀원에게 맡기면 근거를 지어냅니다.',
+  '- 실제 전화·예약·문자처럼 현실 행동이 필요한 일만 피클·인스팅스에게 맡기세요(결제·확정은 대표님 승인).',
+  '- LG EXAONE에게는 짧은 요약·정리·번역 같은 단순 작업만 맡기세요.',
+  '- "최근 접속 없음" 외부 앱 팀원에게는 배정하지 마세요.'
+].join('\n');
+
+/** 계획 후 보정: EXAONE에 어려운 일, 응답 없는 외부 앱, 한 사람 몰림을 고쳐서 재배정 */
+export function rebalanceAssignments(db, tasks = []) {
+  const changes = [];
+  const agentsById = Object.fromEntries((db.agents || []).map((a) => [a.id, a]));
+  const planLoad = {};
+  const out = tasks.map((t) => ({ ...t }));
+  const reassign = (t, reason, exclude = []) => {
+    const alt = pickAlternateMember(db, t, [t.assigneeId, ...exclude], planLoad);
+    if (!alt) return;
+    changes.push(`"${String(t.title).slice(0, 40)}": ${agentsById[t.assigneeId]?.name || t.assigneeId} → ${alt.name} (${reason})`);
+    t.assigneeId = alt.id;
+  };
+  for (const t of out) {
+    const p = AGENT_PROFILES[t.assigneeId] || {};
+    const text = `${t.title || ''} ${t.description || ''}`;
+    if (p.simpleOnly && COMPLEX_RE.test(text)) reassign(t, '단순 업무 전용 팀원');
+    else if (p.async && lastSeenHours(db, t.assigneeId) >= 48) reassign(t, '외부 앱 최근 접속 없음');
+    else if (p.realWorld && !/(전화|예약|문자|연락|방문|확인 전화)/.test(text)) reassign(t, '현실 행동 전용 팀원');
+    planLoad[t.assigneeId] = (planLoad[t.assigneeId] || 0) + 1;
+    if (planLoad[t.assigneeId] > 2) {
+      planLoad[t.assigneeId] -= 1;
+      reassign(t, '한 사람에게 몰림');
+      planLoad[t.assigneeId] = (planLoad[t.assigneeId] || 0) + 1;
+    }
+  }
+  return { tasks: out, changes };
+}
+
 /** 다시 맡길 내부 팀원 고르기: 업무 성격에 맞고, 아직 시도하지 않았고, 지금 일이 적은 사람 */
-export function pickAlternateMember(db, task, triedIds = []) {
-  const active = (db.agents || []).filter((a) => a.active && INTERNAL_PROVIDERS.has(a.provider) && a.tier !== 'lead');
-  const load = (id) => (db.tasks || []).filter((t) => t.assigneeId === id && ['queued', 'running'].includes(t.status)).length;
+export function pickAlternateMember(db, task, triedIds = [], planLoad = {}) {
   const text = `${task?.title || ''} ${task?.description || ''}`;
+  const complex = COMPLEX_RE.test(text);
+  const active = (db.agents || []).filter((a) => a.active && INTERNAL_PROVIDERS.has(a.provider) && a.tier !== 'lead' && !(complex && AGENT_PROFILES[a.id]?.simpleOnly));
+  const load = (id) => (db.tasks || []).filter((t) => t.assigneeId === id && ['queued', 'running'].includes(t.status)).length + (planLoad[id] || 0);
   const preferred = ROLE_HINTS.filter((h) => h.re.test(text)).flatMap((h) => h.ids);
   const candidates = active.filter((a) => !triedIds.includes(a.id));
   if (!candidates.length) return null;
