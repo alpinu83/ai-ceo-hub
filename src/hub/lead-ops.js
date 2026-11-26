@@ -3,6 +3,7 @@ import { ASSIGNMENT_RULES, buildCompletionReport, buildMissionDigest, buildPlann
 import { appendLog, appendMessage, flushCloudBackup, loadDb, saveDb, uid } from '../store.js';
 import { buildDispatchPrompt, draftMissionPlan, planLeadFollowUp, planMilestoneWork } from '../orchestrator.js';
 import { getAiProviderHealth } from '../ai-guard.js';
+import { describeGoogleDataStatus } from '../google-data.js';
 import { getOutsourcingSettings } from '../outsourcing.js';
 import { sendTelegramReport } from '../telegram.js';
 import { MAJOR_DECISION_RE } from './ceo-chat.js';
@@ -241,6 +242,49 @@ export async function handleStageGateDecision(apr, decision, note = '') {
   return { db };
 }
 
+/** 대표님 지시로 작전 재계획: 끝난 마일스톤은 두고, 아직 시작 안 한 작업은 정리 후 다시 계획 */
+export async function replanMission(missionId, note = '') {
+  const db = loadDb();
+  const m = db.missions.find((x) => x.id === missionId);
+  if (!isOpsMission(m)) return { ok: false, error: '프로젝트 업무에서만 재계획할 수 있습니다.' };
+  const memo = String(note || '').trim().slice(0, 600);
+  const doneIds = new Set((m.plan?.milestones || []).filter((x) => x.status === 'done').map((x) => x.id));
+  // 아직 시작 안 한 작업만 정리 (진행 중·완료 작업과 결과물은 그대로 둠)
+  const before = db.tasks.length;
+  db.tasks = db.tasks.filter((t) => !(t.missionId === missionId && t.milestoneId && !doneIds.has(t.milestoneId) && ['queued', 'awaiting_bridge'].includes(t.status)));
+  const dropped = before - db.tasks.length;
+  m.plan = { ...(m.plan || {}), needsReplan: true };
+  if (memo) rememberFact(db, { kind: 'directive', missionId, pinned: true, text: `[작전 재계획 지시] ${memo}`, source: 'replan' });
+  appendLog(db, 'CEO', `"${m.title}" 작전 재계획 지시${memo ? `: ${memo.slice(0, 120)}` : ''} (대기 작업 ${dropped}건 정리)`, 'info');
+  saveDb(db);
+  await flushCloudBackup(db);
+  setTimeout(() => opsCycle(missionId).catch((err) => console.warn('replan failed:', err.message)), 1000);
+  return { ok: true, dropped, db };
+}
+
+/** 이미 연결된 도구: 팀장이 있는 기능을 또 만들지 않도록 계획 단계에 알려 줌 */
+const hostOf = (u = '') => String(u).replace(/^sc-domain:/, '').replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/.*$/, '').toLowerCase();
+export function connectedToolsNote(settings, mission) {
+  let g = {};
+  try {
+    g = describeGoogleDataStatus(settings) || {};
+  } catch {
+    return '';
+  }
+  if (!g.hasKey) return '';
+  const site = hostOf(mission?.siteUrl || '');
+  const scMatch = g.scEnabled && g.searchConsoleSite && site && hostOf(g.searchConsoleSite) === site;
+  if (!scMatch && !(g.gaEnabled && site)) return '';
+  const have = [scMatch ? `Search Console(${g.searchConsoleSite})` : '', g.gaEnabled && g.ga4PropertyId ? `GA4(속성 ${g.ga4PropertyId})` : ''].filter(Boolean).join(' · ');
+  return [
+    '[이미 연결된 데이터 · 새로 만들지 말 것]',
+    `- CEO Office 서버가 서비스 계정 키로 ${have} 데이터를 직접 읽고 있으며, 작업마다 최신 수치가 자동으로 들어갑니다.`,
+    '- 그러므로 서비스 계정 키 발급, 데이터 추출 스크립트, CSV 저장, GitHub Actions 같은 수집 파이프라인 구축을 계획하지 마세요. 사이트 저장소에 키를 넣는 일도 금지입니다.',
+    '- 수치 확인이 필요하면 "서버 지표로 확인" 수준의 작업으로 처리하고, 마일스톤은 검색 노출·색인·콘텐츠·전환처럼 지표를 실제로 움직이는 일에 쓰세요.'
+  ].join('\n');
+}
+const digestWithTools = (db, m) => [buildMissionDigest(db, m.id), connectedToolsNote(db.settings, m)].filter(Boolean).join('\n\n');
+
 /** 운영 사이클 1회: 계획 수립(없으면) → 현재 마일스톤 처리 */
 export async function opsCycle(missionId, { depth = 0 } = {}) {
   if (opsCycleRunning.has(missionId) || depth > 3) return null;
@@ -257,7 +301,7 @@ export async function opsCycle(missionId, { depth = 0 } = {}) {
       saveDb(db);
       let drafted;
       try {
-        drafted = await draftMissionPlan({ mission: m, digest: buildMissionDigest(db, missionId), agents: db.agents, settings: db.settings });
+        drafted = await draftMissionPlan({ mission: m, digest: digestWithTools(db, m), agents: db.agents, settings: db.settings });
       } catch (err) {
         const fresh = loadDb();
         appendLog(fresh, '총괄 팀장', `"${m.title}" 작전 계획 수립 보류(AI 엔진): ${err.message}`.slice(0, 300), 'warning');
@@ -299,7 +343,7 @@ export async function opsCycle(missionId, { depth = 0 } = {}) {
       work = await planMilestoneWork({
         mission: m,
         milestone: ms,
-        digest: buildMissionDigest(db, missionId),
+        digest: digestWithTools(db, m),
         agents: db.agents,
         settings: db.settings,
         teamLoad: `${buildPlanningRoster(db)}\n\n${ASSIGNMENT_RULES}`,
