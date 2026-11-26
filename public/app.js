@@ -1477,7 +1477,8 @@ function missionPlanHtml(mission) {
     })
     .join('');
   return `<details class="mission-directive-quote" open>
-      <summary style="cursor:pointer;"><strong>작전 계획${plan?.stage ? ` — ${esc(plan.stage)}` : ''}</strong> <span class="routine-sub">관문(대표님 결정)에서만 결재를 받고 나머지는 팀장이 바로 진행합니다</span></summary>
+      <summary style="cursor:pointer;"><strong>작전 계획${plan?.stage ? ` — ${esc(plan.stage)}` : ''}</strong> <span class="routine-sub">관문(대표님 결정)에서만 결재를 받고 나머지는 팀장이 바로 진행합니다</span>
+        <button type="button" class="btn-inline-edit" id="btn-replan" data-mission-id="${esc(mission.id)}" title="방향을 바꿔 작전 계획을 다시 세움 (끝난 마일스톤은 유지)">다시 계획</button></summary>
       ${msRows ? `<ol style="list-style:none;padding:0;margin:8px 0 0;">${msRows}</ol>` : '<div class="routine-sub" style="margin-top:6px;">아직 작전 계획이 없습니다. "팀장 운영 사이클 실행"을 누르면 팀장이 계획을 세웁니다.</div>'}
       ${deliverables.length ? `<div style="margin-top:10px;"><strong>최근 결과물</strong><ul style="margin:4px 0 0;padding-left:18px;">${deliverables.map((d) => `<li class="routine-sub">${esc(d.title)} · ${esc(d.agentName || '')}${d.score != null ? ` · 검수 ${d.score}/10` : ''}${d.gaps?.length ? ' · 부족한 점 있음' : ''}</li>`).join('')}</ul></div>` : ''}
     </details>`;
@@ -3286,6 +3287,20 @@ function bindEvents() {
         state = res.state;
         renderAll();
         toast('이름을 수정했습니다.');
+      } catch (err) {
+        toast(err.message, true);
+      }
+      return;
+    }
+
+    if (target.id === 'btn-replan') {
+      const note = window.prompt('어떻게 바꿀까요? (팀장이 이 지시를 반영해 작전 계획을 다시 세웁니다. 끝난 마일스톤은 유지)', '');
+      if (note === null) return;
+      try {
+        const res = await api(`/api/missions/${target.dataset.missionId}/replan`, { method: 'POST', body: JSON.stringify({ note }) });
+        state = res.state;
+        renderAll();
+        toast(`재계획을 지시했습니다. 대기 작업 ${res.dropped}건을 정리하고 팀장이 곧 새 계획을 올립니다.`);
       } catch (err) {
         toast(err.message, true);
       }
