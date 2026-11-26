@@ -3759,9 +3759,16 @@ async function intakeChatDirective(text, missionId) {
     agents: db.agents,
     settings: db.settings,
     rejectedTitles: rejected.slice(0, 3).map((a) => a.title),
-    repoLinked
+    repoLinked,
+    planningRoster: buildPlanningRoster(db),
+    assignmentRules: ASSIGNMENT_RULES
   });
   if (cls.kind !== 'directive') return { note: '' };
+  if (Array.isArray(cls.tasks) && cls.tasks.length) {
+    const rb = rebalanceAssignments(db, cls.tasks);
+    cls.tasks = rb.tasks;
+    if (rb.changes.length) appendLog(db, '총괄 팀장', `회의실 지시 배정 보정: ${rb.changes.join(' / ')}`.slice(0, 600), 'info');
+  }
 
   // No project selected: same as a Telegram /order → new work item, decomposed and auto-run
   if (!mission) {

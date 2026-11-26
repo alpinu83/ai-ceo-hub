@@ -1465,7 +1465,7 @@ const ChatDirectiveSchema = z.object({
 const STATUS_QUESTION_RE = /(진행\s*상황|현황|알려\s*줘|공유해\s*줘|어때|뭐야|왜\s)/;
 const DIRECTIVE_HINT_RE = /(해줘|해주세요|해라|하자|해봐|진행해|진행하자|진행시켜|넣어|넣는|추가|수정|바꿔|변경|만들어|삭제|제거|빼|확인해|고쳐|반영|적용|올려|다시|착수|시작해|정리해|알아봐|조사해|진행해야지|해야지)/;
 
-export async function classifyChatDirective({ text, mission, tasks = [], agents, settings, rejectedTitles = [], repoLinked = false }) {
+export async function classifyChatDirective({ text, mission, tasks = [], agents, settings, rejectedTitles = [], repoLinked = false, planningRoster = '', assignmentRules = '' }) {
   const active = agents.filter((a) => a.active);
   const roster = active
     .filter((a) => ['exaone', 'gemini', 'groq', 'openrouter'].includes(a.provider))
@@ -1489,7 +1489,8 @@ export async function classifyChatDirective({ text, mission, tasks = [], agents,
 - 외부 계정(애드센스·GA4·서치콘솔 등) 확인은 팀이 직접 조회할 수 없으므로 "확인 방법 가이드와 후속 작업 준비"로 업무를 만드세요.
 - assigneeId는 아래 목록의 id만 사용하세요.
 [조직원]
-${roster}`;
+${planningRoster || roster}
+${assignmentRules ? `\n${assignmentRules}` : ''}`;
   const prompt = `[채널] ${mission ? `${mission.title}${repoLinked ? ' (GitHub 저장소 연동됨 — 코드 수정 가능)' : ''}` : '전체 채널(특정 프로젝트 없음)'}
 [현재 업무]\n${
     tasks

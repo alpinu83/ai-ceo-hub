@@ -294,6 +294,8 @@ export const AGENT_PROFILES = {
   agent_vooy: { good: '매일 같은 조건의 뉴스·가격 반복 수집', bad: '연동 대기 중', async: true }
 };
 const COMPLEX_RE = /(분석|전략|설계|조사|리서치|코드|구현|개발|비교|진단|수익|기획안|검증|아키텍처|리스크)/;
+// 실제 웹을 봐야 하는 일 (시장·경쟁·수요·사례·가격 조사)
+const WEB_RE = /(시장\s*(조사|검증)|경쟁|수요|사례|가격\s*조사|웹\s*조사|리서치|벤치마크|트렌드|겹치는지)/;
 
 function lastSeenHours(db, id) {
   const at = db.agentConnections?.[id]?.lastSeenAt;
@@ -343,7 +345,11 @@ export function rebalanceAssignments(db, tasks = []) {
   for (const t of out) {
     const p = AGENT_PROFILES[t.assigneeId] || {};
     const text = `${t.title || ''} ${t.description || ''}`;
-    if (p.simpleOnly && COMPLEX_RE.test(text)) reassign(t, '단순 업무 전용 팀원');
+    const webAgent = Object.keys(AGENT_PROFILES).find((id) => AGENT_PROFILES[id].web && agentsById[id]?.active && lastSeenHours(db, id) < 48 && (planLoad[id] || 0) < 2);
+    if (WEB_RE.test(text) && !p.web && webAgent && !/(초안|기획서|명세)/.test(String(t.title || ''))) {
+      changes.push(`"${String(t.title).slice(0, 40)}": ${agentsById[t.assigneeId]?.name || t.assigneeId} → ${agentsById[webAgent]?.name || webAgent} (실제 웹 조사 필요)`);
+      t.assigneeId = webAgent;
+    } else if (p.simpleOnly && COMPLEX_RE.test(text)) reassign(t, '단순 업무 전용 팀원');
     else if (p.async && lastSeenHours(db, t.assigneeId) >= 48) reassign(t, '외부 앱 최근 접속 없음');
     else if (p.realWorld && !/(전화|예약|문자|연락|방문|확인 전화)/.test(text)) reassign(t, '현실 행동 전용 팀원');
     planLoad[t.assigneeId] = (planLoad[t.assigneeId] || 0) + 1;
