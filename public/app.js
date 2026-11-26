@@ -1914,7 +1914,7 @@ function renderRoutinesView() {
     opsEl.innerHTML = `<div class="sheet routine-ops">
         <div class="routine-ops-row"><strong>AI 엔진</strong>${
           cds.length
-            ? cds.map((c) => `<span class="badge badge-amber" title="${esc(c.reason)}">${esc(c.provider)}${c.model && c.model !== '*' ? ` · ${esc(c.model)}` : ''} 휴식 ~${esc(fmtT(c.until))}</span>`).join('')
+            ? cds.map((c) => `<span class="badge ${c.daily ? 'badge-red' : 'badge-amber'}" title="${esc(c.reason)}">${esc(c.provider)}${c.model && c.model !== '*' ? ` · ${esc(c.model)}` : ''} ${c.daily ? '오늘 한도 소진 · 자정까지 업무 제외(다른 팀원이 대체)' : `휴식 ~${esc(fmtT(c.until))}`}</span>`).join('')
             : '<span class="badge badge-green">모든 엔진 정상</span>'
         }</div>
         <div class="routine-ops-row"><strong>자동 복구</strong><span>${
