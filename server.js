@@ -56,7 +56,10 @@ import {
   classifyBlocker,
   triageGuidance,
   pickAlternateMember,
-  describeTeamLoad
+  describeTeamLoad,
+  buildPlanningRoster,
+  rebalanceAssignments,
+  ASSIGNMENT_RULES
 } from './src/lead-engine.js';
 import { describeSkillsForClient, getSkillSettings, selectSkills, renderSkills } from './src/skills.js';
 import { testGoogleDataConnection, buildAnalyticsContext, describeGoogleDataStatus } from './src/google-data.js';
@@ -211,8 +214,15 @@ async function createMissionInDb({
     githubRepo: draftBindings.githubRepo,
     githubBranch: draftBindings.githubBranch,
     siteUrl: draftBindings.siteUrl,
-    extraRepos: draftBindings.extraRepos
+    extraRepos: draftBindings.extraRepos,
+    planningRoster: buildPlanningRoster(db),
+    assignmentRules: ASSIGNMENT_RULES
   });
+  if (Array.isArray(plan.tasks)) {
+    const rb = rebalanceAssignments(db, plan.tasks);
+    plan.tasks = rb.tasks;
+    if (rb.changes.length) appendLog(db, '총괄 팀장', `배정 보정: ${rb.changes.join(' / ')}`.slice(0, 600), 'info');
+  }
 
   const now = new Date().toISOString();
   const mission = {
@@ -808,8 +818,15 @@ async function decomposeIntoPhaseTasks(missionId, combinedDirective) {
     githubRepo: mission.githubRepo || '',
     githubBranch: mission.githubBranch || 'main',
     siteUrl: mission.siteUrl || '',
-    extraRepos: Array.isArray(mission.extraRepos) ? mission.extraRepos : []
+    extraRepos: Array.isArray(mission.extraRepos) ? mission.extraRepos : [],
+    planningRoster: buildPlanningRoster(db),
+    assignmentRules: ASSIGNMENT_RULES
   });
+  if (!plan.aiFailed && Array.isArray(plan.tasks)) {
+    const rb = rebalanceAssignments(db, plan.tasks);
+    plan.tasks = rb.tasks;
+    if (rb.changes.length) appendLog(db, '총괄 팀장', `"${mission.title}" 배정 보정: ${rb.changes.join(' / ')}`.slice(0, 600), 'info');
+  }
 
   if (plan.aiFailed) {
     const retries = Number(mission.pendingPhaseRetries || 0) + 1;
@@ -1381,6 +1398,11 @@ async function leadReportAfterRun(missionId, taskIds = [], { codeResult = null }
 
 function createLeadTasks(db, mission, specs = [], source = 'lead_followup') {
   const agentMap = Object.fromEntries(db.agents.map((a) => [a.id, a]));
+  {
+    const rb = rebalanceAssignments(db, specs);
+    specs = rb.tasks;
+    if (rb.changes.length) appendLog(db, '총괄 팀장', `"${mission.title}" 후속 배정 보정: ${rb.changes.join(' / ')}`.slice(0, 600), 'info');
+  }
   const repoLinked = Boolean(getMissionRepoCfg(db.settings, mission));
   const now = new Date().toISOString();
   const phase = Number(mission.phase) || 1;
@@ -1435,7 +1457,7 @@ async function leadAutoAdvance(missionId) {
       digest: buildMissionDigest(db, missionId),
       agents: db.agents,
       settings: db.settings,
-      teamLoad: describeTeamLoad(db)
+      teamLoad: `${buildPlanningRoster(db)}\n\n${ASSIGNMENT_RULES}`
     });
   } catch (err) {
     const fresh = loadDb();
