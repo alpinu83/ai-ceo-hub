@@ -1484,8 +1484,15 @@ function outTargetInfo(r) {
   const chain = outChainClient(r);
   const since = r.queuedAt || r.createdAt ? Date.parse(r.queuedAt || r.createdAt) : 0;
   let stage = 0;
-  if (r.status === 'open' && since) stage = Math.max(0, Math.min(chain.length - 1, Math.floor((Date.now() - since) / (cfg.waitMinutes * 60000))));
-  const next = r.status === 'open' && since && stage < chain.length - 1 ? { at: since + (stage + 1) * cfg.waitMinutes * 60000, worker: chain[stage + 1] } : null;
+  let next = null;
+  if (r.status === 'open' && since) {
+    let t = since;
+    stage = chain.length - 1;
+    for (let i = 0; i < chain.length - 1; i++) {
+      t += (chain[i] === 'gemini' ? Math.max(cfg.waitMinutes, 60) : cfg.waitMinutes) * 60000;
+      if (Date.now() < t) { stage = i; next = { at: t, worker: chain[i + 1] }; break; }
+    }
+  }
   return { target: chain[stage] || chain[0], next };
 }
 
@@ -1498,18 +1505,8 @@ function geminiConnectorUrl() {
 }
 
 /** Gemini 앱 예약 작업(Scheduled)에 넣을 지시문 */
-function geminiSchedulePrompt(effort = 'light') {
-  const deep = effort === 'deep';
-  return [
-    `연결된 앱 "CEO Office 외주창구"(맞춤 MCP 앱)의 도구로 CEO Office 외주를 처리해줘. 너는 ${deep ? 'Neon 담당: 판단·추론이 필요한 요청' : 'Hydrogen 담당: 자료 조사·단순 작업 요청'}만 처리해.`,
-    `1) list_outsourcing_requests를 worker "gemini", effort "${deep ? 'deep' : 'light'}"로 호출해서 대기 요청을 확인해. 없으면 "처리할 외주 없음" 한 줄로 끝내.`,
-    '2) 가장 오래된 요청 1건을 claim_outsourcing_request(worker "gemini")로 잡고, 돌려받은 요청서를 끝까지 읽어.',
-    '3) 요청서의 "해야 할 일"과 "제출물" 기준대로 작업해. 웹 검색으로 근거를 확인하고 수치·주장에는 출처 링크를 붙여. 확인한 사실과 추정은 구분해.',
-    '4) 코드 저장소 수정이나 로그인이 필요한 사이트 작업이면 직접 하지 말고 pass_outsourcing_request로 넘겨 (코드 → antigravity, 로그인·콘솔 → aside). 결제·발송·광고비 집행은 하지 마.',
-    ...(deep ? [] : ['4-1) 하다 보니 판단·추론이 많이 필요하면 억지로 끝내지 말고 pass_outsourcing_request(to "deep")로 Neon 담당에 올려. 지금까지 조사한 내용은 reason에 요약해.']),
-    '5) 끝나면 submit_outsourcing_result로 제출해 (worker "gemini", summary 2~4문장, document 마크다운 전문). 대화창에 답만 쓰고 끝내지 마.',
-    '6) 시간이 남으면 다음 요청도 같은 방법으로 최대 2건까지 처리해.'
-  ].join('\n');
+function geminiSchedulePrompt() {
+  return "연결된 앱 \"CEO Office 외주창구\"(맞춤 MCP 앱)의 도구로 CEO Office 외주를 처리해줘.\n1) list_outsourcing_requests를 worker \"gemini\"로 호출해서 지금 나한테 배정된 대기 요청을 확인해. 없으면 \"처리할 외주 없음\" 한 줄로 끝내.\n2) 가장 오래된 요청 1건을 claim_outsourcing_request(worker \"gemini\")로 잡고, 돌려받은 요청서를 끝까지 읽어.\n3) 요청서의 \"해야 할 일\"과 \"제출물\" 기준대로 작업해. 웹 검색으로 근거를 확인하고 수치·주장에는 출처 링크를 붙여. 확인한 사실과 추정은 구분해.\n4) 코드 저장소 수정이나 로그인이 필요한 사이트 작업이면 직접 하지 말고 pass_outsourcing_request로 넘겨 (코드 → antigravity, 로그인·콘솔 → aside). 결제·발송·광고비 집행은 하지 마.\n5) 끝나면 submit_outsourcing_result로 제출해 (worker \"gemini\", summary 2~4문장, document 마크다운 전문). 대화창에 답만 쓰고 끝내지 마.\n6) 시간이 남으면 다음 요청도 같은 방법으로 최대 2건까지 처리해.";
 }
 
 function mcpConfigSnippet() {
@@ -1534,7 +1531,6 @@ function outCardHtml(r) {
             <span class="badge badge-neutral">${esc(OUT_KIND_LABELS[r.kind] || r.kind)}</span>
             <span class="badge ${cls}">${esc(label)}${r.claimedBy && r.status === 'claimed' ? ` · ${esc(r.claimedBy)}` : ''}</span>
             ${open || r.status === 'needs_ceo' ? `<span class="badge badge-blue">→ ${esc(OUT_WORKER_LABELS[target] || target)}${r.pinnedWorker ? ' (지정)' : ''}</span>` : ''}
-            ${r.effort ? `<span class="badge badge-neutral" title="난이도에 따라 상위·하위 모델이 나눠 처리">${esc(OUT_EFFORT_LABELS[r.effort] || r.effort)}${open && outEffortModel(r, target) ? ` · ${esc(outEffortModel(r, target))}` : ''}</span>` : ''}
             ${res?.by ? `<span class="badge badge-neutral">작업: ${esc(res.by)}</span>` : ''}
           </div>
           <h3 class="routine-title">${esc(r.title)}</h3>
@@ -1548,10 +1544,6 @@ function outCardHtml(r) {
                   <option value="aside" ${r.pinnedWorker === 'aside' ? 'selected' : ''}>대상: Aside</option>
                   <option value="antigravity" ${r.pinnedWorker === 'antigravity' ? 'selected' : ''}>대상: Antigravity</option>
                   ${OUT_WORKER_CAPS.gemini.includes(r.kind) ? `<option value="gemini" ${r.pinnedWorker === 'gemini' ? 'selected' : ''}>대상: Gemini 앱</option>` : ''}
-                </select>
-                <select class="out-assign" data-out-effort="${esc(r.id)}" title="난이도: 깊은 판단은 상위 모델(Neon·Carbon), 단순·조사는 Hydrogen">
-                  <option value="deep" ${r.effort === 'deep' ? 'selected' : ''}>난이도: 깊은 판단</option>
-                  <option value="light" ${r.effort !== 'deep' ? 'selected' : ''}>난이도: 단순·조사</option>
                 </select>`
               : ''
           }
@@ -1701,7 +1693,7 @@ function renderOutsourcingSettings(force = false) {
   root.innerHTML = `
     <div class="card out-route">
       <div class="card-head"><h3 class="card-title">역할 분담 (우선순위)</h3></div>
-      <p class="routine-desc" style="margin-top:0;">일의 종류마다 맡길 순서를 정합니다. 1순위가 정해진 시간 안에 안 가져가면 2순위, 그래도 안 되면 3순위로 자동으로 넘어갑니다. 잡고 끝내지 못한 작업자는 그 요청에서 건너뜁니다. 작업자가 못 하는 일(Gemini 앱의 로그인·코드 작업)은 목록에 나오지 않습니다.</p>
+      <p class="routine-desc" style="margin-top:0;">일의 종류마다 맡길 순서를 정합니다. 1순위가 정해진 시간 안에 안 가져가면 2순위, 그래도 안 되면 3순위로 자동으로 넘어갑니다(Gemini 앱은 예약 주기 때문에 최소 60분). 잡고 끝내지 못한 작업자는 그 요청에서 건너뜁니다. 작업자가 못 하는 일(Gemini 앱의 로그인·코드 작업)은 목록에 나오지 않습니다.</p>
       <div style="overflow-x:auto;"><table class="out-role-table" style="width:100%;border-collapse:collapse;font-size:13px;">
         <thead><tr><th style="text-align:left;padding:6px 4px;">일의 종류</th><th style="text-align:left;padding:6px 4px;">1순위</th><th style="text-align:left;padding:6px 4px;">2순위</th><th style="text-align:left;padding:6px 4px;">3순위</th><th style="text-align:left;padding:6px 4px;">현재</th></tr></thead>
         <tbody>${roleRows}</tbody>
@@ -1760,12 +1752,11 @@ function renderOutsourcingSettings(force = false) {
       <div class="card-head"><h3 class="card-title">작업자 연결</h3></div>
       <div class="out-guide-grid">
         <div>
-          <h4>Gemini 앱 (자문·리서치·문서 · Neon/Hydrogen)</h4>
-          <p class="routine-desc">gemini.google.com → 설정 → Personal Intelligence → Connected Apps → Custom → "연결 주소 복사" 내용을 붙여넣고 이름을 "CEO Office 외주창구"로 저장. 예약은 두 개로 나눕니다: 깊은 판단 요청은 Neon 예약(메인 화면 Task 모드에서 Neon을 고르고 지시문 + "매시간 30분에 반복 예약해줘"), 자료 조사·단순 작업은 Hydrogen 예약(Scheduled 화면, 매시 정각). Gemini 예약은 한 대화 안에서 모델을 나눠 쓸 수 없어서 요청 단위로 나눕니다. 연결 앱 설정에서 외주 도구는 "항상 허용"이어야 자동으로 돕니다.</p>
+          <h4>Gemini 앱 (자문·리서치·문서)</h4>
+          <p class="routine-desc">gemini.google.com → 설정 → Personal Intelligence → Connected Apps → Custom → "연결 주소 복사" 내용을 붙여넣고 이름을 "CEO Office 외주창구"로 저장. 그다음 Gemini 메인 화면에서 Task 모드로 바꾸고 원하는 모델(Neon 권장)을 고른 뒤 "예약 지시문 복사" 내용과 "매시간 반복 예약해줘"를 보내면 예약이 만들어집니다. 모델은 예약을 만들 때 정해지고 이 화면에서는 바꿀 수 없습니다. 바꾸려면 Aside에 "Gemini 모델 바꿔줘"라고 하세요. Gemini 차례는 예약 주기에 맞춰 최소 60분 기다린 뒤 다음 순위로 넘어갑니다.</p>
           <div style="display:flex;gap:6px;flex-wrap:wrap;">
             <button type="button" class="btn btn-primary btn-sm" data-out-copy-gemini-url="1">연결 주소 복사</button>
-            <button type="button" class="btn btn-ghost btn-sm" data-out-copy-gemini-prompt="deep">Neon 예약 지시문</button>
-            <button type="button" class="btn btn-ghost btn-sm" data-out-copy-gemini-prompt="light">Hydrogen 예약 지시문</button>
+            <button type="button" class="btn btn-ghost btn-sm" data-out-copy-gemini-prompt="1">예약 지시문 복사</button>
           </div>
         </div>
         <div>
@@ -2935,8 +2926,7 @@ function bindEvents() {
       return;
     }
     if (target.dataset.outCopyGeminiPrompt) {
-      const eff = target.dataset.outCopyGeminiPrompt === 'deep' ? 'deep' : 'light';
-      await copyText(geminiSchedulePrompt(eff), eff === 'deep' ? 'Neon 예약 지시문을 복사했습니다. Gemini 메인 화면 Task 모드에서 Neon을 고르고 붙여넣은 뒤 "매시간 30분에 반복 예약해줘"를 덧붙이세요.' : 'Hydrogen 예약 지시문을 복사했습니다. Gemini → Scheduled → 새 작업에 붙여넣으세요.');
+      await copyText(geminiSchedulePrompt(), 'Gemini 예약 지시문을 복사했습니다. Gemini 메인 화면 Task 모드에서 모델을 고르고 붙여넣은 뒤 "매시간 반복 예약해줘"를 덧붙이세요.');
       return;
     }
     if (target.dataset.outCopySetup) {

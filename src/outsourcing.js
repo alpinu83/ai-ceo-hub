@@ -92,14 +92,6 @@ function modelPlanLines(target, req) {
       ''
     ].join('\n');
   }
-  if (target === 'gemini') {
-    return [
-      '## 모델 분담 (Gemini 앱: Neon / Hydrogen)',
-      `- 이 요청 난이도: ${EFFORT_LABELS[effort]} → ${effort === 'deep' ? 'Neon 예약 작업이 처리' : 'Hydrogen 예약 작업이 처리'}`,
-      '- Hydrogen으로 처리하다가 판단·추론이 많이 필요하다고 보이면 억지로 끝내지 말고 pass_outsourcing_request(to "deep")로 Neon에 올릴 것 (지금까지 조사한 내용을 reason에 요약)',
-      ''
-    ].join('\n');
-  }
   return '';
 }
 
@@ -196,15 +188,24 @@ export function priorityChain(settings, req = {}) {
   return rest.length ? rest : chain;
 }
 
-/** 대기열에 들어온 뒤 몇 번째 순위 차례인지 (정해진 시간마다 다음 순위로) */
-function priorityStage(cfg, req, date, len) {
-  if (req.status !== 'open') return 0;
+/** 순위별 대기 시간: Gemini 앱은 예약이 1시간마다 돌아서 최소 60분 */
+function stageMinutes(cfg, worker) {
+  return worker === 'gemini' ? Math.max(cfg.waitMinutes, 60) : cfg.waitMinutes;
+}
+
+/** 대기열에 들어온 뒤 몇 번째 순위 차례인지와 다음 순위로 넘어가는 시각 */
+function priorityState(cfg, req, date, chain) {
+  if (req.status !== 'open') return { stage: 0, nextAt: null };
   const stamp = req.queuedAt || req.createdAt;
-  if (!stamp) return 0;
+  if (!stamp) return { stage: 0, nextAt: null };
   const since = Date.parse(stamp);
-  if (!Number.isFinite(since)) return 0;
-  const stage = Math.floor((date.getTime() - since) / (cfg.waitMinutes * 60 * 1000));
-  return Math.max(0, Math.min(len - 1, stage));
+  if (!Number.isFinite(since)) return { stage: 0, nextAt: null };
+  let t = since;
+  for (let i = 0; i < chain.length - 1; i++) {
+    t += stageMinutes(cfg, chain[i]) * 60 * 1000;
+    if (date.getTime() < t) return { stage: i, nextAt: t };
+  }
+  return { stage: Math.max(0, chain.length - 1), nextAt: null };
 }
 
 /**
@@ -217,20 +218,15 @@ export function resolveTarget(settings, req = {}, date = new Date()) {
   const kind = OUTSOURCE_KIND_LABELS[req.kind] ? req.kind : 'task';
   if (cfg.routing !== 'auto' && WORKER_CAPS[cfg.routing]?.includes(kind)) return cfg.routing;
   const chain = priorityChain(settings, req);
-  return chain[priorityStage(cfg, req, date, chain.length)] || chain[0];
+  return chain[priorityState(cfg, req, date, chain).stage] || chain[0];
 }
 
 /** 다음 순위로 넘어가는 시각 (화면 표시용) */
 export function nextHandoffAt(settings, req = {}, date = new Date()) {
   if (req.pinnedWorker || req.status !== 'open') return null;
   const cfg = getOutsourcingSettings(settings);
-  const chain = priorityChain(settings, req);
-  const stamp = req.queuedAt || req.createdAt;
-  if (!stamp) return null;
-  const since = Date.parse(stamp);
-  const stage = priorityStage(cfg, req, date, chain.length);
-  if (stage >= chain.length - 1 || !Number.isFinite(since)) return null;
-  return new Date(since + (stage + 1) * cfg.waitMinutes * 60 * 1000).toISOString();
+  const { nextAt } = priorityState(cfg, req, date, priorityChain(settings, req));
+  return nextAt ? new Date(nextAt).toISOString() : null;
 }
 
 export function describeRouting(settings, date = new Date()) {
