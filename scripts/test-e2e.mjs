@@ -102,7 +102,8 @@ async function runTests() {
       'claim_outsourcing_request',
       'get_outsourcing_request',
       'submit_outsourcing_result',
-      'request_ceo_action'
+      'request_ceo_action',
+      'pass_outsourcing_request'
     ]);
 
     const briefRes = await (
@@ -396,6 +397,25 @@ async function runTests() {
     assert.equal(out2Row.status, 'open', 'resume should reopen the request');
     assert.equal(out2Row.pinnedWorker, 'aside', 'resume with worker should pin it');
     await fetch(`${BASE}/api/outsourcing/route`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ routing: 'auto' }) });
+    // 역할 분담: 자문·리서치·문서는 Gemini 앱, 코드는 Antigravity. Gemini가 못 하는 일은 넘김
+    const out3 = await (await fetch(`${BASE}/api/outsourcing`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: '경쟁 사이트 리서치', kind: 'research', goal: '경쟁 계산기 사이트 5곳의 기능과 광고 배치를 조사' }) })).json();
+    const gmList = await (await fetch(`${BASE}/api/outsourcing?${tokQ}&worker=gemini`)).json();
+    assert.ok(gmList.requests.some((r) => r.id === out3.request.id), 'gemini should see research requests by default');
+    assert.equal(gmList.routing.byKind.code.worker, 'antigravity', 'code stays with antigravity');
+    const passRes = await (
+      await fetch(`${BASE}/api/mcp?${tokQ}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 31, method: 'tools/call', params: { name: 'pass_outsourcing_request', arguments: { request_id: out3.request.id, worker: 'gemini', to: 'aside', reason: '로그인이 필요한 페이지라 넘김' } } })
+      })
+    ).json();
+    assert.ok(passRes.result && !passRes.result.isError, 'pass tool should succeed');
+    const asideList2 = await (await fetch(`${BASE}/api/outsourcing?${tokQ}&worker=aside`)).json();
+    assert.ok(asideList2.requests.some((r) => r.id === out3.request.id), 'passed request should go to aside');
+    const roleSave = await (await fetch(`${BASE}/api/outsourcing/route`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ roles: { code: 'gemini', consult: 'aside' } }) })).json();
+    assert.equal(roleSave.routing.roles.code, 'antigravity', 'gemini cannot be assigned code work');
+    assert.equal(roleSave.routing.roles.consult, 'aside', 'role change should be saved');
+    await fetch(`${BASE}/api/outsourcing/route`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ roles: { consult: 'gemini' } }) });
 
     const afterOut = await (await fetch(`${BASE}/api/state`)).json();
     const outRow = (afterOut.outsourcing || []).find((r) => r.id === outId);
