@@ -10,6 +10,7 @@ import { isProviderCooling } from './ai-guard.js';
 import { selectSkills, renderSkills, skillBlock, shouldReview, buildReviewRubric, getSkillSettings } from './skills.js';
 import { getRepoSnapshot, buildCodeEvidence, factCheckOutput } from './grounding.js';
 import { buildAnalyticsContext } from './google-data.js';
+import { buildComplianceChecklist } from './lead-engine.js';
 
 function repoTokenFrom(settings) {
   return String(settings?.providers?.githubRepo?.apiKey || process.env.GITHUB_REPO_TOKEN || '').trim();
@@ -1029,10 +1030,11 @@ export async function executeAgentTask({ task, mission, agent, settings, priorOu
     const systemFull = [system, skillsFull, companyCtx].filter(Boolean).join('\n\n');
     const systemCompact = [system, skillsCompact, companyCtxCompact].filter(Boolean).join('\n\n');
 
+    const checklistBlock = buildComplianceChecklist(mission);
     const prompt = `미션: ${mission.title}
 CEO 원지시: ${mission.directive}
 담당 작업: ${task.title}
-상세 요구사항: ${task.description}${liveBlock}${contextBlock}`;
+상세 요구사항: ${task.description}${liveBlock}${contextBlock}${checklistBlock ? `\n\n${checklistBlock}` : ''}`;
 
     const buildBackupModels = () => {
       const backups = [];
@@ -1068,7 +1070,7 @@ CEO 원지시: ${mission.directive}
     const compactPrompt = `미션: ${mission.title}
 CEO 원지시: ${String(mission.directive || '').slice(0, 800)}
 담당 작업: ${task.title}
-상세 요구사항: ${String(task.description || '').slice(0, 1500)}${evidenceCompact ? `\n\n${evidenceCompact}` : ''}${liveContext ? `\n\n${String(liveContext).slice(0, 2200)}` : ''}${contextBlock ? `\n${contextBlock.slice(0, 1200)}` : ''}`;
+상세 요구사항: ${String(task.description || '').slice(0, 1500)}${evidenceCompact ? `\n\n${evidenceCompact}` : ''}${liveContext ? `\n\n${String(liveContext).slice(0, 2200)}` : ''}${contextBlock ? `\n${contextBlock.slice(0, 1200)}` : ''}${checklistBlock ? `\n\n${checklistBlock}` : ''}`;
     const isSizeError = (err) => /too large|413|context length|maximum context|tokens per mi|reduce the length/i.test(String(err?.message || err));
 
     // 초안 → (중요 작업이면) 다른 모델의 스킬 점검표 채점 → 기준 미달 시 수정본
@@ -1312,17 +1314,20 @@ ${leadAssessment ? `\n[팀장 사전 검토]\n${String(leadAssessment).slice(0, 
 ${skillBlock({ agent: leadAgent, mission, task: { title: '다음 단계 전략 제안 Phase 계획' }, purpose: 'lead_plan', settings, compact: true, max: 1 })}
 ${companyContextFor(mission?.id, { compact: true })}`;
 
-      const metricsNow = await buildAnalyticsContext(settings, { siteUrl: mission.siteUrl || '' }).catch(() => '');
+      // 연결된 사이트가 있는 업무만 그 사이트의 실제 지표 (사이트 없는 업무에 다른 프로젝트 수치가 섞이지 않게)
+      const metricsNow = mission.siteUrl ? await buildAnalyticsContext(settings, { siteUrl: mission.siteUrl }).catch(() => '') : '';
       const prevMetrics = mission.lastMetricsSnapshot;
       const prompt = `프로젝트명: ${mission.title}
 원래 지시: ${mission.directive}
 현재 완료 단계: Phase ${currentPhase}
 [실제 지표 — 지금]
 ${metricsNow || '(연결된 지표 데이터 없음: 측정 수단 확보를 고려하세요)'}
-${prevMetrics?.text ? `\n[직전 지표 — Phase ${prevMetrics.phase || '?'} 제안 시점 ${String(prevMetrics.at || '').slice(0, 10)}]\n${String(prevMetrics.text).slice(0, 1500)}\n` : ''}
+${prevMetrics?.text && mission.siteUrl ? `\n[직전 지표 — Phase ${prevMetrics.phase || '?'} 제안 시점 ${String(prevMetrics.at || '').slice(0, 10)}]\n${String(prevMetrics.text).slice(0, 1500)}\n` : ''}
 [Phase ${currentPhase} 결과 요약]
 ${digest}
-${mission.finalReport ? `\n[임원 보고서 발췌]\n${mission.finalReport.slice(0, 700)}` : ''}`;
+${mission.finalReport ? `\n[임원 보고서 발췌]\n${mission.finalReport.slice(0, 700)}` : ''}
+
+${buildComplianceChecklist(mission)}`;
 
       const { object } = await generateObjectChain(chain, {
         schema,
@@ -1938,7 +1943,7 @@ ${skillBlock({ agent: leadAgent, mission, purpose: 'lead_plan', settings, compac
     model: resolved.model,
     schema: LeadFollowUpSchema,
     system,
-    prompt: digest,
+    prompt: `${digest}\n\n${buildComplianceChecklist(mission)}`,
     maxRetries: 0,
     abortSignal: AbortSignal.timeout(120000)
   });

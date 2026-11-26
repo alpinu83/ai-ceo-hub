@@ -226,44 +226,39 @@ export async function buildMissionLiveContext({ mission, settings }) {
   ]);
 
   const lines = [];
-  lines.push('[실제 시스템 권한 및 도구 현황 — 사실 기반 준수 필수]');
-  lines.push(
-    `- 공개 웹사이트 실시간 HTML/SEO 조회: ${
-      siteInfo?.ok ? `연동됨 (${siteInfo.url})` : targetSite ? `시도함 (${targetSite}, 오류: ${siteInfo?.error || '응답 없음'})` : '미설정'
-    }`
-  );
-  lines.push(
-    `- GitHub 저장소 실제 소스 읽기: ${
-      mainRepoInfo?.ok ? `연동됨 (${mainRepoInfo.repo}@${mainRepoInfo.defaultBranch})` : targetRepo ? `연결 필요 (${targetRepo})` : '미지정'
-    }`
-  );
-  lines.push(
-    `- GitHub 실코드 수정 · PR 생성 · CEO 승인 후 자동 배포: ${
-      ghCfg.enabled && targetRepo
-        ? `권한 활성화됨 (${targetRepo} → PR 자동 보수 가능)`
-        : targetRepo
-          ? `읽기만 가능 (설정 → IT팀 GitHub 토큰 등록 시 실코드 PR·자동 배포 활성화)`
-          : '저장소 미지정'
-    }`
-  );
   const gd = getGoogleDataConfig(settings);
-  lines.push(
-    `- Google Analytics(GA4) 데이터 조회: ${gd.gaEnabled ? `연동됨 (읽기 전용, 속성 ${gd.ga4PropertyId}) — 아래 실제 수치만 인용` : '미연동'}`
-  );
-  lines.push(
-    `- Google 서치콘솔 데이터 조회: ${gd.scEnabled ? `연동됨 (읽기 전용, ${gd.searchConsoleSite}) — 아래 실제 수치만 인용` : '미연동'}`
-  );
-  lines.push(
-    `- 미연동 외부 시스템 (절대 접속·조회·집행했다고 거짓 보고 금지): ${[
-      gd.gaEnabled ? '' : 'GA4 수치 API',
-      'Google AdSense 수익 API',
-      gd.scEnabled ? '네이버 서치어드바이저' : '네이버/구글 서치콘솔 API',
-      '유료 광고 결제/집행',
-      '외부 이메일·전화 자동 발송'
-    ]
-      .filter(Boolean)
-      .join(', ')}`
-  );
+  const hostOf = (u) => String(u || '').replace(/^sc-domain:/, '').replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/^www\./, '').toLowerCase();
+  // 분석 데이터는 이 업무의 사이트가 연동된 사이트와 같을 때만 (다른 프로젝트 수치가 섞이지 않게)
+  const analyticsForThis = Boolean(targetSite) && (gd.gaEnabled || gd.scEnabled) && hostOf(gd.searchConsoleSite) === hostOf(targetSite);
+  if (!targetSite && !targetRepo) {
+    lines.push('[이 업무의 실제 도구 현황]');
+    lines.push('- 연결된 사이트·GitHub 저장소·분석 데이터가 없는 업무입니다. 코드·PR·배포 작업 대상이 아니며, 수치는 웹에서 확인한 근거나 "가정:"으로만 쓰세요.');
+    lines.push('- 결제·광고비 집행·외부 발송은 하지 않습니다(필요하면 초안만).');
+    return lines.join('\n');
+  }
+  lines.push('[실제 시스템 권한 및 도구 현황 — 사실 기반 준수 필수]');
+  if (targetSite) {
+    lines.push(
+      `- 공개 웹사이트 실시간 HTML/SEO 조회: ${siteInfo?.ok ? `연동됨 (${siteInfo.url})` : `시도함 (${targetSite}, 오류: ${siteInfo?.error || '응답 없음'})`}`
+    );
+  }
+  if (targetRepo) {
+    lines.push(`- GitHub 저장소 실제 소스 읽기: ${mainRepoInfo?.ok ? `연동됨 (${mainRepoInfo.repo}@${mainRepoInfo.defaultBranch})` : `연결 필요 (${targetRepo})`}`);
+    lines.push(
+      `- GitHub 실코드 수정 · PR 생성 · CEO 승인 후 자동 배포: ${
+        ghCfg.enabled ? `권한 활성화됨 (${targetRepo} → PR 자동 보수 가능)` : '읽기만 가능 (설정 → IT팀 GitHub 토큰 등록 시 실코드 PR·자동 배포 활성화)'
+      }`
+    );
+  } else {
+    lines.push('- GitHub 저장소: 없음 (코드·PR 작업 대상 아님)');
+  }
+  if (analyticsForThis) {
+    if (gd.gaEnabled) lines.push(`- Google Analytics(GA4) 데이터 조회: 연동됨 (읽기 전용, 속성 ${gd.ga4PropertyId}) — 아래 실제 수치만 인용`);
+    if (gd.scEnabled) lines.push(`- Google 서치콘솔 데이터 조회: 연동됨 (읽기 전용, ${gd.searchConsoleSite}) — 아래 실제 수치만 인용`);
+  } else {
+    lines.push('- 분석 데이터(GA4·서치콘솔): 이 업무의 사이트에는 연동 안 됨 → 수치를 지어내지 말 것');
+  }
+  lines.push('- 하지 않는 일: 애드센스 수익 API 조회, 유료 광고 결제·집행, 외부 이메일·전화 자동 발송 (했다고 쓰지 말 것)');
 
   if (siteInfo?.ok) {
     lines.push('');
@@ -300,7 +295,7 @@ export async function buildMissionLiveContext({ mission, settings }) {
   }
 
   // 웹사이트 실제 성과 데이터(GA4·서치콘솔) — 미션 사이트가 연동된 사이트일 때만
-  if ((gd.gaEnabled || gd.scEnabled) && targetSite) {
+  if (analyticsForThis) {
     const analytics = await buildAnalyticsContext(settings, { siteUrl: targetSite }).catch(() => '');
     if (analytics) {
       lines.push('');
