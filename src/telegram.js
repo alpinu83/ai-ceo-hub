@@ -66,6 +66,48 @@ export async function sendTelegramText(token, chatId, text, replyMarkup = undefi
   return { ok: true, messageId: result?.message_id };
 }
 
+/**
+ * 파일(문서) 보내기: 결재 성과품(시안·계획서)을 .md 파일로 전달합니다.
+ * Telegram sendDocument는 새 파일을 multipart/form-data로만 받으므로 tgCall(JSON)과 따로 둡니다.
+ */
+export async function sendTelegramDocument(token, chatId, filename, content, caption = '') {
+  if (!token || !chatId) return { ok: false, skipped: true };
+  const cleanToken = cleanBotToken(token);
+  if (!isValidBotToken(cleanToken)) throw new Error('Bot Token 형식이 올바르지 않습니다.');
+  const form = new FormData();
+  form.append('chat_id', String(chatId).trim());
+  if (caption) {
+    form.append('caption', String(caption).slice(0, 1000));
+    form.append('parse_mode', 'HTML');
+  }
+  form.append('document', new Blob([String(content || '')], { type: 'text/markdown; charset=utf-8' }), filename || 'deliverable.md');
+  const res = await fetch(`https://api.telegram.org/bot${cleanToken}/sendDocument`, { method: 'POST', body: form });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.ok) throw new Error(data.description || `Telegram API 오류 (${res.status})`);
+  return { ok: true, messageId: data.result?.message_id };
+}
+
+/** 결재 안건의 성과품 문서를 만들어(callbacks.onDeliverable) 파일로 보냅니다. */
+async function deliverApprovalDeliverable(token, chatId, aprId, callbacks) {
+  const d = await callbacks.onDeliverable(aprId);
+  if (!d) {
+    await sendTelegramText(token, chatId, `결재 안건 <code>${escapeHtml(aprId)}</code>을(를) 찾을 수 없습니다.`).catch(() => {});
+    return { ok: false, text: '안건을 찾을 수 없습니다' };
+  }
+  const title = escapeHtml(String(d.title || aprId).slice(0, 200));
+  if (!d.sectionCount) {
+    await sendTelegramText(token, chatId, `<b>${title}</b>\n이 안건에는 아직 첨부할 시안·계획서·외주 결과가 없습니다. 결재 카드의 요약이 전부입니다.`).catch(() => {});
+    return { ok: true, text: '첨부할 성과품이 없습니다' };
+  }
+  try {
+    await sendTelegramDocument(token, chatId, d.filename, d.markdown, `📎 <b>성과품</b> · ${title}\n${d.sectionCount}개 항목(시안·계획서·외주 결과 등). 결정은 결재 카드 버튼으로 해 주세요.`);
+    return { ok: true, text: '성과품 파일을 보냈습니다' };
+  } catch (err) {
+    await sendTelegramText(token, chatId, `성과품 파일 전송 실패: ${escapeHtml(String(err.message || err).slice(0, 200))}`).catch(() => {});
+    return { ok: false, text: '파일 전송 실패' };
+  }
+}
+
 // ================================================================
 // 알림 권한(gate): 보고/특이점/결재 요청별 켜기·끄기 + 방해금지 시간(KST)
 // 방해금지 중에는 보내지 않고 서버에 맡겨두었다가(defer) 끝나면 요약해서 보냅니다.
@@ -239,7 +281,8 @@ export async function sendTelegramApprovalCard(settings, approval, agentName, mi
         { text: '✅ 승인 확정', callback_data: `decide:approved:${approval.id}` },
         { text: '✏️ 수정 지시', callback_data: `decide:revision_requested:${approval.id}` },
         { text: '❌ 반려', callback_data: `decide:rejected:${approval.id}` }
-      ]
+      ],
+      [{ text: '📎 성과품(시안·계획서) 받기', callback_data: `doc:${approval.id}` }]
     ]
   };
 
@@ -288,6 +331,7 @@ export async function testTelegramBot(settings, onAutoRegisterChatId = null) {
       `사용 가능 명령어:`,
       `• <code>/status</code> — 현재 미션 · 결재 대기 현황`,
       `• <code>/approvals</code> — 대기 중인 결재 카드 다시 받기`,
+      `• <code>/doc</code> — 결재 대기 안건의 성과품(시안·계획서) 파일 받기`,
       `• <code>/order 지시내용</code> — 텔레그램에서 바로 새 업무 지시`
     ].join('\n')
   );
@@ -317,6 +361,12 @@ export async function handleTelegramUpdate(update, callbacks) {
     }
 
     const parts = String(cq.data || '').split(':');
+    // 결재 성과품 파일 받기
+    if (parts[0] === 'doc' && parts.length === 2 && typeof callbacks.onDeliverable === 'function') {
+      await tgCall(tg.botToken, 'answerCallbackQuery', { callback_query_id: cq.id, text: '성과품 파일을 준비합니다' }).catch(() => {});
+      const r = await deliverApprovalDeliverable(tg.botToken, cq.message?.chat?.id || tg.chatId, parts[1], callbacks);
+      return { handled: true, deliverable: parts[1], ok: r.ok };
+    }
     // 외주: 대표님 개입 후 재개 / 다른 작업자로 넘기기 / 취소
     if (parts[0] === 'out' && parts.length === 3 && typeof callbacks.onOutsourceCallback === 'function') {
       const r = await callbacks.onOutsourceCallback(parts[1], parts[2]);
@@ -393,6 +443,25 @@ export async function handleTelegramUpdate(update, callbacks) {
         }
       }
       return { handled: true, command: '/approvals' };
+    }
+
+    // 결재 성과품: /doc 결재ID → 파일 전송, /doc → 대기 중 결재 목록(버튼)
+    const docCmd = text.match(/^\/docs?(?:@\S+)?(?:\s+(\S+))?\s*$/i);
+    if (docCmd && typeof callbacks.onDeliverable === 'function') {
+      if (docCmd[1]) {
+        await deliverApprovalDeliverable(tg.botToken, chatId, docCmd[1], callbacks);
+      } else {
+        const pending = await callbacks.onListPending();
+        if (!pending.length) {
+          await sendTelegramText(tg.botToken, chatId, '현재 대기 중인 CEO 결재 안건이 없습니다.').catch(() => {});
+        } else {
+          const rows = pending.slice(0, 8).map((item) => [
+            { text: `📎 ${String(item.approval.title || item.approval.id).slice(0, 40)}`, callback_data: `doc:${item.approval.id}` }
+          ]);
+          await sendTelegramText(tg.botToken, chatId, `<b>결재 대기 ${pending.length}건</b>\n성과품(시안·계획서)을 받을 안건을 눌러 주세요.`, { inline_keyboard: rows }).catch(() => {});
+        }
+      }
+      return { handled: true, command: '/doc' };
     }
 
     if (text.startsWith('/order ')) {
