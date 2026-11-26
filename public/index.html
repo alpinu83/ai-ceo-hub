@@ -451,12 +451,88 @@
         <!-- 6. SETTINGS & CONNECTIONS (PURE SUMMARY + UNIFIED PER-AGENT CONFIG) -->
         <section class="view" id="view-integrations" aria-label="설정">
           <div class="hub-tab-bar" role="tablist">
+            <button type="button" class="hub-tab" data-hub-tab="general">기본</button>
             <button type="button" class="hub-tab active" data-hub-tab="quickstart">연결 현황</button>
             <button type="button" class="hub-tab" data-hub-tab="mcp">연결 설정</button>
             <button type="button" class="hub-tab" data-hub-tab="outsourcing">외부 협업</button>
           </div>
 
           <!-- TAB 1: PURE SUMMARY ONLY -->
+          <!-- TAB 0: 기본 (조직명·전역 지침·팀장 추진·스킬·회사 기억) -->
+          <div class="hub-panel" id="hub-panel-general">
+          <div class="card" id="agent-panel-general">
+            <div class="provider-head"><h3>기본 정보</h3></div>
+            <div class="form-row-two" style="margin-top:12px;">
+              <label class="field"><span class="field-label">조직명</span><input type="text" id="set-company-name" /></label>
+              <label class="field"><span class="field-label">CEO 호칭</span><input type="text" id="set-ceo-name" /></label>
+            </div>
+
+            <div class="provider-head" style="margin-top:18px;"><h3>CEO 전역 지침 · 팀장 능동 추진</h3></div>
+            <p class="field-label" style="margin:6px 0 8px;">여기 적은 지침은 모든 AI 팀원(내부 API · 외부 봇 · MCP)에게 매 호출마다 항상 적용됩니다.</p>
+            <label class="field">
+              <span class="field-label">전역 지침</span>
+              <textarea id="set-global-directives" rows="7" maxlength="4000" style="width:100%;font:inherit;resize:vertical;"></textarea>
+            </label>
+            <label class="checkbox-row" style="margin-top:10px;">
+              <input type="checkbox" id="set-lead-enabled" />
+              <span>총괄 팀장 <strong>완료 보고 · 정기 점검</strong> 켜기 (작업이 끝나면 물어보기 전에 보고)</span>
+            </label>
+            <label class="checkbox-row" style="margin-top:6px;">
+              <input type="checkbox" id="set-lead-autofollow" />
+              <span>단계가 끝나면 팀장이 스스로 다음 단계를 추진</span>
+            </label>
+            <label class="field" style="margin-top:8px;">
+              <span class="field-label">다음 단계 추진 방식</span>
+              <select id="set-lead-advance">
+                <option value="propose">제안서를 결재에 올리기 (승인하면 착수)</option>
+                <option value="auto">팀장 전결로 바로 후속 작업 실행</option>
+              </select>
+            </label>
+            <div class="form-row-two" style="margin-top:10px;">
+              <label class="field"><span class="field-label">대표님 개입 없이 이어갈 라운드 수 (0~5)</span><input type="number" id="set-lead-maxrounds" min="0" max="5" /></label>
+              <label class="field"><span class="field-label">정기 점검 간격(분)</span><input type="number" id="set-lead-interval" min="10" max="1440" /></label>
+            </div>
+
+            <div class="provider-head" style="margin-top:18px;"><h3>AI 스킬 · 품질 검수</h3></div>
+            <p class="field-label" style="margin:6px 0 8px;">작업 유형에 맞는 스킬(절차·출력 형식·자체 점검표)을 골라 AI에게 주입합니다. 중요한 작업은 다른 무료 모델이 채점하고, 기준 미달이면 고쳐 씁니다.</p>
+            <label class="checkbox-row"><input type="checkbox" id="skills-enabled" /><span>스킬 주입 사용</span></label>
+            <div class="form-row-two" style="margin-top:8px;">
+              <label class="field"><span class="field-label">교차 검수</span>
+                <select id="skills-review-mode">
+                  <option value="important">중요한 작업만 (코드·보안·세금·전략·결재 건)</option>
+                  <option value="always">모든 작업 (무료 한도 많이 사용)</option>
+                  <option value="off">끄기</option>
+                </select>
+              </label>
+              <label class="field"><span class="field-label">통과 점수 (10점 만점)</span><input type="number" id="skills-min-score" min="1" max="10" /></label>
+            </div>
+            <ul id="skills-list" style="list-style:none;padding:0;margin:10px 0 0;"></ul>
+            <div style="display:grid;gap:6px;margin-top:10px;">
+              <input type="text" id="skill-new-name" placeholder="새 스킬 이름 (예: 우리 브랜드 톤)" />
+              <input type="text" id="skill-new-keywords" placeholder="적용 키워드, 쉼표로 구분 (비우면 항상 적용)" />
+              <textarea id="skill-new-instructions" rows="4" placeholder="지침: 절차·형식·판단 기준을 번호로 적어 주세요" style="width:100%;font:inherit;resize:vertical;"></textarea>
+              <div><button type="button" class="btn btn-ghost btn-sm" id="btn-skill-add">스킬 추가</button></div>
+            </div>
+
+            <div class="provider-head" style="margin-top:18px;">
+              <h3>회사 기억</h3>
+              <div class="provider-right">
+                <button type="button" class="btn btn-ghost btn-sm" id="btn-lead-followup">지금 팀장 점검 실행</button>
+              </div>
+            </div>
+            <p class="field-label" style="margin:6px 0 8px;">지시·결재 결정·실행 결과가 자동으로 쌓이고, 모든 AI 호출에 함께 전달됩니다. 회의실에서 "앞으로… / 항상… / 기억해"라고 말하면 고정 지침으로 저장됩니다.</p>
+            <div style="display:flex;gap:8px;">
+              <input type="text" id="memory-new-text" placeholder="예: 배포 전에는 항상 모바일 화면을 확인한다" style="flex:1;" />
+              <button type="button" class="btn btn-ghost btn-sm" id="btn-memory-add">고정 기억 추가</button>
+            </div>
+            <ul id="memory-list" style="list-style:none;padding:0;margin:10px 0 0;max-height:260px;overflow:auto;"></ul>
+
+            <div class="form-actions">
+              <button type="button" class="btn btn-ghost btn-sm" id="btn-reset-demo">초기화</button>
+              <button type="submit" form="settings-form" class="btn btn-primary">저장</button>
+            </div>
+          </div>
+          </div>
           <div class="hub-panel active" id="hub-panel-quickstart">
             <div class="card">
               <div class="card-head">
@@ -538,7 +614,6 @@
               <button type="button" class="tab-pill" data-config-agent="instinct">인스팅스</button>
               <button type="button" class="tab-pill" data-config-agent="muse">Muse</button>
               <button type="button" class="tab-pill" data-config-agent="cue">Cue</button>
-              <button type="button" class="tab-pill" data-config-agent="general">기본</button>
             </div>
 
             <!-- Form-based panels: Gemini / Groq / OpenRouter / EXAONE / Telegram / General -->
@@ -721,78 +796,6 @@
                 </div>
               </div>
 
-              <div class="card agent-config-panel" id="agent-panel-general">
-                <div class="provider-head"><h3>기본 정보</h3></div>
-                <div class="form-row-two" style="margin-top:12px;">
-                  <label class="field"><span class="field-label">조직명</span><input type="text" id="set-company-name" /></label>
-                  <label class="field"><span class="field-label">CEO 호칭</span><input type="text" id="set-ceo-name" /></label>
-                </div>
-
-                <div class="provider-head" style="margin-top:18px;"><h3>CEO 전역 지침 · 팀장 능동 추진</h3></div>
-                <p class="field-label" style="margin:6px 0 8px;">여기 적은 지침은 모든 AI 팀원(내부 API · 외부 봇 · MCP)에게 매 호출마다 항상 적용됩니다.</p>
-                <label class="field">
-                  <span class="field-label">전역 지침</span>
-                  <textarea id="set-global-directives" rows="7" maxlength="4000" style="width:100%;font:inherit;resize:vertical;"></textarea>
-                </label>
-                <label class="checkbox-row" style="margin-top:10px;">
-                  <input type="checkbox" id="set-lead-enabled" />
-                  <span>총괄 팀장 <strong>완료 보고 · 정기 점검</strong> 켜기 (작업이 끝나면 물어보기 전에 보고)</span>
-                </label>
-                <label class="checkbox-row" style="margin-top:6px;">
-                  <input type="checkbox" id="set-lead-autofollow" />
-                  <span>단계가 끝나면 팀장이 스스로 다음 단계를 추진</span>
-                </label>
-                <label class="field" style="margin-top:8px;">
-                  <span class="field-label">다음 단계 추진 방식</span>
-                  <select id="set-lead-advance">
-                    <option value="propose">제안서를 결재에 올리기 (승인하면 착수)</option>
-                    <option value="auto">팀장 전결로 바로 후속 작업 실행</option>
-                  </select>
-                </label>
-                <div class="form-row-two" style="margin-top:10px;">
-                  <label class="field"><span class="field-label">대표님 개입 없이 이어갈 라운드 수 (0~5)</span><input type="number" id="set-lead-maxrounds" min="0" max="5" /></label>
-                  <label class="field"><span class="field-label">정기 점검 간격(분)</span><input type="number" id="set-lead-interval" min="10" max="1440" /></label>
-                </div>
-
-                <div class="provider-head" style="margin-top:18px;"><h3>AI 스킬 · 품질 검수</h3></div>
-                <p class="field-label" style="margin:6px 0 8px;">작업 유형에 맞는 스킬(절차·출력 형식·자체 점검표)을 골라 AI에게 주입합니다. 중요한 작업은 다른 무료 모델이 채점하고, 기준 미달이면 고쳐 씁니다.</p>
-                <label class="checkbox-row"><input type="checkbox" id="skills-enabled" /><span>스킬 주입 사용</span></label>
-                <div class="form-row-two" style="margin-top:8px;">
-                  <label class="field"><span class="field-label">교차 검수</span>
-                    <select id="skills-review-mode">
-                      <option value="important">중요한 작업만 (코드·보안·세금·전략·결재 건)</option>
-                      <option value="always">모든 작업 (무료 한도 많이 사용)</option>
-                      <option value="off">끄기</option>
-                    </select>
-                  </label>
-                  <label class="field"><span class="field-label">통과 점수 (10점 만점)</span><input type="number" id="skills-min-score" min="1" max="10" /></label>
-                </div>
-                <ul id="skills-list" style="list-style:none;padding:0;margin:10px 0 0;"></ul>
-                <div style="display:grid;gap:6px;margin-top:10px;">
-                  <input type="text" id="skill-new-name" placeholder="새 스킬 이름 (예: 우리 브랜드 톤)" />
-                  <input type="text" id="skill-new-keywords" placeholder="적용 키워드, 쉼표로 구분 (비우면 항상 적용)" />
-                  <textarea id="skill-new-instructions" rows="4" placeholder="지침: 절차·형식·판단 기준을 번호로 적어 주세요" style="width:100%;font:inherit;resize:vertical;"></textarea>
-                  <div><button type="button" class="btn btn-ghost btn-sm" id="btn-skill-add">스킬 추가</button></div>
-                </div>
-
-                <div class="provider-head" style="margin-top:18px;">
-                  <h3>회사 기억</h3>
-                  <div class="provider-right">
-                    <button type="button" class="btn btn-ghost btn-sm" id="btn-lead-followup">지금 팀장 점검 실행</button>
-                  </div>
-                </div>
-                <p class="field-label" style="margin:6px 0 8px;">지시·결재 결정·실행 결과가 자동으로 쌓이고, 모든 AI 호출에 함께 전달됩니다. 회의실에서 "앞으로… / 항상… / 기억해"라고 말하면 고정 지침으로 저장됩니다.</p>
-                <div style="display:flex;gap:8px;">
-                  <input type="text" id="memory-new-text" placeholder="예: 배포 전에는 항상 모바일 화면을 확인한다" style="flex:1;" />
-                  <button type="button" class="btn btn-ghost btn-sm" id="btn-memory-add">고정 기억 추가</button>
-                </div>
-                <ul id="memory-list" style="list-style:none;padding:0;margin:10px 0 0;max-height:260px;overflow:auto;"></ul>
-
-                <div class="form-actions">
-                  <button type="button" class="btn btn-ghost btn-sm" id="btn-reset-demo">초기화</button>
-                  <button type="submit" class="btn btn-primary">저장</button>
-                </div>
-              </div>
             </form>
 
             <!-- Unified External Agent Config Panel (Pickle / Vooy / Instinct / Muse / Cue / Claude / Gemini) -->

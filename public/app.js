@@ -2272,7 +2272,7 @@ function selectConfigAgent(agentKey = 'gemini') {
     btn.classList.toggle('active', btn.dataset.configAgent === agentKey);
   });
 
-  const formPanels = ['gemini', 'groq', 'openrouter', 'exaone', 'github', 'telegram', 'general'];
+  const formPanels = ['gemini', 'groq', 'openrouter', 'exaone', 'github', 'telegram'];
   const isFormPanel = formPanels.includes(agentKey);
   formPanels.forEach((key) => {
     document.getElementById(`agent-panel-${key}`)?.classList.toggle('active', agentKey === key);
