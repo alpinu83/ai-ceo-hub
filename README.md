@@ -82,8 +82,10 @@ API로 연결된 AI는 호출할 때마다 기억이 없기 때문에, 서버가
 - **외부 자문**: 다음 단계 제안서(설정에 따라 완료 보고도)를 상위 AI가 검토해 결재 카드에 의견을 붙입니다. 결재는 자문을 기다리지 않아도 됩니다. 결재 카드의 "상위 AI에 외부 자문 요청"으로 직접 요청도 가능
 - **처리 경로**: ① MCP 도구(`list_outsourcing_requests` → `claim_outsourcing_request` → `submit_outsourcing_result`, Antigravity) ② HTTPS API (`/api/outsourcing`, `/claim`, `/submit`, 인증: `x-ceo-key` 또는 `?token=MCP토큰`, Aside) ③ 웹 화면 "외부 협업"에서 요청서 복사 → 결과 붙여넣기 (어떤 AI든)
 - **코드 작업**: 저장소에 `out/요청ID` 브랜치로 작업하고 제목에 `[요청ID]`를 넣어 PR을 열면 서버가 PR을 자동 감지해 결재 카드에 붙이고, 승인 시 기존 자동 머지·배포 흐름을 탑니다
-- **중복 방지**: 잡은 요청은 3시간 동안 다른 작업자가 못 가져가고, 시간이 지나면 다시 열립니다. 8시간 넘게 아무도 안 가져가면 텔레그램으로 알립니다
-- Antigravity용 작업 절차: `.agent/workflows/ceo-outsourcing.md`
+- **어디로 보낼지 선택**: 외부 협업 화면의 "외주 대상"에서 자동(업무 시간엔 Aside, 그 외·이동 중엔 Antigravity) / 항상 Aside / 항상 Antigravity를 고르고, 요청마다 대상을 바꿀 수 있습니다. 코드 수정은 기본 Antigravity. 텔레그램: `/away 3`(3시간 이동 중), `/office`, `/route antigravity|aside|auto`, `/out`(현황), `/out 요청ID antigravity`
+- **빈 시간 최소화**: 잡은 요청은 45분 안에 결과·연장이 없으면 다른 작업자가 가져갈 수 있고, 대상을 바꾸면 10분 안에 넘어갑니다. 2시간 넘게 처리되지 않으면 텔레그램으로 알립니다
+- **대표님 개입**: 로그인·2단계 인증·CAPTCHA·결제 승인처럼 대표님 손이 필요하면 작업자가 `request_ceo_action`(MCP) 또는 `/need-ceo`로 멈추고 알립니다. 텔레그램 버튼 "처리했어요 · 재개 / Antigravity로 재개 / Aside로 재개"로 이어갑니다
+- Antigravity 연결: 화면의 "설정 프롬프트 복사"를 Antigravity 에이전트에게 보내면 MCP 서버 등록(`~/.gemini/config/mcp_config.json`), 스킬 설치(`.agents/skills/ceo-outsourcing`), 30분 자동 실행까지 설정합니다
 
 ## 로컬 실행 및 테스트
 

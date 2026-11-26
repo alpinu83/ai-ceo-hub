@@ -108,7 +108,13 @@ import {
   submitResult,
   cancelRequest,
   releaseExpiredLeases,
-  buildPacket
+  buildPacket,
+  resolveTarget,
+  describeRouting,
+  requestCeoAction,
+  resumeRequest,
+  assignRequest,
+  shortenForeignLeases
 } from './src/outsourcing.js';
 import {
   kstParts,
@@ -2616,7 +2622,7 @@ function buildOutsourceContext(db, mission, task) {
 
 function notifyOutsourceCreated(db, req) {
   const mission = db.missions.find((m) => m.id === req.missionId);
-  const workerLabel = OUTSOURCE_WORKER_LABELS[req.worker];
+  const workerLabel = OUTSOURCE_WORKER_LABELS[resolveTarget(db.settings, req)];
   if (mission) {
     leadSay(
       db,
@@ -2624,13 +2630,13 @@ function notifyOutsourceCreated(db, req) {
       req.kind === 'consult' ? '외부 자문 요청' : '외주 요청',
       req.kind === 'consult'
         ? `결재 전에 상위 AI의 외부 자문을 요청했습니다: ${req.id} (결재는 그대로 진행 가능, 자문이 오면 카드에 붙습니다).`
-        : `무료 팀으로는 어려운 일이라 외부 AI에 맡겼습니다: ${req.id} "${req.title}" (권장: ${workerLabel}). 사유: ${req.reason}`
+        : `무료 팀으로는 어려운 일이라 외부 AI에 맡겼습니다: ${req.id} "${req.title}" (배정: ${workerLabel}). 사유: ${req.reason}`
     );
   }
   sendTelegramReport(
     db.settings,
     `${req.kind === 'consult' ? '외부 자문 요청' : '외주 요청'} ${req.id}`,
-    `${OUTSOURCE_KIND_LABELS[req.kind]} · ${req.title}\n권장 작업자: ${workerLabel}\n사유: ${req.reason}\nAntigravity/Aside에서 "CEO Office 외주 처리"로 가져가세요.`,
+    `${OUTSOURCE_KIND_LABELS[req.kind]} · ${req.title}\n배정: ${workerLabel}\n사유: ${req.reason}\n다른 쪽에 맡기려면: /out ${req.id} antigravity (또는 aside)`,
     `out:${req.id}`
   ).catch(() => {});
 }
@@ -2817,6 +2823,139 @@ async function handleOutsourceSubmitted(id) {
 }
 setOutsourcingHandlers({ onSubmitted: handleOutsourceSubmitted });
 
+/** 외주 작업자가 "대표님 손이 필요"하다고 알릴 때: 텔레그램 버튼으로 바로 처리·재개·넘기기 */
+async function handleOutsourceNeedsCeo(id) {
+  const db = loadDb();
+  const req = findRequest(db, id);
+  if (!req?.ceoAction) return;
+  const mission = db.missions.find((m) => m.id === req.missionId);
+  const a = req.ceoAction;
+  if (mission) leadSay(db, mission, '대표님 개입 필요', `외주 ${req.id} "${req.title}" — ${a.by || '외부 AI'}가 대표님 손이 필요하다고 알렸습니다: ${a.action}${a.detail ? ` (${oneLineText(a.detail, 200)})` : ''}. 처리하신 뒤 "재개"를 눌러 주세요.`);
+  saveDb(db);
+  const tg = db.settings.telegram || {};
+  if (tg.botToken && tg.chatId) {
+    const html = [
+      `<b>🙋 대표님 개입 필요 · ${escapeTelegramHtml(req.id)}</b>`,
+      escapeTelegramHtml(req.title),
+      '',
+      `<b>필요한 일:</b> ${escapeTelegramHtml(a.action)}`,
+      a.detail ? escapeTelegramHtml(oneLineText(a.detail, 600)) : '',
+      `<i>알린 작업자: ${escapeTelegramHtml(a.by || '외부 AI')}</i>`
+    ]
+      .filter(Boolean)
+      .join('\n');
+    sendTelegramText(tg.botToken, tg.chatId, html, {
+      inline_keyboard: [
+        [{ text: '✅ 처리했어요 · 재개', callback_data: `out:resume:${req.id}` }],
+        [
+          { text: 'Antigravity로 재개', callback_data: `out:ag:${req.id}` },
+          { text: 'Aside로 재개', callback_data: `out:as:${req.id}` }
+        ],
+        [{ text: '❌ 이 외주 취소', callback_data: `out:cancel:${req.id}` }]
+      ]
+    }).catch(() => {});
+  }
+}
+setOutsourcingHandlers({ onNeedsCeo: handleOutsourceNeedsCeo });
+
+function updateOutsourceRouting(db, { routing, awayHours, officeHours, leaseMinutes } = {}) {
+  const os = { ...getOutsourcingSettings(db.settings) };
+  if (['auto', 'aside', 'antigravity'].includes(routing)) os.routing = routing;
+  if (awayHours !== undefined) {
+    const h = Number(awayHours);
+    os.awayUntil = h > 0 ? new Date(Date.now() + Math.min(24, h) * 3600 * 1000).toISOString() : '';
+  }
+  if (officeHours && typeof officeHours === 'object') {
+    const hh = /^([01]\d|2[0-3]):([0-5]\d)$/;
+    const days = Array.isArray(officeHours.days) ? officeHours.days.map(Number).filter((d) => d >= 0 && d <= 6) : os.officeHours.days;
+    os.officeHours = {
+      days: days.length ? days : os.officeHours.days,
+      start: hh.test(officeHours.start || '') ? officeHours.start : os.officeHours.start,
+      end: hh.test(officeHours.end || '') ? officeHours.end : os.officeHours.end
+    };
+  }
+  if (Number.isFinite(Number(leaseMinutes))) os.leaseMinutes = Math.min(240, Math.max(15, Math.round(Number(leaseMinutes))));
+  db.settings.outsourcing = { ...(db.settings.outsourcing || {}), ...os };
+  shortenForeignLeases(db);
+  const r = describeRouting(db.settings);
+  appendLog(db, '외주 창구', `외주 대상: 지금 ${r.label} (${r.why})`, 'info');
+  return r;
+}
+
+/** 텔레그램: /route auto|aside|antigravity · /away 3 · /office · /out [ID 작업자] */
+async function handleOutsourceTelegramCommand(cmd, args = '') {
+  const db = loadDb();
+  const a = String(args || '').trim();
+  if (cmd === 'route') {
+    const mode = /anti|agy|안티/i.test(a) ? 'antigravity' : /aside|어사이드|회사/i.test(a) ? 'aside' : /auto|자동/i.test(a) ? 'auto' : '';
+    if (!mode) {
+      const r = describeRouting(db.settings);
+      return `지금 외주 대상: <b>${r.label}</b> (${escapeTelegramHtml(r.why)})\n바꾸기: /route auto · /route aside · /route antigravity · /away 3 (3시간 이동 중) · /office (이동 중 해제)`;
+    }
+    const r = updateOutsourceRouting(db, { routing: mode, awayHours: mode === 'auto' ? undefined : 0 });
+    saveDb(db);
+    await flushCloudBackup(db);
+    return `외주 대상을 바꿨습니다: 지금 <b>${r.label}</b> (${escapeTelegramHtml(r.why)})`;
+  }
+  if (cmd === 'away') {
+    const h = Number((a.match(/[\d.]+/) || ['3'])[0]) || 3;
+    const r = updateOutsourceRouting(db, { routing: 'auto', awayHours: h });
+    saveDb(db);
+    await flushCloudBackup(db);
+    return `이동 중 모드: ${h}시간 동안 외주는 <b>${r.label}</b>로 갑니다. 돌아오면 /office`;
+  }
+  if (cmd === 'office') {
+    const r = updateOutsourceRouting(db, { routing: 'auto', awayHours: 0 });
+    saveDb(db);
+    await flushCloudBackup(db);
+    return `이동 중 모드를 껐습니다. 지금 외주 대상: <b>${r.label}</b> (${escapeTelegramHtml(r.why)})`;
+  }
+  if (cmd === 'out') {
+    const m = a.match(/(OUT-\d{6}-[A-Z0-9]{4})\s*(\S+)?/i);
+    if (m) {
+      const id = m[1].toUpperCase();
+      const w = /anti|agy|안티/i.test(m[2] || '') ? 'antigravity' : /aside/i.test(m[2] || '') ? 'aside' : 'auto';
+      const req = findRequest(db, id);
+      if (req?.status === 'needs_ceo') resumeRequest(id, '텔레그램에서 재개', w === 'auto' ? '' : w);
+      else assignRequest(id, w);
+      const fresh = findRequest(loadDb(), id);
+      return `${id} → ${OUTSOURCE_WORKER_LABELS[resolveTarget(loadDb().settings, fresh)]}${fresh?.status === 'open' ? ' (대기열)' : ''}`;
+    }
+    const list = listRequests(db, { status: 'all' }).filter((r) => ['open', 'claimed', 'needs_ceo'].includes(r.status)).slice(0, 8);
+    if (!list.length) return '진행 중인 외주가 없습니다.';
+    const rr = describeRouting(db.settings);
+    return [
+      `<b>진행 중 외주</b> (기본 대상: ${rr.label})`,
+      ...list.map((r) => `• <code>${r.id}</code> ${escapeTelegramHtml(oneLineText(r.title, 40))} — ${r.status === 'needs_ceo' ? '🙋 대표님 필요' : r.status === 'claimed' ? `${escapeTelegramHtml(r.claimedBy)} 작업 중` : `대기 → ${OUTSOURCE_WORKER_LABELS[resolveTarget(db.settings, r)]}`}`),
+      '',
+      '대상 바꾸기: /out OUT-ID antigravity (또는 aside, auto)'
+    ].join('\n');
+  }
+  return '';
+}
+
+async function handleOutsourceTelegramCallback(action, id) {
+  try {
+    if (action === 'resume') resumeRequest(id, '텔레그램에서 처리 완료');
+    else if (action === 'ag') resumeRequest(id, '텔레그램에서 처리 완료', 'antigravity');
+    else if (action === 'as') resumeRequest(id, '텔레그램에서 처리 완료', 'aside');
+    else if (action === 'cancel') cancelRequest(id, 'CEO');
+    else return { ok: false, text: '알 수 없는 동작' };
+    const req = findRequest(loadDb(), id);
+    return {
+      ok: true,
+      text:
+        action === 'cancel'
+          ? `${id} 외주를 취소했습니다.`
+          : `${id} 재개 → ${OUTSOURCE_WORKER_LABELS[resolveTarget(loadDb().settings, req)]}가 다음 실행 때 이어서 처리합니다.`
+    };
+  } catch (err) {
+    return { ok: false, text: err.message };
+  }
+}
+
+
+
 /** 워치독: 잡고 사라진 요청 다시 열기, 저장소에 열린 외주 PR 자동 감지, 오래 방치된 요청 알림 */
 async function outsourcingWatch() {
   const db = loadDb();
@@ -2824,9 +2963,10 @@ async function outsourcingWatch() {
   if (released.length) appendLog(db, '외주 창구', `작업 시간이 지난 요청 다시 열기: ${released.join(', ')}`, 'info');
   const now = Date.now();
   for (const r of listRequests(db, { status: 'open' })) {
-    if (!r.reminded && now - Date.parse(r.createdAt) > 8 * 3600 * 1000) {
+    if (!r.reminded && now - Date.parse(r.updatedAt || r.createdAt) > 2 * 3600 * 1000) {
       r.reminded = true;
-      sendTelegramReport(db.settings, `외주 요청 대기 ${r.id}`, `"${r.title}"이(가) 8시간째 아무도 가져가지 않았습니다. 이동 중이면 Antigravity에서 "CEO Office 외주 처리"를 실행해 주세요.`, `outremind:${r.id}`).catch(() => {});
+      const tgt = OUTSOURCE_WORKER_LABELS[resolveTarget(db.settings, r)];
+      sendTelegramReport(db.settings, `외주 대기 ${r.id}`, `"${r.title}"이(가) 2시간째 ${tgt}에서 처리되지 않았습니다. 다른 쪽으로 넘기려면: /out ${r.id} antigravity (또는 aside) · 이동 중이면 /away 3`, `outremind:${r.id}`).catch(() => {});
     }
   }
   saveDb(db);
@@ -2905,13 +3045,15 @@ function getTelegramCallbacks() {
         `• 진행 중 업무: ${activeMissions}건`,
         `• CEO 결재 대기: <b>${pending}건</b>`,
         ``,
-        `명령어: /approvals · /order 지시내용`,
+        `명령어: /approvals · /order 지시내용 · /out (외주 현황) · /away 3 (이동 중, 외주→Antigravity) · /office · /route`,
         `자유 대화: 그냥 메시지를 보내면 총괄 팀장이 답하고, 지시면 실제 업무로 등록합니다. (#업무명 으로 채널 지정, #전체 로 해제)`,
         `알림: /notify 상태 · /report on|off · /quiet 23:00-08:00 · /quiet off`
       ].join('\n');
     },
     onChat: async (text) => handleTelegramChat(text),
     onNotifyCommand: async (cmd, arg) => handleNotifyCommand(cmd, arg),
+    onOutsourceCommand: async (cmd, arg) => handleOutsourceTelegramCommand(cmd, arg),
+    onOutsourceCallback: async (action, id) => handleOutsourceTelegramCallback(action, id),
     onListPending: async () => {
       const db = loadDb();
       const map = Object.fromEntries(db.agents.map((a) => [a.id, a.name]));
@@ -3150,7 +3292,7 @@ app.get('/vendor/lucide.min.js', (c) => {
 app.get('/api/state', (c) => {
   const db = loadDb();
   if (ensureRoutines(db)) saveDb(db);
-  return c.json({ ...sanitizeStateForClient(db), aiHealth: getAiProviderHealth() });
+  return c.json({ ...sanitizeStateForClient(db), aiHealth: getAiProviderHealth(), outsourcingRouting: describeRouting(db.settings) });
 });
 
 app.get('/api/oss-stack', (c) => {
@@ -4597,7 +4739,8 @@ app.get('/api/outsourcing', (c) => {
   const list = listRequests(db, { status, worker });
   return c.json({
     count: list.length,
-    requests: list.map(summarizeRequest),
+    routing: describeRouting(db.settings),
+    requests: list.map((r) => ({ ...summarizeRequest(r), target: resolveTarget(db.settings, r) })),
     howTo: `요청서 전문: GET ${publicBaseUrl()}/api/outsourcing/{id}/packet · 시작: POST .../{id}/claim · 제출: POST .../{id}/submit`
   });
 });
@@ -4660,11 +4803,90 @@ app.post('/api/outsourcing', async (c) => {
       createdBy: 'CEO'
     });
     req = made.request;
+    if (['antigravity', 'aside'].includes(body.worker)) req.pinnedWorker = body.worker;
     if (made.created) notifyOutsourceCreated(db, req);
   }
   saveDb(db);
   await flushCloudBackup(db);
   return c.json({ request: req, state: sanitizeStateForClient(db) });
+});
+
+app.get('/api/outsourcing/setup/antigravity', (c) => {
+  if (!isCeoRequest(c)) return c.json({ error: 'CEO만 볼 수 있습니다 (토큰 포함).' }, 401);
+  const db = loadDb();
+  const base = publicBaseUrl();
+  const token = db.settings?.mcpToken || '';
+  let skill = '';
+  try {
+    skill = fs.readFileSync(path.join(__dirname, '.agents', 'skills', 'ceo-outsourcing', 'SKILL.md'), 'utf8');
+  } catch {
+    skill = '';
+  }
+  const mcpJson = { mcpServers: { 'ceo-office': { serverUrl: `${base}/api/mcp`, headers: { Authorization: `Bearer ${token}` } } } };
+  const prompt = [
+    'CEO Office 외주 창구를 이 Antigravity에 연결해줘. 아래 3가지를 순서대로 하고 결과를 알려줘.',
+    '',
+    '1) MCP 서버 등록: 전역 설정 파일 ~/.gemini/config/mcp_config.json (Windows는 %USERPROFILE%\\.gemini\\config\\mcp_config.json)을 열어 mcpServers에 아래 "ceo-office" 항목을 추가해줘. 파일이 없으면 만들고, 이미 있는 다른 서버 설정은 그대로 둬. 저장 후 MCP 서버 목록을 새로고침해서 ceo-office의 도구(list_outsourcing_requests 등)가 보이는지 확인해줘.',
+    '```json',
+    JSON.stringify(mcpJson, null, 2),
+    '```',
+    '',
+    '2) 스킬 설치: ~/.gemini/config/skills/ceo-outsourcing/SKILL.md 파일을 아래 내용 그대로 만들어줘.',
+    '```markdown',
+    skill.trim(),
+    '```',
+    '',
+    '3) 자동 실행: 30분마다 "ceo-outsourcing 스킬로 CEO Office 외주 처리해줘"를 실행하는 Automation(/automation)을 만들어줘. 처리할 게 없으면 짧게 끝내도록 해줘.',
+    '',
+    '주의: 위 토큰은 비밀번호와 같으니 다른 곳에 출력하거나 저장소에 커밋하지 마.'
+  ].join('\n');
+  return c.json({ prompt, mcpJson, base });
+});
+
+app.post('/api/outsourcing/route', async (c) => {
+  if (!isCeoRequest(c)) return c.json({ error: 'CEO만 바꿀 수 있습니다.' }, 401);
+  const body = await c.req.json().catch(() => ({}));
+  const db = loadDb();
+  const routing = updateOutsourceRouting(db, body);
+  saveDb(db);
+  await flushCloudBackup(db);
+  return c.json({ routing, state: { ...sanitizeStateForClient(db), outsourcingRouting: routing } });
+});
+
+app.post('/api/outsourcing/:id/need-ceo', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const db = loadDb();
+  if (!outsourceAuthOk(c, db, body)) return c.json({ error: '인증 필요' }, 401);
+  try {
+    const req = await requestCeoAction(c.req.param('id'), { worker: body.worker, action: body.action, detail: body.detail });
+    return c.json({ ok: true, request: summarizeRequest(req) });
+  } catch (err) {
+    return c.json({ ok: false, error: err.message }, 400);
+  }
+});
+
+app.post('/api/outsourcing/:id/resume', async (c) => {
+  if (!isCeoRequest(c)) return c.json({ error: 'CEO만 재개할 수 있습니다.' }, 401);
+  const body = await c.req.json().catch(() => ({}));
+  try {
+    resumeRequest(c.req.param('id'), body.note || '', body.worker || '');
+    const db = loadDb();
+    return c.json({ ok: true, state: { ...sanitizeStateForClient(db), outsourcingRouting: describeRouting(db.settings) } });
+  } catch (err) {
+    return c.json({ ok: false, error: err.message }, 400);
+  }
+});
+
+app.post('/api/outsourcing/:id/assign', async (c) => {
+  if (!isCeoRequest(c)) return c.json({ error: 'CEO만 지정할 수 있습니다.' }, 401);
+  const body = await c.req.json().catch(() => ({}));
+  try {
+    assignRequest(c.req.param('id'), body.worker || 'auto');
+    const db = loadDb();
+    return c.json({ ok: true, state: { ...sanitizeStateForClient(db), outsourcingRouting: describeRouting(db.settings) } });
+  } catch (err) {
+    return c.json({ ok: false, error: err.message }, 400);
+  }
 });
 
 app.post('/api/outsourcing/:id/claim', async (c) => {
@@ -4798,8 +5020,8 @@ app.put('/api/settings', async (c) => {
       if (typeof body.outsourcing[k] === 'boolean') os[k] = body.outsourcing[k];
     }
     if (['off', 'proposals', 'proposals_and_reports'].includes(body.outsourcing.consultMode)) os.consultMode = body.outsourcing.consultMode;
-    if (Number.isFinite(Number(body.outsourcing.leaseHours))) os.leaseHours = Math.min(24, Math.max(1, Math.round(Number(body.outsourcing.leaseHours))));
-    s.outsourcing = os;
+    s.outsourcing = { ...(s.outsourcing || {}), ...os };
+    updateOutsourceRouting(db, { routing: body.outsourcing.routing, officeHours: body.outsourcing.officeHours, leaseMinutes: body.outsourcing.leaseMinutes, awayHours: body.outsourcing.awayHours });
   }
   if (body.leadEngine && typeof body.leadEngine === 'object') {
     const le = getLeadSettings(s);
