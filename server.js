@@ -51,7 +51,12 @@ import {
   isStandingOrder,
   getMissionScope,
   findScopeViolations,
-  getMissionGoal
+  getMissionGoal,
+  detectNonResult,
+  classifyBlocker,
+  triageGuidance,
+  pickAlternateMember,
+  describeTeamLoad
 } from './src/lead-engine.js';
 import { describeSkillsForClient, getSkillSettings, selectSkills, renderSkills } from './src/skills.js';
 import { testGoogleDataConnection, buildAnalyticsContext, describeGoogleDataStatus } from './src/google-data.js';
@@ -306,7 +311,8 @@ async function createMissionInDb({
   return { mission, tasks: createdTasks, db };
 }
 
-async function autoStartLiveMissionTasks(missionId, { proposeNext = true } = {}) {
+async function autoStartLiveMissionTasks(missionId, { proposeNext = true, priorRunTaskIds = [] } = {}) {
+  const requeuedIds = new Set();
   const db = loadDb();
   const mission = db.missions.find((m) => m.id === missionId);
   if (!mission) return;
@@ -383,10 +389,10 @@ async function autoStartLiveMissionTasks(missionId, { proposeNext = true } = {})
 
         // 팀원이 "[외주 필요: 사유]"라고 판단하면 억지 결과 대신 외부 AI에 맡김
         const osFlag = getOutsourcingSettings(fresh.settings).enabled && !taskRow.outsourceDeclined ? extractOutsourceFlag(res.output) : '';
-        if (osFlag) {
-          const repoLinked = Boolean(getMissionRepoCfg(fresh.settings, mission));
-          const kind = repoLinked && isCodeTask(taskRow, ag) ? 'code' : 'task';
-          outsourceTask(fresh, taskRow, { kind, worker: kind === 'code' ? 'antigravity' : 'any', reason: osFlag });
+        // 팀장 검토: "못 한다/정보 달라"뿐인 결과는 완료로 치지 않고 다시 맡기거나(내부 우선), 진짜 계정 작업만 외주
+        const triage = leadTriageResult(fresh, taskRow, ag, mission, res.output, osFlag);
+        if (triage.handled) {
+          if (triage.requeued) requeuedIds.add(taskRow.id);
           updateMissionStatus(fresh, mission.id);
           saveDb(fresh);
           await flushCloudBackup(fresh);
@@ -448,6 +454,13 @@ async function autoStartLiveMissionTasks(missionId, { proposeNext = true } = {})
         saveDb(fresh);
       }
   });
+
+  // 팀장이 다시 맡긴 작업이 있으면 바로 한 번 더 돌린 뒤 보고·다음 단계로 (작업당 재배정은 1회로 제한)
+  if (requeuedIds.size) {
+    await autoStartLiveMissionTasks(missionId, { proposeNext, priorRunTaskIds: [...new Set([...priorRunTaskIds, ...runTaskIds])] });
+    return;
+  }
+  if (priorRunTaskIds.length) runTaskIds.splice(0, 0, ...priorRunTaskIds.filter((id) => !runTaskIds.includes(id)));
 
   // Team Lead automatically compiles executive summary once internal tasks finish
   let isProjectMission = false;
@@ -896,6 +909,8 @@ function applyApprovalDecisionInDb(aprId, decision, ceoNote = '') {
   apr.status = decision;
   apr.ceoNote = String(ceoNote || '').trim();
   apr.decidedAt = now;
+  // 결재가 끝났으니 이 안건의 대기 중인 자문 요청은 취소 (외부 작업자 헛일 방지)
+  if (apr.missionId) cancelStaleConsults(db, apr.missionId);
 
   const task = db.tasks.find((t) => t.id === apr.taskId);
   const agent = db.agents.find((a) => a.id === apr.agentId);
@@ -1418,7 +1433,8 @@ async function leadAutoAdvance(missionId) {
       mission,
       digest: buildMissionDigest(db, missionId),
       agents: db.agents,
-      settings: db.settings
+      settings: db.settings,
+      teamLoad: describeTeamLoad(db)
     });
   } catch (err) {
     const fresh = loadDb();
@@ -2657,6 +2673,67 @@ function notifyOutsourceCreated(db, req) {
   ).catch(() => {});
 }
 
+/**
+ * 팀장 검토 (Orchestrator): 팀원 결과가 실제 결과물인지 보고 다음 행동을 정함
+ * - 로그인이 필요한 계정·콘솔 작업 → 외주 (실제로 무료 팀이 할 수 없음)
+ * - 그 밖(저장소 없음·정보 부족·능력 부족) → 피드백과 함께 내부 팀원에게 1회 재배정
+ * - 재배정 후에도 안 되면: 저장소·정보 문제는 대표님께 요청하고 보류, 능력 문제는 외주
+ */
+function leadTriageResult(db, task, agent, mission, output, osFlag = '') {
+  const nr = detectNonResult(output, osFlag);
+  if (!nr.nonResult) return { handled: false };
+  const repoLinked = Boolean(getMissionRepoCfg(db.settings, mission));
+  const blocker = classifyBlocker(`${nr.reason} ${osFlag}`, { repoLinked });
+  const osOn = getOutsourcingSettings(db.settings).enabled && !task.outsourceDeclined;
+  task.triage = task.triage || { retries: 0, tried: [] };
+  if (agent?.id && !task.triage.tried.includes(agent.id)) task.triage.tried.push(agent.id);
+  task.triage.lastReason = String(nr.reason).slice(0, 200);
+  task.triage.blocker = blocker;
+  const nowIso = new Date().toISOString();
+
+  if (blocker === 'login' && osOn) {
+    outsourceTask(db, task, { kind: 'browser', worker: 'aside', reason: nr.reason });
+    return { handled: true };
+  }
+  if (task.triage.retries < 1) {
+    const alt = blocker === 'capability' ? pickAlternateMember(db, task, task.triage.tried) : null;
+    const next = alt || agent;
+    task.triage.retries += 1;
+    task.assigneeId = next.id;
+    task.description = `${task.description || ''}\n\n[팀장 피드백] 이전 결과("${String(nr.reason).slice(0, 120)}")는 실제 결과물이 아니라 완료로 인정하지 않았습니다. ${triageGuidance(blocker, { repoLinked })}`.slice(0, 6000);
+    task.status = 'queued';
+    task.previousOutput = String(output || '').slice(0, 1500);
+    task.output = '';
+    task.updatedAt = nowIso;
+    leadSay(db, mission, '팀장 검토', `"${task.title}" 결과가 실제 결과물이 아니어서 ${next.id === agent.id ? `${next.name}에게 방향을 다시 주고` : `${next.name}에게 넘겨`} 다시 맡겼습니다. (${String(nr.reason).slice(0, 80)})`);
+    appendLog(db, '총괄 팀장', `"${task.title}" 재배정 → ${next.name} (${blocker})`, 'info');
+    return { handled: true, requeued: true };
+  }
+  if (blocker === 'repo' || blocker === 'info') {
+    task.status = 'blocked';
+    task.blockedReason = blocker === 'repo' ? '연결 저장소 없음' : String(nr.reason).slice(0, 160);
+    task.output = String(output || '');
+    task.updatedAt = nowIso;
+    const key = blocker === 'repo' ? 'repoRequestAt' : 'infoRequestAt';
+    const last = Date.parse(mission[key] || 0);
+    if (!last || Date.now() - last > 12 * 3600 * 1000) {
+      mission[key] = nowIso;
+      const ask = blocker === 'repo'
+        ? `"${mission.title}"에 연결된 GitHub 저장소가 없어 코드·PR 작업("${task.title}")을 진행할 수 없습니다. 프로젝트 화면의 "연동 설정"에서 저장소를 연결해 주시거나, 저장소 없이 문서·파일 내용으로만 진행할지 알려 주세요.`
+        : `"${task.title}"을 끝내려면 대표님 확인이 필요합니다: ${String(nr.reason).slice(0, 160)}`;
+      leadSay(db, mission, '대표님 확인 필요', ask);
+      sendTelegramReport(db.settings, `대표님 확인 필요 · ${mission.title}`, ask, `blocked:${mission.id}:${blocker}`).catch(() => {});
+    }
+    return { handled: true };
+  }
+  if (osOn) {
+    const kind = repoLinked && isCodeTask(task, agent) ? 'code' : 'task';
+    outsourceTask(db, task, { kind, worker: kind === 'code' ? 'antigravity' : 'any', reason: `내부 팀원 2명이 시도했지만 결과물을 만들지 못함: ${nr.reason}` });
+    return { handled: true };
+  }
+  return { handled: false };
+}
+
 function outsourceTask(db, task, { kind = 'task', worker = 'any', reason = '', createdBy = 'system' } = {}) {
   const mission = db.missions.find((m) => m.id === task.missionId);
   const repoCfg = mission ? getMissionRepoCfg(db.settings, mission) : null;
@@ -2681,8 +2758,27 @@ function outsourceTask(db, task, { kind = 'task', worker = 'any', reason = '', c
   return request;
 }
 
+/** 결재가 끝났거나 새 제안으로 대체된 결재안의 자문 요청은 외부 작업자가 헛일하지 않게 취소 */
+function cancelStaleConsults(db, missionId, { exceptApprovalId = '' } = {}) {
+  const nowIso = new Date().toISOString();
+  let n = 0;
+  for (const r of db.outsourcing || []) {
+    if (r.kind !== 'consult' || r.status !== 'open' || r.missionId !== missionId || !r.approvalId) continue;
+    if (r.approvalId === exceptApprovalId) continue;
+    const apr = (db.approvals || []).find((a) => a.id === r.approvalId);
+    if (apr && apr.status === 'pending') continue;
+    r.status = 'cancelled';
+    r.updatedAt = nowIso;
+    (r.history ||= []).push({ at: nowIso, event: 'cancelled', by: '총괄 팀장 (결재 종료·대체)' });
+    n += 1;
+  }
+  if (n) appendLog(db, '외주 창구', `결재가 끝난 안건의 자문 요청 ${n}건을 취소했습니다.`, 'info');
+  return n;
+}
+
 function requestConsultForApproval(db, apr, createdBy = 'system') {
   const mission = db.missions.find((m) => m.id === apr.missionId);
+  cancelStaleConsults(db, apr.missionId, { exceptApprovalId: apr.id });
   const { request, created } = createOutsourcingRequest(db, {
     kind: 'consult',
     worker: 'any',
@@ -2701,6 +2797,9 @@ function requestConsultForApproval(db, apr, createdBy = 'system') {
 }
 
 function requestConsultForReport(db, mission, reportText) {
+  // 같은 프로젝트의 완료 보고 자문이 아직 대기 중이면 새로 만들지 않음
+  const pendingReport = (db.outsourcing || []).find((r) => r.kind === 'consult' && r.missionId === mission.id && !r.approvalId && ['open', 'claimed'].includes(r.status));
+  if (pendingReport) return pendingReport;
   const { request, created } = createOutsourcingRequest(db, {
     kind: 'consult',
     worker: 'any',
@@ -4162,6 +4261,7 @@ app.post('/api/missions/:id/run-all', async (c) => {
   );
 
   const now = new Date().toISOString();
+  let runAllRequeued = false;
   for (const item of results) {
     if (item.error) {
       appendLog(db, item.agent.name, `"${item.task.title}" 실행 오류: ${item.error}`, 'warning');
@@ -4171,6 +4271,14 @@ app.post('/api/missions/:id/run-all', async (c) => {
     item.task.executionModeUsed = item.res.executionModeUsed;
     if (item.res.quality) item.task.quality = item.res.quality;
     item.task.updatedAt = now;
+
+    // 팀장 검토: 결과물이 아니면 재배정·외주·대표님 요청 (완료로 처리하지 않음)
+    const osFlagRA = getOutsourcingSettings(db.settings).enabled && !item.task.outsourceDeclined ? extractOutsourceFlag(item.res.output) : '';
+    const triageRA = leadTriageResult(db, item.task, item.agent, mission, item.res.output, osFlagRA);
+    if (triageRA.handled) {
+      if (triageRA.requeued) runAllRequeued = true;
+      continue;
+    }
 
     const overThreshold = (item.task.estimatedCostKRW || 0) >= (db.settings.approvalThresholdKRW || 30000);
     if (item.task.requiresApproval || overThreshold) {
@@ -4195,6 +4303,7 @@ app.post('/api/missions/:id/run-all', async (c) => {
     }
   }
 
+  if (runAllRequeued) setTimeout(() => autoStartLiveMissionTasks(missionId, { proposeNext: false }).catch(() => {}), 1500);
   updateMissionStatus(db, missionId);
   try {
     const missionTasks = db.tasks.filter((t) => t.missionId === missionId);
