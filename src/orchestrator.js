@@ -10,7 +10,7 @@ import { isProviderCooling } from './ai-guard.js';
 import { selectSkills, renderSkills, skillBlock, shouldReview, buildReviewRubric, getSkillSettings } from './skills.js';
 import { getRepoSnapshot, buildCodeEvidence, factCheckOutput } from './grounding.js';
 import { buildAnalyticsContext } from './google-data.js';
-import { buildComplianceChecklist } from './lead-engine.js';
+import { buildComplianceChecklist, deriveAcceptance, buildMissionBrief } from './lead-engine.js';
 
 function repoTokenFrom(settings) {
   return String(settings?.providers?.githubRepo?.apiKey || process.env.GITHUB_REPO_TOKEN || '').trim();
@@ -1263,6 +1263,152 @@ export function createApprovalForTask(task, agent, mission, reason, proposedActi
     ceoNote: '',
     createdAt: new Date().toISOString(),
     decidedAt: null
+  };
+}
+
+const LeadReviewSchema = z.object({
+  verdict: z.enum(['accept', 'revise', 'escalate']).describe('accept: 완료 기준을 모두 충족해 바로 쓸 수 있음 / revise: 고치면 충족 가능 / escalate: 이 팀원·도구로는 불가(실제 웹 조사·로그인·실행 필요 등)'),
+  score: z.number().describe('0~10'),
+  missing: z.array(z.string()).max(6).describe('충족하지 못한 완료 기준이나 빠진 것 (구체적으로)'),
+  feedback: z.string().describe('revise/escalate일 때 다음 작업자가 바로 고칠 수 있는 구체적 지시 (무엇을, 어떻게). accept면 빈 문자열 가능')
+});
+
+/**
+ * 팀장 검수: 팀원 결과물을 업무의 완료 기준과 업무 브리핑으로 판정
+ * AI 엔진을 쓸 수 없으면 판정을 건너뜀(skipped) — 업무를 멈추지 않기 위해
+ */
+export async function leadReviewDeliverable({ task, output, mission, agents, settings }) {
+  const leadAgent = agents.find((a) => a.id === (mission?.leadAgentId || 'agent_gemini_neon')) || agents.find((a) => a.tier === 'lead') || agents[0];
+  const chain = buildLeadModelChain(leadAgent, settings);
+  const acceptance = deriveAcceptance(task);
+  if (!chain.length) return { verdict: 'accept', skipped: true, reason: 'AI 엔진 없음', acceptance };
+  const system = `당신은 총괄 팀장(${leadAgent?.name || '팀장'})입니다. 팀원이 낸 결과물을 "완료 기준"과 "업무 브리핑"으로 엄격하게 검수하세요.
+판정 원칙:
+- accept: 완료 기준을 모두 충족하고, 대표님이나 다음 작업자가 바로 쓸 수 있을 때만.
+- revise: 빠진 부분을 같은 팀원이 고칠 수 있을 때. feedback에 무엇을 어떻게 고칠지 구체적으로.
+- escalate: 이 팀원과 무료 도구로는 불가능할 때(실제 웹 조사, 로그인, 현실 행동 필요 등). feedback에 무엇이 필요한지.
+- 계획·목차·"정보를 주세요"·"~하겠습니다"만 있는 결과는 accept 금지.
+- 근거 없는 수치를 사실처럼 쓴 경우, 브리핑의 금지 사항을 어긴 경우 accept 금지.
+${mission ? `\n${buildMissionBrief(mission)}` : ''}`;
+  const prompt = `[업무] ${task.title}
+[요구사항] ${String(task.description || '').slice(0, 1500)}
+[완료 기준]
+${acceptance.map((x, i) => `${i + 1}. ${x}`).join('\n')}
+
+[팀원 결과물 (앞부분)]
+${String(output || '').slice(0, 4500)}`;
+  try {
+    const { object, label } = await generateObjectChain(chain, { schema: LeadReviewSchema, system, prompt });
+    return {
+      verdict: object.verdict,
+      score: Math.max(0, Math.min(10, Number(object.score) || 0)),
+      missing: (object.missing || []).map((x) => String(x).slice(0, 200)).slice(0, 6),
+      feedback: String(object.feedback || '').slice(0, 1200),
+      reviewer: label,
+      acceptance
+    };
+  } catch (err) {
+    return { verdict: 'accept', skipped: true, reason: String(err?.message || err).slice(0, 200), acceptance };
+  }
+}
+
+// ======================================================================
+// 운영 사이클 v3: 작전 계획(마일스톤) 수립과 마일스톤별 작업 계획
+// ======================================================================
+const MissionPlanSchema = z.object({
+  stage: z.string().describe('지금 단계 이름 (예: 수익 모델 검증)'),
+  milestones: z
+    .array(
+      z.object({
+        title: z.string().describe('마일스톤 이름 (결과 중심, 예: 미니앱 아이디어 2개 확정)'),
+        doneWhen: z.string().describe('완료 판정 기준 (검증 가능한 결과물·숫자)'),
+        gate: z.boolean().describe('대표님 결정이 꼭 필요한 관문이면 true (방향 선택·비용·외부 계정·출시·발송). 팀이 스스로 할 수 있으면 false'),
+        decision: z.string().describe('gate=true일 때 대표님이 결정할 것 한 줄, 아니면 빈 문자열')
+      })
+    )
+    .min(2)
+    .max(6)
+});
+
+/** 목표·업무 범위·지금까지 결과를 보고 작전 계획(마일스톤 2~6개)을 세움 */
+export async function draftMissionPlan({ mission, digest, agents, settings }) {
+  const leadAgent = agents.find((a) => a.id === (mission?.leadAgentId || 'agent_gemini_neon')) || agents[0];
+  const chain = buildLeadModelChain(leadAgent, settings);
+  if (!chain.length) throw new Error('사용 가능한 AI 엔진 없음');
+  const system = `당신은 총괄 팀장(${leadAgent.name})입니다. 이 프로젝트의 목표까지 가는 "작전 계획"을 세우세요.
+- 마일스톤은 결과 중심으로 2~6개, 순서대로. 각 마일스톤은 팀이 1~2주 안에 끝낼 수 있는 크기.
+- doneWhen은 검증 가능한 결과(결과물·숫자·대표님 결정)로. "보고서 작성" 같은 활동은 기준이 될 수 없음.
+- 대표님 결정이 꼭 필요한 지점(방향 선택, 비용, 외부 계정 가입, 출시·발송)만 gate=true. 나머지는 팀장 전결로 진행.
+- 업무 브리핑의 "절대 하지 말 것"을 어기는 마일스톤은 만들지 마세요.
+${companyContextFor(mission?.id, { compact: true })}`;
+  const { object, label } = await generateObjectChain(chain, {
+    schema: MissionPlanSchema,
+    system,
+    prompt: `${digest}\n\n${buildComplianceChecklist(mission)}`
+  });
+  return {
+    stage: String(object.stage || '').slice(0, 80),
+    milestones: object.milestones.map((m, i) => ({
+      id: `ms${Date.now().toString(36)}${i}`,
+      title: String(m.title || '').slice(0, 120),
+      doneWhen: String(m.doneWhen || '').slice(0, 300),
+      gate: Boolean(m.gate),
+      decision: String(m.decision || '').slice(0, 200),
+      status: 'todo',
+      rounds: 0
+    })),
+    planner: label
+  };
+}
+
+const MilestoneWorkSchema = z.object({
+  milestoneDone: z.boolean().describe('지금까지의 결과물로 이 마일스톤의 완료 기준(doneWhen)을 충족했으면 true'),
+  report: z.string().describe('대표님께 드리는 2~3문장 진행 보고 (확인된 사실만)'),
+  tasks: z
+    .array(
+      z.object({
+        title: z.string(),
+        description: z.string().describe('무엇을 어떤 형태로 만들지 구체적으로'),
+        acceptance: z.array(z.string()).min(1).max(5).describe('이 작업의 완료 기준 (검증 가능하게)'),
+        assigneeId: z.string().describe('조직도의 id'),
+        isCodeChange: z.boolean()
+      })
+    )
+    .max(4)
+    .describe('milestoneDone=false일 때 완료 기준까지 남은 차이를 메울 작업. 이미 한 일 반복 금지')
+});
+
+/** 현재 마일스톤: 완료 판정 + 남은 차이를 메울 작업 계획 (팀원 역량에 맞게 배정) */
+export async function planMilestoneWork({ mission, milestone, digest, agents, settings, teamLoad = '', deliverablesText = '' }) {
+  const leadAgent = agents.find((a) => a.id === (mission?.leadAgentId || 'agent_gemini_neon')) || agents[0];
+  const chain = buildLeadModelChain(leadAgent, settings);
+  if (!chain.length) throw new Error('사용 가능한 AI 엔진 없음');
+  const system = `당신은 지휘자(Orchestrator)인 총괄 팀장(${leadAgent.name})입니다. 지금 마일스톤을 끝내기 위해 팀을 움직이세요.
+- 먼저 지금까지의 결과물이 마일스톤 완료 기준을 충족하는지 판정하세요(milestoneDone).
+- 아직이면, 완료 기준까지 남은 차이를 메울 작업만 최대 4개. 각 작업마다 검증 가능한 완료 기준(acceptance)을 쓰세요.
+- 팀원 역량에 맞게, 대기 중인 팀원부터 서로 다른 팀원에게 나눠 배정하세요. 실제 웹 조사는 웹 조사가 되는 팀원에게.
+- 이미 끝난 일을 반복하지 마세요. 업무 브리핑의 "절대 하지 말 것"을 지키세요.
+
+[조직도]
+${teamLoad}
+${companyContextFor(mission?.id, { compact: true })}`;
+  const prompt = `[현재 마일스톤] ${milestone.title}
+[완료 기준] ${milestone.doneWhen}
+[지금까지 결과물]
+${deliverablesText || '(아직 없음)'}
+
+${digest}
+
+${buildComplianceChecklist(mission)}`;
+  const { object, label } = await generateObjectChain(chain, { schema: MilestoneWorkSchema, system, prompt });
+  const validIds = new Set(agents.filter((a) => a.active).map((a) => a.id));
+  return {
+    milestoneDone: Boolean(object.milestoneDone),
+    report: String(object.report || '').slice(0, 800),
+    tasks: (object.tasks || [])
+      .filter((t) => t?.title && t?.description)
+      .map((t) => ({ ...t, acceptance: (t.acceptance || []).map((x) => String(x).slice(0, 200)), assigneeId: validIds.has(t.assigneeId) ? t.assigneeId : leadAgent.id })),
+    planner: label
   };
 }
 

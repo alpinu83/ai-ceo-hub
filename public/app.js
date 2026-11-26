@@ -807,9 +807,11 @@ function renderActiveMission(mission) {
           ${
             pendingNextPhase
               ? `<button type="button" class="btn btn-amber btn-sm" data-jump-view="approvals">Phase ${pendingNextPhase.proposedPhase} 제안 결재</button>`
-              : isProject
-                ? `<button type="button" class="btn btn-primary btn-sm" id="btn-propose-next-phase" data-mission-id="${esc(mission.id)}">다음 단계 제안</button>`
-                : ''
+              : isProject && mission.opsMode === 'v3'
+                ? `<button type="button" class="btn btn-primary btn-sm" id="btn-ops-cycle" data-mission-id="${esc(mission.id)}">팀장 운영 사이클 실행</button>`
+                : isProject
+                  ? `<button type="button" class="btn btn-primary btn-sm" id="btn-propose-next-phase" data-mission-id="${esc(mission.id)}">다음 단계 제안</button>`
+                  : ''
           }
           ${
             idleCount > 0
@@ -839,6 +841,7 @@ function renderActiveMission(mission) {
 
       <div class="mission-directive-quote"><strong>지시:</strong> ${esc(mission.directive)}</div>
       ${missionGoalHtml(mission)}
+      ${missionPlanHtml(mission)}
 
       <div class="progress-row">
         <span class="mono">진척도 ${pct}% (${completed}/${tasks.length} 완료)</span>
@@ -1451,6 +1454,29 @@ const OUT_STATUS = {
 };
 let outSubmitOpenId = null;
 let lastOutRouting = null;
+
+/** 작전 계획(운영 사이클 v3): 단계 · 마일스톤 상태 · 결과물 */
+const MS_STATUS = { todo: ['badge-neutral', '대기'], doing: ['badge-blue', '진행 중'], gate: ['badge-amber', '관문 결재 대기'], blocked: ['badge-red', '보류'], done: ['badge-green', '완료'] };
+function missionPlanHtml(mission) {
+  if (mission.mode !== 'project') return '';
+  if (mission.opsMode !== 'v3') {
+    return `<div class="mission-directive-quote" style="border-left-color:var(--accent-amber);"><strong>운영 방식:</strong> 단계마다 제안서 결재(구버전). <button type="button" class="btn-inline-edit" id="btn-ops-mode" data-mission-id="${esc(mission.id)}" data-ops-mode="v3">작전 계획 방식으로 전환</button></div>`;
+  }
+  const plan = mission.plan;
+  const deliverables = (mission.deliverables || []).slice(0, 6);
+  const msRows = (plan?.milestones || [])
+    .map((m, i) => {
+      const [cls, label] = MS_STATUS[m.status] || MS_STATUS.todo;
+      return `<li style="margin:4px 0;"><span class="badge ${cls}">${esc(label)}</span> <strong>${i + 1}. ${esc(m.title)}</strong>${m.gate ? ' <span class="badge badge-neutral">관문</span>' : ''}<div class="routine-sub" style="margin-left:4px;">완료 기준: ${esc(m.doneWhen)}${m.rounds ? ` · 시도 ${m.rounds}회` : ''}${m.decisionNote ? ` · 대표님: ${esc(m.decisionNote)}` : ''}</div></li>`;
+    })
+    .join('');
+  return `<details class="mission-directive-quote" open>
+      <summary style="cursor:pointer;"><strong>작전 계획${plan?.stage ? ` — ${esc(plan.stage)}` : ''}</strong> <span class="routine-sub">관문(대표님 결정)에서만 결재를 받고 나머지는 팀장이 바로 진행합니다</span>
+        <button type="button" class="btn-inline-edit" id="btn-ops-mode" data-mission-id="${esc(mission.id)}" data-ops-mode="legacy" title="단계별 제안서 결재 방식으로 되돌리기">구버전으로</button></summary>
+      ${msRows ? `<ol style="list-style:none;padding:0;margin:8px 0 0;">${msRows}</ol>` : '<div class="routine-sub" style="margin-top:6px;">아직 작전 계획이 없습니다. "팀장 운영 사이클 실행"을 누르면 팀장이 계획을 세웁니다.</div>'}
+      ${deliverables.length ? `<div style="margin-top:10px;"><strong>최근 결과물</strong><ul style="margin:4px 0 0;padding-left:18px;">${deliverables.map((d) => `<li class="routine-sub">${esc(d.title)} · ${esc(d.agentName || '')}${d.score != null ? ` · 검수 ${d.score}/10` : ''}${d.gaps?.length ? ' · 부족한 점 있음' : ''}</li>`).join('')}</ul></div>` : ''}
+    </details>`;
+}
 
 /** 프로젝트 목표 표시: 지표 현재값 → 목표치, 진척, 기한 */
 function missionGoalHtml(mission) {
@@ -3256,6 +3282,35 @@ function bindEvents() {
         state = res.state;
         renderAll();
         toast('이름을 수정했습니다.');
+      } catch (err) {
+        toast(err.message, true);
+      }
+      return;
+    }
+
+    if (target.id === 'btn-ops-cycle') {
+      target.disabled = true;
+      try {
+        const res = await api(`/api/missions/${target.dataset.missionId}/ops-cycle`, { method: 'POST' });
+        state = res.state;
+        renderAll();
+        toast('팀장이 운영 사이클을 시작했습니다. 작전 계획·작업 배정이 회의실에 보고됩니다.');
+      } catch (err) {
+        toast(err.message, true);
+      } finally {
+        target.disabled = false;
+      }
+      return;
+    }
+
+    if (target.id === 'btn-ops-mode') {
+      const mode = target.dataset.opsMode;
+      if (mode === 'legacy' && !window.confirm('단계마다 제안서를 결재하는 구버전 방식으로 되돌릴까요?')) return;
+      try {
+        const res = await api(`/api/missions/${target.dataset.missionId}`, { method: 'PATCH', body: JSON.stringify({ opsMode: mode }) });
+        state = res.state;
+        renderAll();
+        toast(mode === 'v3' ? '작전 계획 방식으로 바꿨습니다. 팀장이 곧 작전 계획을 세웁니다.' : '구버전(단계별 제안서) 방식으로 되돌렸습니다.');
       } catch (err) {
         toast(err.message, true);
       }

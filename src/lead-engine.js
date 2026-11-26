@@ -463,6 +463,27 @@ export function describeTeamLoad(db) {
     .join('\n');
 }
 
+// ---------------------------------------------------------------- work items (업무의 완료 기준)
+
+/** 업무 완료 기준: 계획 단계에서 정한 것이 있으면 그대로, 없으면 설명에서 뽑거나 기본 기준 */
+export function deriveAcceptance(task = {}) {
+  if (Array.isArray(task.acceptance) && task.acceptance.length) return task.acceptance.slice(0, 6).map((x) => String(x).slice(0, 200));
+  const desc = String(task.description || '');
+  const m = desc.match(/완료\s*기준\s*[:：]?\s*([^\n]+(?:\n[-•*\d].+){0,5})/);
+  if (m) {
+    const items = m[1]
+      .split(/\n|(?:\s*[;·]\s*)/)
+      .map((x) => x.replace(/^[-•*\d.)\s]+/, '').trim())
+      .filter((x) => x.length >= 4);
+    if (items.length) return items.slice(0, 6);
+  }
+  return [
+    `"${String(task.title || '').slice(0, 60)}"에 대한 결과물이 바로 쓸 수 있는 형태로 완성돼 있음 (정보 요청·계획만 있는 것은 미완료)`,
+    '수치·사실은 확인한 근거가 있거나 "가정:"으로 표시돼 있음',
+    '이번 업무 브리핑의 "절대 하지 말 것"을 지킴'
+  ];
+}
+
 /** 프로젝트 목표 (지표·목표치·현재값·기한) 정리 */
 export function getMissionGoal(mission) {
   const g = (mission && mission.goal) || {};
@@ -767,8 +788,9 @@ export function collectFollowUps(db, now = Date.now()) {
       idle &&
       !pendingAny &&
       !st.closedAt &&
-      Number(st.autoRounds || 0) < Math.max(0, Number(cfg.maxAutoRounds) || 0) &&
-      tasks.every((t) => ['completed', 'rejected'].includes(t.status)) &&
+      // 운영 사이클(v3)은 마일스톤별 시도 횟수로 제한하므로 자율 라운드 제한을 쓰지 않음
+      (m.opsMode === 'v3' || Number(st.autoRounds || 0) < Math.max(0, Number(cfg.maxAutoRounds) || 0)) &&
+      tasks.every((t) => ['completed', 'rejected', ...(m.opsMode === 'v3' ? ['blocked'] : [])].includes(t.status)) &&
       ageMs(lastTouch) > 5 * 60 * 1000 &&
       String(st.lastPlanAt || '') < lastTouch;
 
