@@ -232,13 +232,13 @@ async function runTests() {
         headers: jsonHeaders,
         body: JSON.stringify({
           skills: { reviewMode: 'always', minScore: 9 },
-          leadEngine: { advanceMode: 'propose' },
+          leadEngine: { maxAutoRounds: 2 },
           telegram: { notify: { reports: false, quiet: { enabled: true, start: '23:00', end: '07:30' } } }
         })
       })
     ).json();
     assert.equal(skillSet.state.settings.skills.reviewMode, 'always', 'review mode must be saved');
-    assert.equal(skillSet.state.settings.leadEngine.advanceMode, 'propose', 'advance mode must be saved');
+    assert.equal(skillSet.state.settings.leadEngine.maxAutoRounds, 2, 'lead engine settings must be saved');
     assert.equal(skillSet.state.settings.telegram.notify.reports, false, 'telegram report toggle must be saved');
     assert.equal(skillSet.state.settings.telegram.notify.quiet.end, '07:30', 'quiet hours must be saved');
     await fetch(`${BASE}/api/skills/custom/${customRes.skill.id}`, { method: 'DELETE' });
@@ -337,7 +337,7 @@ async function runTests() {
     assert.equal(pushKeyRes.ok, true, 'push public-key must return ok');
     assert.ok(pushKeyRes.publicKey && pushKeyRes.publicKey.length > 40, 'VAPID publicKey must be generated');
 
-    // 13. Continuous Project loop (Phase 1 -> Team Lead proposes Phase 2 -> CEO approves -> Phase 2 tasks launched)
+    // 13. 지속 프로젝트: 단계별 제안서(구버전) 없이 작전 계획 운영 사이클로만 진행, 결재는 한 번만 처리
     const projCreated = await (
       await fetch(`${BASE}/api/missions`, {
         method: 'POST',
@@ -346,52 +346,21 @@ async function runTests() {
           title: '지속 성장 프로젝트 테스트',
           domain: 'business',
           mode: 'project',
-          opsMode: 'legacy',
           directive: '웹사이트 트래픽과 수익을 단계적으로 키우는 장기 전략을 실행해줘'
         })
       })
     ).json();
     assert.equal(projCreated.mission.mode, 'project', 'mission mode must be project');
-    assert.equal(projCreated.mission.phase, 1, 'initial phase must be 1');
-
-    const propRes = await (
-      await fetch(`${BASE}/api/missions/${projCreated.mission.id}/propose-next`, { method: 'POST' })
-    ).json();
-    assert.equal(propRes.approval?.kind, 'next_phase', 'proposal approval must be kind=next_phase');
-    assert.equal(propRes.approval?.proposedPhase, 2, 'proposedPhase must be 2');
-
-    const approvePhase2 = await (
-      await fetch(`${BASE}/api/approvals/${propRes.approval.id}/decide`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ decision: 'approved', ceoNote: '광고비 0원 조건 유지해줘' })
-      })
-    ).json();
-    const updatedProj = approvePhase2.state.missions.find((m) => m.id === projCreated.mission.id);
-    assert.equal(updatedProj.phase, 2, 'approving next_phase must advance project to phase 2');
-    const phase2Tasks = approvePhase2.state.tasks.filter(
-      (t) => t.missionId === projCreated.mission.id && Number(t.phase) === 2
-    );
-    assert.ok(phase2Tasks.length >= 2, 'Phase 2 must automatically create follow-up tasks');
-
-    // 운영 사이클 v3: 새 프로젝트 기본값, 단계 제안서 대신 작전 계획, 결재는 한 번만 처리
-    const v3Created = await (
-      await fetch(`${BASE}/api/missions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: '운영 사이클 테스트', domain: 'business', mode: 'project', directive: '새 수익 모델을 발굴하고 검증해줘' })
-      })
-    ).json();
-    assert.equal(v3Created.mission.opsMode, 'v3', 'new projects use the v3 operating cycle');
-    const v3Prop = await (await fetch(`${BASE}/api/missions/${v3Created.mission.id}/propose-next`, { method: 'POST' })).json();
-    assert.ok(!v3Prop.approval || v3Prop.approval.kind !== 'next_phase', 'v3 projects do not create phase proposals');
-    const cycleRes = await fetch(`${BASE}/api/missions/${v3Created.mission.id}/ops-cycle`, { method: 'POST' });
+    const legacyRoute = await fetch(`${BASE}/api/missions/${projCreated.mission.id}/propose-next`, { method: 'POST' });
+    assert.ok(legacyRoute.status === 404 || legacyRoute.status === 405, 'legacy phase proposal endpoint is removed');
+    const cycleRes = await fetch(`${BASE}/api/missions/${projCreated.mission.id}/ops-cycle`, { method: 'POST' });
     assert.equal(cycleRes.status, 200, 'ops cycle can be triggered');
-    const legacySwitch = await (
-      await fetch(`${BASE}/api/missions/${projCreated.mission.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ opsMode: 'v3' }) })
-    ).json();
-    assert.equal(legacySwitch.state.missions.find((m) => m.id === projCreated.mission.id).opsMode, 'v3', 'opsMode can be switched');
-    const reDecide = await fetch(`${BASE}/api/approvals/${propRes.approval.id}/decide`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision: 'approved' }) });
+    const afterCycle = await (await fetch(`${BASE}/api/state`)).json();
+    assert.ok(
+      !afterCycle.approvals.some((a) => a.missionId === projCreated.mission.id && a.kind === 'next_phase'),
+      'projects never create phase proposal approvals'
+    );
+    const reDecide = await fetch(`${BASE}/api/approvals/${pendingApr.id}/decide`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision: 'approved' }) });
     assert.equal(reDecide.status, 409, 'already decided approvals are not processed twice');
 
     // 외부 AI 외주 창구: 요청 → 목록 → 잡기 → 요청서 → 결과 제출 → 반영
