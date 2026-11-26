@@ -7,6 +7,14 @@ description: CEO Office(ai-ceo-hub) 외주 창구에서 Antigravity에 배정된
 
 CEO Office(https://ai-ceo-hub.onrender.com)의 무료 AI 팀이 할 수 없어서 외부로 넘긴 일을 처리한다. MCP 서버 이름은 `ceo-office`.
 
+## 모델 계층 (Carbon > Neon > Hydrogen)
+- Carbon(최상위, 이 대화의 기본): 요청서 해석, 계획·설계, 위험 판단, 하위 결과 검토, PR 전 최종 리뷰, 제출 문서 작성
+- Neon(중간): 여러 파일 구현, 원인 추적이 필요한 디버깅, 판단이 들어가는 분석 → Neon 하위 에이전트
+- Hydrogen(하위): 자료 조사, 파일·코드 검색, 정해진 대로 하는 단순 수정, 테스트·빌드 실행, 문서 갱신 → Hydrogen 하위 에이전트(Orchestrator 실행 모델)
+- 하위 에이전트를 부를 때 "Gemini 4 Neon으로 실행"처럼 모델을 적는다. Hydrogen이 막히면 Neon, Neon이 막히면 Carbon이 직접 판단한다.
+- Carbon 사용량을 아끼려고 반복·단순 작업은 직접 하지 않는다. 모델을 지정할 수 없으면 현재 모델로 하고 결과 문서 끝에 사용한 모델을 적는다.
+- 요청서의 "모델 분담" 항목이 이 스킬보다 최신이면 요청서를 따른다.
+
 ## 순서
 1. `list_outsourcing_requests`를 worker "antigravity"로 호출한다. 지금 Antigravity에 배정된 요청만 나온다. 없으면 "처리할 외주 없음"으로 끝낸다.
 2. 한 건씩 `claim_outsourcing_request`(worker "antigravity")로 잡고, 돌려받은 요청서를 끝까지 읽는다. "회사 지침·기억"과 "지켜야 할 것"을 따른다.
