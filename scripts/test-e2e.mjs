@@ -357,6 +357,8 @@ async function runTests() {
     assert.ok(legacyRoute.status === 404 || legacyRoute.status === 405, 'legacy phase proposal endpoint is removed');
     const cycleRes = await fetch(`${BASE}/api/missions/${projCreated.mission.id}/ops-cycle`, { method: 'POST' });
     assert.equal(cycleRes.status, 200, 'ops cycle can be triggered');
+    const replanRes = await fetch(`${BASE}/api/missions/${projCreated.mission.id}/replan`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ note: '검색 노출 개선에 집중' }) });
+    assert.equal(replanRes.status, 200, 'CEO can order a re-plan');
     const afterCycle = await (await fetch(`${BASE}/api/state`)).json();
     assert.ok(
       !afterCycle.approvals.some((a) => a.missionId === projCreated.mission.id && a.kind === 'next_phase'),
