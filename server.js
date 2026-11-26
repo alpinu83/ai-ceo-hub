@@ -388,7 +388,8 @@ async function autoStartLiveMissionTasks(missionId, { proposeNext = true, priorR
         taskRow.updatedAt = doneIso;
 
         // 팀원이 "[외주 필요: 사유]"라고 판단하면 억지 결과 대신 외부 AI에 맡김
-        const osFlag = getOutsourcingSettings(fresh.settings).enabled && !taskRow.outsourceDeclined ? extractOutsourceFlag(res.output) : '';
+        // 외주를 끈(취소한) 작업도 "[외주 필요]"만 쓴 결과는 결과물이 아니므로 팀장 검토 대상 (외주로는 보내지 않음)
+        const osFlag = extractOutsourceFlag(res.output);
         // 팀장 검토: "못 한다/정보 달라"뿐인 결과는 완료로 치지 않고 다시 맡기거나(내부 우선), 진짜 계정 작업만 외주
         const triage = leadTriageResult(fresh, taskRow, ag, mission, res.output, osFlag);
         if (triage.handled) {
@@ -4273,7 +4274,7 @@ app.post('/api/missions/:id/run-all', async (c) => {
     item.task.updatedAt = now;
 
     // 팀장 검토: 결과물이 아니면 재배정·외주·대표님 요청 (완료로 처리하지 않음)
-    const osFlagRA = getOutsourcingSettings(db.settings).enabled && !item.task.outsourceDeclined ? extractOutsourceFlag(item.res.output) : '';
+    const osFlagRA = extractOutsourceFlag(item.res.output);
     const triageRA = leadTriageResult(db, item.task, item.agent, mission, item.res.output, osFlagRA);
     if (triageRA.handled) {
       if (triageRA.requeued) runAllRequeued = true;
@@ -4692,8 +4693,12 @@ app.post('/api/tasks/:id/run', async (c) => {
   if (result.quality) task.quality = result.quality;
   task.updatedAt = now;
 
+  // 팀장 검토 (단건 실행도 동일): 결과물이 아니면 재배정·대표님 요청·외주
+  const triageOne = mission ? leadTriageResult(db, task, agent, mission, result.output, extractOutsourceFlag(result.output)) : { handled: false };
   const overThreshold = (task.estimatedCostKRW || 0) >= (db.settings.approvalThresholdKRW || 30000);
-  if (task.requiresApproval || overThreshold) {
+  if (triageOne.handled) {
+    if (triageOne.requeued) setTimeout(() => autoStartLiveMissionTasks(task.missionId, { proposeNext: false }).catch(() => {}), 1500);
+  } else if (task.requiresApproval || overThreshold) {
     task.status = 'awaiting_approval';
     const existing = db.approvals.find((a) => a.taskId === task.id && a.status === 'pending');
     if (!existing) {
