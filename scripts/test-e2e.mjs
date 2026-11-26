@@ -101,7 +101,8 @@ async function runTests() {
       'list_outsourcing_requests',
       'claim_outsourcing_request',
       'get_outsourcing_request',
-      'submit_outsourcing_result'
+      'submit_outsourcing_result',
+      'request_ceo_action'
     ]);
 
     const briefRes = await (
@@ -380,6 +381,22 @@ async function runTests() {
       })
     ).json();
     assert.equal(submitted.ok, true, 'submit should succeed');
+    // 라우팅·대표님 개입·재개
+    const routeRes = await (await fetch(`${BASE}/api/outsourcing/route`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ routing: 'antigravity' }) })).json();
+    assert.equal(routeRes.routing.target, 'antigravity', 'routing should switch to antigravity');
+    const out2 = await (await fetch(`${BASE}/api/outsourcing`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: '로그인 필요 테스트', kind: 'browser', goal: '콘솔에서 설정 상태를 확인해 주세요 (테스트).' }) })).json();
+    const asideList = await (await fetch(`${BASE}/api/outsourcing?${tokQ}&worker=aside`)).json();
+    assert.ok(!asideList.requests.some((r) => r.id === out2.request.id), 'aside must not see antigravity-routed requests');
+    const agList = await (await fetch(`${BASE}/api/outsourcing?${tokQ}&worker=antigravity`)).json();
+    assert.ok(agList.requests.some((r) => r.id === out2.request.id), 'antigravity should see its requests');
+    const needCeo = await (await fetch(`${BASE}/api/outsourcing/${out2.request.id}/need-ceo?${tokQ}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ worker: 'antigravity', action: '콘솔 로그인 필요' }) })).json();
+    assert.equal(needCeo.ok, true, 'need-ceo should succeed');
+    const resumed = await (await fetch(`${BASE}/api/outsourcing/${out2.request.id}/resume`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ worker: 'aside' }) })).json();
+    const out2Row = resumed.state.outsourcing.find((r) => r.id === out2.request.id);
+    assert.equal(out2Row.status, 'open', 'resume should reopen the request');
+    assert.equal(out2Row.pinnedWorker, 'aside', 'resume with worker should pin it');
+    await fetch(`${BASE}/api/outsourcing/route`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ routing: 'auto' }) });
+
     const afterOut = await (await fetch(`${BASE}/api/state`)).json();
     const outRow = (afterOut.outsourcing || []).find((r) => r.id === outId);
     assert.equal(outRow?.status, 'accepted', 'submitted outsourcing result should be accepted');
