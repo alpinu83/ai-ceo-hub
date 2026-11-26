@@ -43,17 +43,26 @@ const HHMM_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
  */
 export const WORKER_CAPS = {
   antigravity: ['task', 'code', 'consult', 'browser', 'research'],
-  aside: ['task', 'consult', 'browser', 'research'],
+  aside: ['task', 'code', 'consult', 'browser', 'research'],
   gemini: ['task', 'consult', 'research']
 };
 export const WORKER_STRENGTHS = {
   antigravity: '코드 수정·PR, 여러 파일 작업 (사용량 한도가 빡빡하니 코드 위주로)',
-  aside: '회사 PC 로그인된 브라우저: 애드센스·서치콘솔 같은 계정·콘솔 작업, 사이트 점검',
+  aside: '회사 PC 로그인된 브라우저: 애드센스·서치콘솔 같은 계정·콘솔 작업, 사이트 점검, GitHub 웹으로 작은 코드 PR',
   gemini: '자문·검토, 심층 리서치(웹 검색·Deep Research), 문서·카피 작성. 저장소 쓰기·로그인 작업은 못 함'
 };
-// 종류별 담당: 'time' = 업무 시간엔 Aside, 그 외·이동 중엔 Antigravity
+// 종류별 담당 우선순위: 1순위가 정해진 시간 안에 안 가져가면 2순위, 그다음 3순위
+export const WORKERS = ['gemini', 'aside', 'antigravity'];
+export const DEFAULT_PRIORITIES = {
+  consult: ['gemini', 'aside', 'antigravity'],
+  research: ['gemini', 'aside', 'antigravity'],
+  task: ['gemini', 'aside', 'antigravity'],
+  browser: ['aside', 'antigravity'],
+  code: ['antigravity', 'aside']
+};
+// (이전 버전 호환용)
 export const ROLE_CHOICES = ['time', 'gemini', 'aside', 'antigravity'];
-export const DEFAULT_ROLES = { consult: 'gemini', research: 'gemini', task: 'gemini', browser: 'time', code: 'antigravity' };
+export const DEFAULT_ROLES = { consult: 'gemini', research: 'gemini', task: 'gemini', browser: 'aside', code: 'antigravity' };
 
 /**
  * 난이도: deep = 판단·추론이 필요한 일 (Gemini Neon / Antigravity Carbon·Neon)
@@ -94,6 +103,19 @@ function modelPlanLines(target, req) {
   return '';
 }
 
+function normalizePriorities(raw = {}) {
+  const out = {};
+  for (const kind of Object.keys(DEFAULT_PRIORITIES)) {
+    const list = Array.isArray(raw?.[kind]) ? raw[kind] : null;
+    const clean = [];
+    for (const w of list || []) {
+      if (WORKERS.includes(w) && WORKER_CAPS[w].includes(kind) && !clean.includes(w)) clean.push(w);
+    }
+    out[kind] = clean.length ? clean : [...DEFAULT_PRIORITIES[kind]];
+  }
+  return out;
+}
+
 function normalizeRoles(raw = {}) {
   const out = { ...DEFAULT_ROLES };
   for (const kind of Object.keys(DEFAULT_ROLES)) {
@@ -126,7 +148,10 @@ export function getOutsourcingSettings(settings) {
     leaseMinutes: Math.min(240, Math.max(15, Number(o.leaseMinutes) || 45)),
     // 종류별 담당 (역할 분담표)
     roles: normalizeRoles(o.roles),
-    // Gemini 앱이 이 시간 동안 안 가져가면 시간대 담당(Aside/Antigravity)으로 넘김. 0 = 넘기지 않음
+    // 종류별 담당 우선순위와, 다음 순위로 넘기기까지 기다리는 시간
+    priorities: normalizePriorities(o.priorities),
+    waitMinutes: [15, 30, 60, 120].includes(Number(o.waitMinutes)) ? Number(o.waitMinutes) : 30,
+    // (이전 버전 호환)
     geminiWaitMinutes: [0, 60, 120, 180, 360, 720].includes(Number(o.geminiWaitMinutes)) ? Number(o.geminiWaitMinutes) : 180
   };
 }
@@ -160,19 +185,52 @@ function geminiStale(cfg, req, date) {
   return Number.isFinite(since) && date.getTime() - since > cfg.geminiWaitMinutes * 60 * 1000;
 }
 
+/** 이 요청의 담당 순서 (못 하는 작업자·자리비움 중인 Aside·놓친 작업자 제외) */
+export function priorityChain(settings, req = {}) {
+  const cfg = getOutsourcingSettings(settings);
+  const kind = OUTSOURCE_KIND_LABELS[req.kind] ? req.kind : 'task';
+  let chain = [...cfg.priorities[kind]];
+  if (cfg.awayUntil && chain.length > 1) chain = chain.filter((w) => w !== 'aside');
+  const skip = Array.isArray(req.skipWorkers) ? req.skipWorkers : [];
+  const rest = chain.filter((w) => !skip.includes(w));
+  return rest.length ? rest : chain;
+}
+
+/** 대기열에 들어온 뒤 몇 번째 순위 차례인지 (정해진 시간마다 다음 순위로) */
+function priorityStage(cfg, req, date, len) {
+  if (req.status !== 'open') return 0;
+  const stamp = req.queuedAt || req.createdAt;
+  if (!stamp) return 0;
+  const since = Date.parse(stamp);
+  if (!Number.isFinite(since)) return 0;
+  const stage = Math.floor((date.getTime() - since) / (cfg.waitMinutes * 60 * 1000));
+  return Math.max(0, Math.min(len - 1, stage));
+}
+
 /**
  * 지금 외주를 받을 작업자
- * 요청별 지정 > 대표님 고정 설정(그 작업자가 할 수 있는 일만) > 역할 분담표 > 시간대 담당
+ * 요청별 지정 > 대표님 "한 곳에 몰기"(그 작업자가 할 수 있는 일만) > 종류별 우선순위 (30분마다 다음 순위)
  */
 export function resolveTarget(settings, req = {}, date = new Date()) {
   if (req.pinnedWorker && OUTSOURCE_WORKER_LABELS[req.pinnedWorker] && req.pinnedWorker !== 'any') return req.pinnedWorker;
   const cfg = getOutsourcingSettings(settings);
   const kind = OUTSOURCE_KIND_LABELS[req.kind] ? req.kind : 'task';
   if (cfg.routing !== 'auto' && WORKER_CAPS[cfg.routing]?.includes(kind)) return cfg.routing;
-  const role = cfg.roles[kind] || 'time';
-  if (role === 'time') return timeWorker(settings, date);
-  if (role === 'gemini' && geminiStale(cfg, req, date)) return timeWorker(settings, date);
-  return role;
+  const chain = priorityChain(settings, req);
+  return chain[priorityStage(cfg, req, date, chain.length)] || chain[0];
+}
+
+/** 다음 순위로 넘어가는 시각 (화면 표시용) */
+export function nextHandoffAt(settings, req = {}, date = new Date()) {
+  if (req.pinnedWorker || req.status !== 'open') return null;
+  const cfg = getOutsourcingSettings(settings);
+  const chain = priorityChain(settings, req);
+  const stamp = req.queuedAt || req.createdAt;
+  if (!stamp) return null;
+  const since = Date.parse(stamp);
+  const stage = priorityStage(cfg, req, date, chain.length);
+  if (stage >= chain.length - 1 || !Number.isFinite(since)) return null;
+  return new Date(since + (stage + 1) * cfg.waitMinutes * 60 * 1000).toISOString();
 }
 
 export function describeRouting(settings, date = new Date()) {
@@ -185,8 +243,9 @@ export function describeRouting(settings, date = new Date()) {
   if (cfg.routing !== 'auto') why = `대표님 고정: ${OUTSOURCE_WORKER_LABELS[cfg.routing]} (못 하는 일만 분담표대로) · ${why}`;
   const byKind = {};
   for (const kind of Object.keys(OUTSOURCE_KIND_LABELS)) {
+    const chain = priorityChain(settings, { kind });
     const w = resolveTarget(settings, { kind }, date);
-    byKind[kind] = { worker: w, label: OUTSOURCE_WORKER_LABELS[w], role: cfg.roles[kind] };
+    byKind[kind] = { worker: w, label: OUTSOURCE_WORKER_LABELS[w], chain, chainLabels: chain.map((x) => OUTSOURCE_WORKER_LABELS[x]), role: cfg.roles[kind] };
   }
   return {
     target,
@@ -196,6 +255,8 @@ export function describeRouting(settings, date = new Date()) {
     awayUntil: cfg.awayUntil,
     officeHours: cfg.officeHours,
     roles: cfg.roles,
+    priorities: cfg.priorities,
+    waitMinutes: cfg.waitMinutes,
     byKind,
     geminiWaitMinutes: cfg.geminiWaitMinutes
   };
@@ -205,7 +266,7 @@ export function describeRouting(settings, date = new Date()) {
 export function describeRolesLine(settings, date = new Date()) {
   const r = describeRouting(settings, date);
   return Object.entries(r.byKind)
-    .map(([k, v]) => `${OUTSOURCE_KIND_LABELS[k]} ${v.label}`)
+    .map(([k, v]) => `${OUTSOURCE_KIND_LABELS[k]} ${v.chainLabels.join('→')}`)
     .join(' · ');
 }
 
@@ -277,6 +338,8 @@ export function createOutsourcingRequest(db, spec = {}) {
     siteUrl: spec.siteUrl || '',
     worker: OUTSOURCE_WORKER_LABELS[spec.worker] ? spec.worker : 'any',
     effort: inferEffort({ kind, title: spec.title, goal: spec.goal, effort: spec.effort }),
+    queuedAt: new Date().toISOString(),
+    skipWorkers: [],
     status: 'open',
     claimedBy: '',
     claimedAt: null,
@@ -323,6 +386,7 @@ export function summarizeRequest(r) {
     kind: r.kind,
     kindLabel: OUTSOURCE_KIND_LABELS[r.kind],
     effort: inferEffort(r),
+    queuedAt: r.queuedAt || r.createdAt,
     title: r.title,
     status: r.status,
     preferredWorker: r.worker,
@@ -425,6 +489,8 @@ export function resumeRequest(id, note = '', worker = '') {
   req.leaseUntil = null;
   if (worker && OUTSOURCE_WORKER_LABELS[worker]) req.pinnedWorker = worker === 'any' ? '' : worker;
   req.updatedAt = nowIso;
+  req.queuedAt = nowIso;
+  req.skipWorkers = [];
   req.history.push({ at: nowIso, event: 'resumed', by: 'CEO' });
   saveDb(db);
   return req;
@@ -444,6 +510,7 @@ export function assignRequest(id, worker = 'auto') {
     req.leaseUntil = null;
   }
   req.updatedAt = new Date().toISOString();
+  if (req.status === 'open') req.queuedAt = req.updatedAt;
   req.history.push({ at: req.updatedAt, event: `assigned:${req.pinnedWorker || 'auto'}`, by: 'CEO' });
   saveDb(db);
   return req;
@@ -469,12 +536,17 @@ export function passRequest(id, { worker = '', to = 'auto', reason = '' } = {}) 
     req.leaseUntil = null;
     req.context = `${req.context || ''}\n\n[${OUTSOURCE_WORKER_LABELS[from] || from || '작업자'} 하위 모델이 상위 모델로 올림 ${nowIso2.slice(5, 16)}] ${String(reason || '').slice(0, 600)}`.slice(0, 8000);
     req.updatedAt = nowIso2;
+    req.queuedAt = nowIso2;
     req.history.push({ at: nowIso2, event: 'escalated:deep', by: from || 'worker' });
     appendLog(db, '외주 창구', `${req.id} — 깊은 판단이 필요해 상위 모델로 올렸습니다: ${String(reason || '').slice(0, 120)}`, 'info');
     saveDb(db);
     return req;
   }
-  let dest = ['aside', 'antigravity', 'gemini'].includes(to) ? to : timeWorker(db.settings);
+  let dest = ['aside', 'antigravity', 'gemini'].includes(to) ? to : '';
+  if (!dest) {
+    const chain = priorityChain(db.settings, { ...req, skipWorkers: [...(req.skipWorkers || []), from] });
+    dest = chain.find((w) => w !== from) || 'antigravity';
+  }
   if (dest === from) dest = from === 'antigravity' ? 'aside' : 'antigravity';
   if (!WORKER_CAPS[dest]?.includes(req.kind)) dest = 'antigravity';
   const nowIso = new Date().toISOString();
@@ -484,6 +556,7 @@ export function passRequest(id, { worker = '', to = 'auto', reason = '' } = {}) 
   req.leaseUntil = null;
   req.context = `${req.context || ''}\n\n[${OUTSOURCE_WORKER_LABELS[from] || from || '작업자'}가 넘김 ${nowIso.slice(5, 16)}] ${String(reason || '').slice(0, 600)}`.slice(0, 8000);
   req.updatedAt = nowIso;
+  req.queuedAt = nowIso;
   req.history.push({ at: nowIso, event: `passed:${dest}`, by: from || 'worker' });
   appendLog(db, '외주 창구', `${req.id} — ${OUTSOURCE_WORKER_LABELS[from] || from}가 ${OUTSOURCE_WORKER_LABELS[dest]}에 넘겼습니다: ${String(reason || '').slice(0, 120)}`, 'info');
   saveDb(db);
@@ -533,6 +606,9 @@ export function releaseExpiredLeases(db) {
     if (r.status === 'claimed' && Date.parse(r.leaseUntil || 0) < now) {
       r.status = 'open';
       r.history.push({ at: new Date().toISOString(), event: 'lease_expired', by: r.claimedBy });
+      // 잡고 끝내지 못한 작업자는 이번 요청에서 건너뛰고 다음 순위부터 다시
+      if (r.claimedBy && !r.pinnedWorker) r.skipWorkers = [...new Set([...(r.skipWorkers || []), r.claimedBy])];
+      r.queuedAt = new Date().toISOString();
       released.push(r.id);
       r.claimedBy = '';
       r.leaseUntil = null;
