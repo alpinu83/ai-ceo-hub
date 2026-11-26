@@ -1776,7 +1776,7 @@ function renderOutsourcingSettings(force = false) {
       <div class="out-guide-grid">
         <div>
           <h4>Gemini 앱 (자문·리서치·문서)</h4>
-          <p class="routine-desc">gemini.google.com → 설정 → Personal Intelligence → Connected Apps → Custom → "연결 주소 복사" 내용을 붙여넣고 이름을 "CEO Office 외주창구"로 저장. 그다음 Gemini 메인 화면에서 Task 모드로 바꾸고 원하는 모델(Neon 권장)을 고른 뒤 "예약 지시문 복사" 내용과 "매시간 반복 예약해줘"를 보내면 예약이 만들어집니다. 모델은 예약을 만들 때 정해지고 이 화면에서는 바꿀 수 없습니다. 바꾸려면 Aside에 "Gemini 모델 바꿔줘"라고 하세요. Gemini 차례는 예약 주기에 맞춰 최소 60분 기다린 뒤 다음 순위로 넘어갑니다.</p>
+          <p class="routine-desc">gemini.google.com → 설정 → Personal Intelligence → Connected Apps → Custom → "연결 주소 복사" 내용을 붙여넣고 이름을 "CEO Office 외주창구"로 저장. 그다음 Gemini의 Scheduled(예약) 화면에서 새 작업을 만들고 "예약 지시문 복사" 내용을 넣은 뒤 매시간으로 저장하세요. 이 화면에서 만든 예약은 Hydrogen으로 돌아 사용량 한도가 넉넉합니다(Neon은 금방 5시간 한도에 걸림). 모델은 예약을 만들 때 정해지며, 바꾸려면 Aside에 "Gemini 모델 바꿔줘"라고 하세요. Gemini 차례는 예약 주기에 맞춰 최소 60분 기다린 뒤 다음 순위로 넘어갑니다.</p>
           <div style="display:flex;gap:6px;flex-wrap:wrap;">
             <button type="button" class="btn btn-primary btn-sm" data-out-copy-gemini-url="1">연결 주소 복사</button>
             <button type="button" class="btn btn-ghost btn-sm" data-out-copy-gemini-prompt="1">예약 지시문 복사</button>
@@ -2949,7 +2949,7 @@ function bindEvents() {
       return;
     }
     if (target.dataset.outCopyGeminiPrompt) {
-      await copyText(geminiSchedulePrompt(), 'Gemini 예약 지시문을 복사했습니다. Gemini 메인 화면 Task 모드에서 모델을 고르고 붙여넣은 뒤 "매시간 반복 예약해줘"를 덧붙이세요.');
+      await copyText(geminiSchedulePrompt(), 'Gemini 예약 지시문을 복사했습니다. Gemini → Scheduled → 새 작업에 붙여넣고 매시간으로 저장하세요.');
       return;
     }
     if (target.dataset.outCopySetup) {
