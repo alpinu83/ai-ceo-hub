@@ -140,6 +140,8 @@ async function runTests() {
       })
     ).json();
     assert.equal(decRes.approval.status, 'approved');
+    const reDecide = await fetch(`${BASE}/api/approvals/${pendingApr.id}/decide`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision: 'approved' }) });
+    assert.equal(reDecide.status, 409, 'already decided approvals are not processed twice');
 
     // 7. Team Lead final synthesis
     const synthRes = await (
@@ -360,8 +362,6 @@ async function runTests() {
       !afterCycle.approvals.some((a) => a.missionId === projCreated.mission.id && a.kind === 'next_phase'),
       'projects never create phase proposal approvals'
     );
-    const reDecide = await fetch(`${BASE}/api/approvals/${pendingApr.id}/decide`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision: 'approved' }) });
-    assert.equal(reDecide.status, 409, 'already decided approvals are not processed twice');
 
     // 외부 AI 외주 창구: 요청 → 목록 → 잡기 → 요청서 → 결과 제출 → 반영
     const outCreated = await (
