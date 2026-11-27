@@ -618,7 +618,88 @@ function renderSidebarTree() {
   renderGroup('nav-sublist-missions', oneOffs, 'missions', '일반 업무 없음');
 }
 
+/** 대표님 할 일: 모든 프로젝트에서 대표님 때문에 멈춘 일 (서버 src/hub/ceo-inbox.js와 같은 규칙) */
+const INBOX_LABEL = { approval: ['badge-amber', '결재'], gate: ['badge-red', '관문 결정'], shorts_pick: ['badge-blue', '뉴스 고르기'], blocked: ['badge-red', '확인 필요'], outsource: ['badge-amber', '외주 조치'] };
+function buildCeoInboxClient() {
+  const items = [];
+  const mt = (id) => state.missions.find((m) => m.id === id)?.title || '';
+  const hrs = (iso) => (iso ? Math.max(0, (Date.now() - Date.parse(iso)) / 3600000) : 0);
+  for (const a of state.approvals || []) {
+    if (a.status !== 'pending') continue;
+    items.push({ kind: a.kind === 'stage_gate' ? 'gate' : 'approval', missionId: a.missionId, missionTitle: mt(a.missionId), title: a.title, detail: a.kind === 'stage_gate' ? '이 결정이 나야 다음 단계로 넘어갑니다' : '', since: a.createdAt, open: `data-open-approval="${esc(a.id)}"`, btn: '결재하기' });
+  }
+  const sm = state.missions.find((m) => m.mode === 'project' && /쇼츠|shorts/i.test(m.title) && m.status !== 'completed');
+  const sh = state.shorts || {};
+  const fresh = (sh.candidates || []).filter((c) => c.status === 'new');
+  const inFlight = sm && (state.tasks || []).some((t) => t.missionId === sm.id && t.shorts && ['queued', 'running', 'awaiting_bridge', 'awaiting_approval', 'outsourced'].includes(t.status));
+  if (sm && fresh.length && !inFlight) items.push({ kind: 'shorts_pick', missionId: sm.id, missionTitle: sm.title, title: `쇼츠로 만들 뉴스 1개 고르기 (후보 ${fresh.length}건)`, detail: fresh[0].title, since: sh.lastCollectedAt || fresh[0].createdAt, open: `data-open-mission-board="${esc(sm.id)}"`, btn: '고르러 가기' });
+  for (const t of state.tasks || []) {
+    if (t.status !== 'blocked') continue;
+    const m = state.missions.find((x) => x.id === t.missionId);
+    if (!m || m.status === 'completed') continue;
+    items.push({ kind: 'blocked', missionId: m.id, missionTitle: m.title, title: t.title, detail: t.blockedReason || '보류됨', since: t.updatedAt, open: `data-open-mission-board="${esc(m.id)}"`, btn: '확인하기' });
+  }
+  for (const o of state.outsourcing || []) {
+    if (o.status !== 'needs_ceo') continue;
+    items.push({ kind: 'outsource', missionId: o.missionId, missionTitle: mt(o.missionId), title: `${o.id} ${o.title}`, detail: o.ceoAction?.action || '대표님 확인 필요', since: o.ceoAction?.at || o.updatedAt, open: 'data-jump-view="outsourcing"', btn: '처리하기' });
+  }
+  for (const it of items) it.ageHours = hrs(it.since);
+  return items.sort((x, y) => y.ageHours - x.ageHours);
+}
+function renderCeoInbox() {
+  const wrap = document.getElementById('home-ceo-inbox');
+  const items = buildCeoInboxClient();
+  const base = String(document.title || 'CEO Office').replace(/^\(\d+\)\s*/, '');
+  document.title = items.length ? `(${items.length}) ${base}` : base;
+  const nav = document.getElementById('nav-command');
+  if (nav) {
+    let b = nav.querySelector('.ceo-inbox-count');
+    if (!b) { b = document.createElement('span'); b.className = 'badge badge-red ceo-inbox-count'; b.style.marginLeft = 'auto'; nav.appendChild(b); }
+    b.textContent = items.length ? String(items.length) : '';
+    b.style.display = items.length ? '' : 'none';
+  }
+  if (!wrap) return;
+  if (!items.length) {
+    wrap.innerHTML = '<div class="card" style="margin-bottom:14px;"><div class="card-head"><h2 class="card-title">대표님이 하실 일</h2></div><div class="empty-state">지금 대표님 때문에 멈춘 일은 없습니다 ✓</div></div>';
+    return;
+  }
+  const age = (h) => (h >= 24 ? `${Math.floor(h / 24)}일째 대기` : h >= 1 ? `${Math.floor(h)}시간째 대기` : '방금');
+  wrap.innerHTML = `<div class="card" style="margin-bottom:14px;border:2px solid var(--accent-amber, #d97706);">
+      <div class="card-head"><h2 class="card-title">대표님이 하실 일 ${items.length}건</h2><span class="routine-sub">이게 끝나야 팀이 다음으로 넘어갑니다 · 텔레그램 /todo · 매일 08:30·19:30 알림</span></div>
+      <div class="clean-stack">${items
+        .slice(0, 10)
+        .map((it) => {
+          const [cls, label] = INBOX_LABEL[it.kind] || ['badge-neutral', it.kind];
+          return `<div class="home-item pending-accent">
+            <div class="home-item-top"><div style="display:flex;gap:5px;flex-wrap:wrap;min-width:0;"><span class="badge ${cls}">${label}</span>${it.missionTitle ? `<span class="badge badge-neutral">${esc(it.missionTitle)}</span>` : ''}</div><span class="mono" style="color:${it.ageHours >= 24 ? 'var(--accent-red, #dc2626)' : 'var(--ink-muted)'};">${age(it.ageHours)}</span></div>
+            <div class="home-item-title">${esc(it.title)}</div>
+            ${it.detail ? `<div class="routine-sub">${esc(String(it.detail).slice(0, 140))}</div>` : ''}
+            <div class="home-item-actions"><button type="button" class="btn btn-primary btn-sm" ${it.open}>${it.btn}</button></div>
+          </div>`;
+        })
+        .join('')}${items.length > 10 ? `<div class="routine-sub">… 외 ${items.length - 10}건</div>` : ''}</div>
+    </div>`;
+}
+
+/** 바로 지시: 대상 목록(전체 + 진행 중 프로젝트·업무) */
+function renderQuickOrderTargets() {
+  const sel = document.getElementById('quick-order-target');
+  if (!sel) return;
+  const prev = sel.value;
+  const active = state.missions.filter((m) => m.status !== 'completed' && !m.isRoutineHub);
+  const proj = active.filter((m) => m.mode === 'project');
+  const one = active.filter((m) => m.mode !== 'project');
+  sel.innerHTML = [
+    '<option value="">전체 (회사 공통)</option>',
+    proj.length ? `<optgroup label="프로젝트">${proj.map((m) => `<option value="${esc(m.id)}">${esc(m.title)}</option>`).join('')}</optgroup>` : '',
+    one.length ? `<optgroup label="일반 업무">${one.map((m) => `<option value="${esc(m.id)}">${esc(m.title)}</option>`).join('')}</optgroup>` : ''
+  ].join('');
+  if ([...sel.options].some((o) => o.value === prev)) sel.value = prev;
+}
+
 function renderHomeView() {
+  renderCeoInbox();
+  renderQuickOrderTargets();
   const aprWrap = document.getElementById('home-approvals-list');
   const msnWrap = document.getElementById('home-missions-list');
   const chatTeaser = document.getElementById('home-chat-teaser');
@@ -1732,7 +1813,7 @@ function renderOutsourcingView() {
 
   root.innerHTML = `
     <div class="out-topbar">
-      <div class="routine-sub">외주 분담: <strong>${esc(rt.why || '-')}</strong></div>
+      <div class="routine-sub">지금 외주 대상: <strong>${esc(rt.label || '-')}</strong> · ${esc(rt.why || '')}</div>
       <div class="out-away">
         <button type="button" class="btn btn-ghost btn-sm" data-out-new-toggle="1">+ 외주 요청</button>
         <button type="button" class="btn btn-ghost btn-sm" data-out-open-settings="1">외부 협업 설정</button>
@@ -1765,7 +1846,7 @@ function renderOutsourcingView() {
     }</div>`;
 }
 
-/** 설정 → 외부 협업: 역할 분담(우선순위)·PC 자리비움·자동 외주·외부 자문·Antigravity/Aside 연결 */
+/** 설정 → 외부 협업: 외주 대상(라우팅)·업무 시간·이동 중 모드·자동 외주·외부 자문·Antigravity/Aside 연결 */
 function renderOutsourcingSettings(force = false) {
   const root = document.getElementById('outsourcing-settings-root');
   if (!root || !state) return;
@@ -2876,10 +2957,12 @@ function bindEvents() {
   document.getElementById('kpi-missions-cell')?.addEventListener('click', () => switchView('missions'));
   document.getElementById('kpi-budget-cell')?.addEventListener('click', () => switchView('roster'));
 
+  // 상단 "새 지시": 바로 지시 칸으로 이동 (새 업무 만들기는 홈의 버튼으로 펼침)
   document.getElementById('btn-focus-directive').addEventListener('click', () => {
     switchView('command');
-    document.getElementById('input-directive').focus();
-    document.getElementById('directive-sheet').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    const q = document.getElementById('quick-order-text');
+    (q || document.getElementById('input-directive'))?.focus();
+    document.getElementById(q ? 'quick-order-sheet' : 'directive-sheet')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   });
 
   // Mission view mode (Kanban / List / SVG Flow)
@@ -2911,6 +2994,48 @@ function bindEvents() {
 
   // Submit directive (Team Lead decomposes and employees start working automatically!)
   let isSubmittingDirective = false;
+  // 새 업무·프로젝트 만들기: 평소엔 접어 둠
+  document.getElementById('btn-toggle-new-mission')?.addEventListener('click', () => {
+    const sheet = document.getElementById('directive-sheet');
+    const btn = document.getElementById('btn-toggle-new-mission');
+    if (!sheet) return;
+    sheet.hidden = !sheet.hidden;
+    if (btn) btn.textContent = sheet.hidden ? '+ 새 업무·프로젝트 만들기' : '− 새 업무 만들기 닫기';
+    if (!sheet.hidden) document.getElementById('input-directive')?.focus();
+  });
+
+  // 바로 지시: 회의실과 같은 경로(팀장 응답 + 업무 등록 + 상시 지침 저장)로 보내고 결과를 그 자리에서 보여 줌
+  document.getElementById('quick-order-form')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const input = document.getElementById('quick-order-text');
+    const target = document.getElementById('quick-order-target');
+    const out = document.getElementById('quick-order-result');
+    const btn = document.getElementById('btn-quick-order');
+    const text = input.value.trim();
+    if (!text) return;
+    btn.disabled = true;
+    const targetName = target.value ? target.options[target.selectedIndex].text : '전체';
+    out.innerHTML = `<div class="routine-sub">"${esc(targetName)}"에 전달하는 중…</div>`;
+    try {
+      const res = await api('/api/chat/send', { method: 'POST', body: JSON.stringify({ text, missionId: target.value }) });
+      state = res.state;
+      input.value = '';
+      const replies = (res.replies || []).slice(0, 2);
+      out.innerHTML = `<div class="mission-directive-quote" style="margin:0;">
+          <div class="routine-sub">→ ${esc(targetName)}${res.intake?.note ? ` · <strong>업무로 반영:</strong> ${esc(res.intake.note)}` : ''}</div>
+          ${replies.map((m) => `<div style="margin-top:6px;"><strong>${esc(m.senderName)}</strong>: ${esc(String(m.text || '').slice(0, 400))}</div>`).join('')}
+          <div style="margin-top:6px;"><button type="button" class="btn-inline-edit" data-jump-view="office">회의실에서 이어서 보기</button></div>
+        </div>`;
+      renderAll();
+      toast(res.intake?.note ? '지시가 업무로 등록됐습니다.' : '팀장에게 전달했습니다.');
+    } catch (err) {
+      out.innerHTML = '';
+      toast(err.message, true);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
   document.getElementById('directive-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     if (isSubmittingDirective) return;
@@ -4272,6 +4397,7 @@ function bindEvents() {
 
   // Korean Voice Input (Web Speech API — free, works on Samsung Browser / Chrome / Safari)
   setupVoiceInput('btn-voice-directive', 'input-directive');
+  setupVoiceInput('btn-voice-quick', 'quick-order-text');
   setupVoiceInput('btn-voice-chat', 'lounge-chat-input');
 }
 
