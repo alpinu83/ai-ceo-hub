@@ -15,7 +15,7 @@ import { loadDb, saveDb, appendLog } from './store.js';
 import { buildCompanyContext } from './lead-engine.js';
 
 export const OUTSOURCE_WORKER_LABELS = {
-  antigravity: 'Antigravity',
+  antigravity: 'AGY',
   aside: 'Aside',
   gemini: 'Gemini 앱',
   any: '먼저 잡는 쪽'
@@ -23,7 +23,7 @@ export const OUTSOURCE_WORKER_LABELS = {
 export const OUTSOURCE_KIND_LABELS = {
   task: '실무 작업',
   code: '코드 수정',
-  consult: '외부 자문',
+  consult: '결재 전 검토',
   browser: '브라우저·계정 작업',
   research: '심층 리서치'
 };
