@@ -44,7 +44,7 @@ export function ingestCandidates(db, items = [], batchLabel = '') {
     const title = clip(raw?.title, 160);
     if (!title) continue;
     const key = normTitle(title);
-    const existing = sh.candidates.find((c) => normTitle(c.title) === key);
+    const existing = [...added, ...sh.candidates].find((c) => normTitle(c.title) === key);
     if (existing) {
       existing.views = Math.max(Number(existing.views || 0), Number(raw.views || 0)) || existing.views;
       existing.seenAt = now;
