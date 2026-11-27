@@ -258,6 +258,17 @@ export function registerSettingsRoutes(app) {
     return c.json({ ok: true, fact, state: sanitizeStateForClient(db) });
   });
 
+  // 회사 기억만 비우기 (고정 지침은 남김)
+  app.post('/api/memory/clear', async (c) => {
+    const db = loadDb();
+    const before = (db.memory?.facts || []).length;
+    if (db.memory?.facts) db.memory.facts = db.memory.facts.filter((f) => f.pinned);
+    if (db.memory) db.memory.updatedAt = new Date().toISOString();
+    saveDb(db);
+    await flushCloudBackup(db);
+    return c.json({ ok: true, removed: before - (db.memory?.facts || []).length, state: sanitizeStateForClient(db) });
+  });
+
   app.delete('/api/memory/:id', async (c) => {
     const db = loadDb();
     const removed = forgetFact(db, c.req.param('id'));
