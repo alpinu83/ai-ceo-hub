@@ -2,7 +2,7 @@
 import { OUTSOURCE_KIND_LABELS, OUTSOURCE_WORKER_LABELS, createOutsourcingRequest, extractOutsourceFlag, getOutsourcingSettings, resolveTarget } from '../outsourcing.js';
 import { appendLog, appendMessage } from '../store.js';
 import { buildDispatchPrompt, createApprovalForTask, leadReviewDeliverable } from '../orchestrator.js';
-import { classifyBlocker, detectNonResult, findOutputViolations, getLeadSettings, pickAlternateMember, rebalanceAssignments, triageGuidance, addLeadNote, addReviewLesson } from '../lead-engine.js';
+import { pickBotOrDevMember, classifyBlocker, detectNonResult, findOutputViolations, getLeadSettings, pickAlternateMember, rebalanceAssignments, triageGuidance, addLeadNote, addReviewLesson } from '../lead-engine.js';
 import { saysNothingToDo } from '../grounding.js';
 import { sendTelegramReport } from '../telegram.js';
 import { getMissionRepoCfg, isCodeTask, maybeScheduleCodeBundle } from './code-pipeline.js';
@@ -95,6 +95,11 @@ export function escalateTask(db, task, agent, mission, reason) {
     const rb = rebalanceAssignments(db, [{ ...task, assigneeId: agent?.id }]);
     let next = rb.tasks[0].assigneeId !== agent?.id ? db.agents.find((a) => a.id === rb.tasks[0].assigneeId) : null;
     if (!next) next = pickAlternateMember(db, task, task.triage.tried);
+    // API 팀원이 없으면 성격에 맞는 접속 중인 봇 팀원(Cue·Muse·부이)에게 먼저. 개발팀은 아래 작업 큐 순서로
+    if (!next) {
+      const bot = pickBotOrDevMember(db, task, task.triage.tried);
+      if (bot && bot.team !== 'dev') next = bot;
+    }
     if (next) {
       task.triage.escalated = true;
       task.assigneeId = next.id;
