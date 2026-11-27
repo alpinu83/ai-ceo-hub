@@ -1,4 +1,5 @@
 // hub/routines.js: server.js에서 분리 (공유 로직)
+import { leadDeskTick } from './lead-desk-bridge.js';
 import { maybeSendInboxDigest } from './ceo-inbox.js';
 import { appendLog, flushCloudBackup, getCloudPersistenceStatus, loadDb, saveDb, uid } from '../store.js';
 import { buildDailyBriefing, buildDefaultRoutines, dueSlotKeys, kstParts, normalizeDays, normalizeTimes, runOpsCheck } from '../operations.js';
@@ -349,6 +350,7 @@ export async function opsTick() {
       lastWatchdogAt = Date.now();
       await runWatchdog();
     }
+    await leadDeskTick().catch((err) => console.warn('lead desk tick failed:', err.message));
     await flushTelegramQueue();
     await maybeSendInboxDigest().catch((err) => console.warn('inbox digest failed:', err.message));
     const leadCfg = getLeadSettings(loadDb().settings);

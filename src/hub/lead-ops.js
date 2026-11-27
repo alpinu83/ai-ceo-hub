@@ -6,6 +6,8 @@ import { buildDispatchPrompt, draftMissionPlan, planLeadFollowUp, planMilestoneW
 import { getAiProviderHealth } from '../ai-guard.js';
 import { describeGoogleDataStatus } from '../google-data.js';
 import { getOutsourcingSettings } from '../outsourcing.js';
+import { isLeadPending } from '../lead-desk.js';
+import { outsourceTask } from './task-results.js';
 import { sendTelegramReport } from '../telegram.js';
 import { MAJOR_DECISION_RE } from './ceo-chat.js';
 import { autoStartLiveMissionTasks, leadSay } from './missions.js';
@@ -229,6 +231,14 @@ export function createLeadTasks(db, mission, specs = [], source = 'lead_followup
     task.dispatchPrompt = buildDispatchPrompt(ag, task, mission);
     db.tasks.unshift(task);
     existing.add(task.title);
+    // IT팀(무료 API)이 휴직이면 코드 수정은 AGY 수정 → Aside 검수로 바로 외주
+    if (spec.isCodeChange && repoLinked && !agentMap.agent_it_dev?.active) {
+      const req = outsourceTask(db, task, { kind: 'code', worker: 'antigravity', reason: 'IT팀 휴직: 코드 수정은 AGY가 하고 Aside가 검수·보완' });
+      if (req) {
+        req.pinnedWorker = 'antigravity';
+        req.codeWorkflow = 'agy_then_aside';
+      }
+    }
     created.push({ task, agent: ag });
   }
   if (created.length) mission.status = 'in_progress';
@@ -460,6 +470,7 @@ export async function opsCycle(missionId, { depth = 0 } = {}) {
       try {
         drafted = await draftMissionPlan({ mission: m, digest: await digestWithTools(db, m), agents: db.agents, settings: db.settings });
       } catch (err) {
+        if (isLeadPending(err)) return { pending: true }; // 팀장 업무함에서 판단 중 (답이 오면 다시 실행)
         const fresh = loadDb();
         appendLog(fresh, '총괄 팀장', `"${m.title}" 작전 계획 수립 보류(AI 엔진): ${err.message}`.slice(0, 300), 'warning');
         saveDb(fresh);
@@ -490,7 +501,7 @@ export async function opsCycle(missionId, { depth = 0 } = {}) {
       return reached ? null : opsCycle(missionId, { depth: depth + 1 });
     }
     if (ms.status === 'gate' || ms.status === 'blocked') return null; // 대표님 결정 대기
-    const openTasks = db.tasks.filter((t) => t.missionId === missionId && t.milestoneId === ms.id && ['queued', 'running', 'awaiting_bridge', 'awaiting_approval', 'outsourced'].includes(t.status));
+    const openTasks = db.tasks.filter((t) => t.missionId === missionId && t.milestoneId === ms.id && ['queued', 'running', 'awaiting_bridge', 'awaiting_approval', 'outsourced', 'review_pending'].includes(t.status));
     if (openTasks.length) return null; // 진행 중
 
     // 3) 판정 + 다음 작업
@@ -507,6 +518,7 @@ export async function opsCycle(missionId, { depth = 0 } = {}) {
         deliverablesText: deliverablesTextFor(m)
       });
     } catch (err) {
+      if (isLeadPending(err)) return { pending: true };
       const fresh = loadDb();
       appendLog(fresh, '총괄 팀장', `"${m.title}" 마일스톤 계획 보류(AI 엔진): ${err.message}`.slice(0, 300), 'warning');
       saveDb(fresh);
