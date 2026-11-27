@@ -15,6 +15,7 @@ export const ADMIN_OPEN_PATHS = [
   /^\/api\/mcp(\/info)?$/,
   /^\/api\/auth\/telegram-(request|verify)$/,
   /^\/api\/outsourcing/,
+  /^\/api\/lead-jobs/,
   /^\/api\/shorts\/hook\//
 ];
 

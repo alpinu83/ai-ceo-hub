@@ -989,6 +989,8 @@ export function sanitizeStateForClient(db) {
       enabled: Boolean(clone.settings.webPush.publicKey)
     };
   }
+  // 팀장 업무함은 요약만 (판단 자료 원문은 화면에 보내지 않음)
+  clone.leadJobs = (Array.isArray(clone.leadJobs) ? clone.leadJobs : []).slice(0, 40).map((j) => ({ id: j.id, purpose: j.purpose, worker: j.worker, status: j.status, claimedBy: j.claimedBy || '', createdAt: j.createdAt, doneAt: j.doneAt || null }));
   clone.pushSubscribedCount = Array.isArray(clone.pushSubscriptions) ? clone.pushSubscriptions.length : 0;
   delete clone.pushSubscriptions;
   clone.cloudBackup = getCloudPersistenceStatus();

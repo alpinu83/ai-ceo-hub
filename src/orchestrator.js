@@ -6,6 +6,7 @@ import { createOpenAI } from '@ai-sdk/openai';
 import { z } from 'zod';
 import { uid } from './store.js';
 import { buildMissionLiveContext } from './live-context.js';
+import { askLeadDesk, isLeadPending } from './lead-desk.js';
 import { isProviderCooling } from './ai-guard.js';
 import { selectSkills, renderSkills, skillBlock, shouldReview, buildReviewRubric, getSkillSettings } from './skills.js';
 import { getRepoSnapshot, buildCodeEvidence, factCheckOutput } from './grounding.js';
@@ -830,14 +831,16 @@ export function resolveLiveBackendModel(settings) {
  * Gemini 무료 한도(하루 20회)가 바닥나도 Groq → OpenRouter → Gemini Flash → 기본 엔진 순으로 이어서 판단합니다.
  * (예전에는 팀장 모델 하나만 쓰다가 실패하면 '고도화 · 실행 확장' 같은 일반 템플릿으로 채워 같은 결재가 반복됨)
  */
-function buildLeadModelChain(leadAgent, settings) {
+function buildLeadModelChain(leadAgent, settings, agents = null) {
   const p = settings?.providers || {};
   const chain = [];
+  // 휴직 중인 무료 API(Groq·OpenRouter 등)는 팀장 대체 엔진으로도 쓰지 않음 (활성 팀원이 그 제공자를 쓸 때만)
+  const providerOn = (prov) => !Array.isArray(agents) || agents.some((a) => a.active && a.provider === prov);
   const push = (m) => {
     if (m && m.model && !chain.some((c) => c.label === m.label)) chain.push(m);
   };
   if (leadAgent) push(resolveLanguageModel(leadAgent, settings));
-  if (p.groq?.apiKey) {
+  if (p.groq?.apiKey && providerOn('groq')) {
     const client = createOpenAI({
       baseURL: p.groq.baseUrl || 'https://api.groq.com/openai/v1',
       apiKey: p.groq.apiKey.trim(),
@@ -846,7 +849,7 @@ function buildLeadModelChain(leadAgent, settings) {
     push({ model: client('openai/gpt-oss-120b'), label: 'groq:openai/gpt-oss-120b' });
     push({ model: client('openai/gpt-oss-20b'), label: 'groq:openai/gpt-oss-20b' });
   }
-  if (p.openrouter?.apiKey) {
+  if (p.openrouter?.apiKey && providerOn('openrouter')) {
     const client = createOpenAI({
       baseURL: p.openrouter.baseUrl || 'https://openrouter.ai/api/v1',
       apiKey: p.openrouter.apiKey.trim(),
@@ -863,6 +866,16 @@ function buildLeadModelChain(leadAgent, settings) {
 }
 
 async function generateObjectChain(models, opts) {
+  // 팀장 업무함: 깨어 있는 팀장(AGY 주간 · Gemini 앱 당직)에게 먼저. 답이 없으면 LeadPendingError, 쓰지 않으면 아래 API 체인
+  if (opts.leadDesk) {
+    const { leadDesk, ...rest } = opts;
+    const viaDesk = askLeadDesk({ ...leadDesk, system: rest.system, prompt: rest.prompt, schema: rest.schema });
+    if (viaDesk) return viaDesk;
+    opts = rest;
+  } else if ('leadDesk' in opts) {
+    const { leadDesk, ...rest } = opts;
+    opts = rest;
+  }
   const errors = [];
   for (const m of models) {
     for (const mode of ['auto', 'json']) {
@@ -903,7 +916,7 @@ export async function decomposeDirective({
 }) {
   const leadAgent = selectLeadAgent(agents, costPolicy, settings);
   const activeAgents = agents.filter((a) => a.active);
-  const chain = buildLeadModelChain(leadAgent, settings);
+  const chain = buildLeadModelChain(leadAgent, settings, agents);
 
   if (chain.length) {
     const rosterText = activeAgents
@@ -1309,7 +1322,7 @@ export function isFalseMissingClaim(text = '', fileSet = null) {
 
 export async function leadReviewDeliverable({ task, output, mission, agents, settings }) {
   const leadAgent = agents.find((a) => a.id === (mission?.leadAgentId || 'agent_gemini_neon')) || agents.find((a) => a.tier === 'lead') || agents[0];
-  const chain = buildLeadModelChain(leadAgent, settings);
+  const chain = buildLeadModelChain(leadAgent, settings, agents);
   const acceptance = deriveAcceptance(task);
   if (!chain.length) return { verdict: 'accept', skipped: true, reason: 'AI 엔진 없음', acceptance };
   const system = `당신은 총괄 팀장(${leadAgent?.name || '팀장'})입니다. 팀원이 낸 결과물을 "완료 기준"과 "업무 브리핑"으로 엄격하게 검수하세요.
@@ -1354,7 +1367,12 @@ ${repoFacts ? `\n${repoFacts}\n` : ''}
 [팀원 결과물 (앞부분)]
 ${String(output || '').slice(0, 4500)}`;
   try {
-    const { object, label } = await generateObjectChain(chain, { schema: LeadReviewSchema, system, prompt });
+    const { object, label } = await generateObjectChain(chain, {
+      schema: LeadReviewSchema,
+      system,
+      prompt,
+      leadDesk: { key: `review:${task.id}:${Number(task.reviewRounds || 0)}:${textHash(output)}`, purpose: 'review', refs: { taskId: task.id, missionId: mission?.id || '' } }
+    });
     const rawMissing = (object.missing || []).map((x) => String(x).slice(0, 200)).slice(0, 6);
     // 저장소에 실제로 있는 파일을 "없다"고 한 지적은 버림 (검수 AI의 추측)
     const missing = rawMissing.filter((x) => !isFalseMissingClaim(x, snapshot?.fileSet));
@@ -1374,8 +1392,17 @@ ${String(output || '').slice(0, 4500)}`;
       existingFiles: snapshot ? pathsIn(`${output}\n${rawMissing.join('\n')}\n${object.feedback || ''}`).filter((p) => snapshot.fileSet.has(p)) : []
     };
   } catch (err) {
+    if (isLeadPending(err)) return { verdict: 'pending', pendingJobId: err.jobId, reason: err.message, acceptance };
     return { verdict: 'accept', skipped: true, reason: String(err?.message || err).slice(0, 200), acceptance };
   }
+}
+
+/** 같은 결과물인지 구분하는 짧은 해시 (팀장 업무함 키) */
+function textHash(text = '') {
+  let h = 5381;
+  const s = String(text);
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
+  return h.toString(36);
 }
 
 // ======================================================================
@@ -1399,7 +1426,7 @@ const MissionPlanSchema = z.object({
 /** 목표·업무 범위·지금까지 결과를 보고 작전 계획(마일스톤 2~6개)을 세움 */
 export async function draftMissionPlan({ mission, digest, agents, settings }) {
   const leadAgent = agents.find((a) => a.id === (mission?.leadAgentId || 'agent_gemini_neon')) || agents[0];
-  const chain = buildLeadModelChain(leadAgent, settings);
+  const chain = buildLeadModelChain(leadAgent, settings, agents);
   if (!chain.length) throw new Error('사용 가능한 AI 엔진 없음');
   const system = `당신은 총괄 팀장(${leadAgent.name})입니다. 이 프로젝트의 목표까지 가는 "작전 계획"을 세우세요.
 - 마일스톤은 결과 중심으로 2~6개, 순서대로. 각 마일스톤은 팀이 1~2주 안에 끝낼 수 있는 크기.
@@ -1410,7 +1437,8 @@ ${companyContextFor(mission?.id, { compact: true })}`;
   const { object, label } = await generateObjectChain(chain, {
     schema: MissionPlanSchema,
     system,
-    prompt: `${digest}\n\n${buildComplianceChecklist(mission)}`
+    prompt: `${digest}\n\n${buildComplianceChecklist(mission)}`,
+    leadDesk: mission?.id ? { key: `plan:${mission.id}:${mission.plan?.createdAt || 'new'}:${mission.plan?.needsReplan ? 'replan' : 'first'}`, purpose: 'plan', refs: { missionId: mission.id } } : null
   });
   return {
     stage: String(object.stage || '').slice(0, 80),
@@ -1447,7 +1475,7 @@ const MilestoneWorkSchema = z.object({
 /** 현재 마일스톤: 완료 판정 + 남은 차이를 메울 작업 계획 (팀원 역량에 맞게 배정) */
 export async function planMilestoneWork({ mission, milestone, digest, agents, settings, teamLoad = '', deliverablesText = '' }) {
   const leadAgent = agents.find((a) => a.id === (mission?.leadAgentId || 'agent_gemini_neon')) || agents[0];
-  const chain = buildLeadModelChain(leadAgent, settings);
+  const chain = buildLeadModelChain(leadAgent, settings, agents);
   if (!chain.length) throw new Error('사용 가능한 AI 엔진 없음');
   const system = `당신은 지휘자(Orchestrator)인 총괄 팀장(${leadAgent.name})입니다. 지금 마일스톤을 끝내기 위해 팀을 움직이세요.
 - 먼저 지금까지의 결과물이 마일스톤 완료 기준을 충족하는지 판정하세요(milestoneDone).
@@ -1466,7 +1494,12 @@ ${deliverablesText || '(아직 없음)'}
 ${digest}
 
 ${buildComplianceChecklist(mission)}`;
-  const { object, label } = await generateObjectChain(chain, { schema: MilestoneWorkSchema, system, prompt });
+  const { object, label } = await generateObjectChain(chain, {
+    schema: MilestoneWorkSchema,
+    system,
+    prompt,
+    leadDesk: { key: `ms:${mission.id}:${milestone.id}:${Number(milestone.rounds || 0)}:${textHash(deliverablesText)}`, purpose: 'milestone', refs: { missionId: mission.id } }
+  });
   const validIds = new Set(agents.filter((a) => a.active).map((a) => a.id));
   return {
     milestoneDone: Boolean(object.milestoneDone),

@@ -141,6 +141,13 @@ export async function processTaskResult(db, task, agent, mission, res, { skipRev
   // 2) 팀장 검수 (완료 기준)
   if (!skipReview && mission && leadReviewOn(db.settings)) {
     const rv = await leadReviewDeliverable({ task, output: task.output, mission, agents: db.agents, settings: db.settings }).catch(() => ({ verdict: 'accept', skipped: true }));
+    if (rv.verdict === 'pending') {
+      // 팀장 업무함에 검수를 올림 → 팀장이 답하면 lead-desk-bridge가 이어서 처리
+      task.status = 'review_pending';
+      task.review = { verdict: 'pending', jobId: rv.pendingJobId || '', at: new Date().toISOString() };
+      task.updatedAt = nowIso;
+      return { handled: true, pending: true };
+    }
     const rounds = Number(task.reviewRounds || 0);
     task.review = { verdict: rv.verdict, score: rv.score ?? null, missing: rv.missing || [], feedback: rv.feedback || '', reviewer: rv.reviewer || '', skipped: Boolean(rv.skipped), round: rounds + 1, at: new Date().toISOString() };
     task.acceptance = rv.acceptance || task.acceptance;
