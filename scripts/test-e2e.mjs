@@ -19,7 +19,7 @@ async function waitForServer(retries = 30) {
 
 async function runTests() {
   const child = spawn(process.execPath, ['server.js'], {
-    env: { ...process.env, PORT: String(TEST_PORT), TELEGRAM_POLLING: 'false' },
+    env: { ...process.env, PORT: String(TEST_PORT), TELEGRAM_POLLING: 'false', SHORTS_HOOK_TOKEN: 'ci-shorts-token' },
     stdio: ['ignore', 'pipe', 'pipe']
   });
 
@@ -443,6 +443,35 @@ async function runTests() {
       !afterCycle.approvals.some((a) => a.missionId === projCreated.mission.id && a.kind === 'next_phase'),
       'projects never create phase proposal approvals'
     );
+
+    // 유튜브 쇼츠: 후보 수집(제작기) → 대표님 선택 → 대본 결재 → 제작 대기열 → 제작기 결과 보고
+    const SH = { 'Content-Type': 'application/json', 'x-shorts-token': 'ci-shorts-token' };
+    const denied = await fetch(`${BASE}/api/shorts/hook/candidates`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-shorts-token': 'wrong' }, body: '{}' });
+    assert.equal(denied.status, 401, 'shorts hook rejects a wrong token');
+    const shortsMission = await (
+      await fetch(`${BASE}/api/missions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: '유튜브 쇼츠 테스트', domain: 'business', mode: 'project', directive: '정치 뉴스 쇼츠 채널 운영' }) })
+    ).json();
+    const ing = await (
+      await fetch(`${BASE}/api/shorts/hook/candidates`, { method: 'POST', headers: SH, body: JSON.stringify({ batch: 'ci', notify: false, items: [{ title: '국회 예산안 처리 논란', url: 'https://example.com/a', source: '예시일보', views: 120000, kind: 'youtube' }, { title: '국회 예산안 처리 논란', url: 'https://example.com/b' }] }) })
+    ).json();
+    assert.equal(ing.added, 1, 'duplicate titles are merged');
+    const shList = await (await fetch(`${BASE}/api/shorts`)).json();
+    assert.equal(shList.missionId, shortsMission.mission.id, 'shorts project is detected by title');
+    const pick = await (await fetch(`${BASE}/api/shorts/candidates/${shList.candidates[0].id}/pick`, { method: 'POST' })).json();
+    assert.ok(pick.taskId, 'picking a candidate creates a script task');
+    const scriptOut = '대본\n```json\n{"title":"예산안 30초 정리","scenes":[{"text":"예산안이 또 늦어졌습니다.","keywords":"parliament"},{"text":"보도에 따르면 쟁점은 세 가지입니다.","keywords":"documents"},{"text":"제 생각은 이렇습니다.","keywords":"city night"}],"sources":["https://example.com/a"],"hashtags":["#정치"]}\n```';
+    await fetch(`${BASE}/api/tasks/${pick.taskId}/report`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ output: scriptOut }) });
+    const stShorts = await (await fetch(`${BASE}/api/state`)).json();
+    const scriptApr = stShorts.approvals.find((a) => a.taskId === pick.taskId && a.status === 'pending');
+    assert.ok(scriptApr, 'script goes to the approval box');
+    await fetch(`${BASE}/api/approvals/${scriptApr.id}/decide`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision: 'approved' }) });
+    const claim = await (await fetch(`${BASE}/api/shorts/hook/claim`, { method: 'POST', headers: SH, body: '{}' })).json();
+    assert.equal(claim.jobs.length, 1, 'approved script becomes a render job');
+    assert.equal(claim.jobs[0].script.scenes.length, 3, 'scenes parsed from the JSON block');
+    const claimAgain = await (await fetch(`${BASE}/api/shorts/hook/claim`, { method: 'POST', headers: SH, body: '{}' })).json();
+    assert.equal(claimAgain.jobs.length, 0, 'a claimed job is not handed out twice');
+    const done = await (await fetch(`${BASE}/api/shorts/hook/jobs/${claim.jobs[0].id}/result`, { method: 'POST', headers: SH, body: JSON.stringify({ ok: true, videoId: 'abc123', privacy: 'private' }) })).json();
+    assert.equal(done.status, 'uploaded', 'render result is recorded');
 
     // 외부 AI 외주 창구: 요청 → 목록 → 잡기 → 요청서 → 결과 제출 → 반영
     const outCreated = await (
