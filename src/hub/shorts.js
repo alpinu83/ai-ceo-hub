@@ -211,6 +211,26 @@ export function pickCandidate(db, candId) {
   cand.status = 'picked';
   cand.taskId = task.id;
   cand.pickedAt = now;
+  // 대표님이 이미 뉴스 후보를 선택했으므로 "뉴스 후보 선정·선택" 마일스톤이 진행 중/관문이면 자동으로 완료 처리하고 다음(대본) 단계로 넘김
+  const milestones = Array.isArray(mission.plan?.milestones) ? mission.plan.milestones : [];
+  const pickMs = milestones.find((x) => ['doing', 'gate'].includes(x.status) && /(후보|뉴스.*선정|대표님.*선택)/.test(`${x.title || ''} ${x.doneWhen || ''}`));
+  if (pickMs) {
+    pickMs.status = 'done';
+    pickMs.doneAt = now;
+    pickMs.decisionNote = `쇼츠 이슈 선택 완료: ${clip(cand.title, 60)}`;
+    for (const a of db.approvals || []) {
+      if (a.kind === 'stage_gate' && a.missionId === mission.id && a.milestoneId === pickMs.id && a.status === 'pending') {
+        a.status = 'approved';
+        a.ceoNote = '대표님 쇼츠 뉴스 선택으로 자동 통과';
+        a.decidedAt = now;
+      }
+    }
+    const nextMs = milestones.find((x) => x.status === 'todo');
+    if (nextMs) {
+      nextMs.status = 'doing';
+      task.milestoneId = nextMs.id;
+    }
+  }
   leadSay(db, mission, '쇼츠 이슈 선택', `대표님이 "${clip(cand.title, 60)}"을(를) 골랐습니다. ${writer.name}에게 대본을 맡겼고, 출처 확인 후 결재로 올리겠습니다.`);
   appendLog(db, 'CEO', `쇼츠 이슈 선택: "${clip(cand.title, 60)}" → 대본 작업(${writer.name})`, 'info');
   return { ok: true, task, mission, candidate: cand };
