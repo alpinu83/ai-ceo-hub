@@ -1,7 +1,7 @@
 // routes/system.js: server.js에서 분리 (HTTP 라우트)
 import { buildCeoInbox, sendInboxTelegram } from '../hub/ceo-inbox.js';
 import { MCP_TOOL_CATALOG } from '../mcp.js';
-import { listBackupRevisions, restoreBackupRevision, createDefaultState, flushCloudBackup, getCloudPersistenceStatus, loadDb, sanitizeStateForClient, saveDb } from '../store.js';
+import { allowDataWipeOnce, listBackupRevisions, restoreBackupRevision, createDefaultState, flushCloudBackup, getCloudPersistenceStatus, loadDb, sanitizeStateForClient, saveDb } from '../store.js';
 import { describeRouting } from '../outsourcing.js';
 import { ensureVapidKeys, sendWebPushNotification } from '../push.js';
 import fs from 'node:fs';
@@ -277,7 +277,7 @@ export function registerSystemRoutes(app) {
   // 클라우드 백업 이전 버전 조회·복구 (CEO 관리자 키 필요)
   app.get('/api/admin/backup/revisions', async (c) => {
     try {
-      return c.json({ revisions: await listBackupRevisions(Number(c.req.query('limit')) || 40) });
+      return c.json({ revisions: await listBackupRevisions(Number(c.req.query('limit')) || 40, Number(c.req.query('page')) || 1) });
     } catch (err) {
       return c.json({ error: err.message }, 400);
     }
@@ -298,6 +298,7 @@ export function registerSystemRoutes(app) {
     if (body.confirm !== 'RESET-ALL-DATA') return c.json({ error: '전체 초기화는 확인 문구가 필요합니다.' }, 400);
     const prev = loadDb();
     const fresh = createDefaultState();
+    allowDataWipeOnce();
     if (prev?.settings?.mcpToken && /^ceo_mcp_[a-f0-9]{24,}$/.test(prev.settings.mcpToken)) {
       fresh.settings.mcpToken = prev.settings.mcpToken;
     }
