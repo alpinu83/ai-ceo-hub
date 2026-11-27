@@ -34,3 +34,4 @@
 - 새 업무 분해·회의실 답변처럼 즉답이 필요한 것은 업무함을 거치지 않고 Gemini API가 처리
 - 휴직한 무료 API 제공자(Groq·OpenRouter 등)는 팀장 대체 엔진에서도 제외(`buildLeadModelChain(..., agents)`)
 - IT팀(무료 API)이 휴직이면 팀장이 배정한 코드 수정 작업은 바로 AGY 수정 → Aside 검수 외주(`codeWorkflow: 'agy_then_aside'`)
+- 로컬 주간 팀장 감시기(`scripts/windows/ceo-hub-agy-lead-watcher.ps1` · `install-agy-lead-watcher.ps1`): 30초마다 `GET /api/lead-jobs?worker=agy_lead`로 근무 신호를 유지하며 대기 일을 오래된 순으로 `claim` → 빈 임시 폴더에서 Hydrogen 모델(건당 최대 5분) 판단 → JSON 추출·`submit` 처리 (기존 코딩 감시기와 별도 프로세스·mutex)
