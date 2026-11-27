@@ -165,10 +165,17 @@ async function runTests() {
     assert.equal(collabRes.request.kind, 'code', 'AGY+Aside collaboration is a code request');
     assert.equal(collabRes.request.pinnedWorker, 'antigravity', 'collaboration starts with Antigravity');
     assert.equal(collabRes.request.codeWorkflow, 'agy_then_aside', 'collaboration flag stored on request');
-    const collabList = await (await fetch(`${BASE}/api/outsourcing?status=active`)).json();
+    const collabList = await (await fetch(`${BASE}/api/outsourcing?status=active&token=${encodeURIComponent(mcpToken)}`)).json();
     const collabRow = (collabList.requests || []).find((r) => r.id === collabRes.request.id);
     if (collabRow) assert.equal(collabRow.codeWorkflow, 'agy_then_aside', 'list exposes codeWorkflow');
     await fetch(`${BASE}/api/outsourcing/${collabRes.request.id}/cancel`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+
+    // 6-3. 팀장 업무함: 목록·근무 상태 (CI에는 대기 일이 없어도 응답 형식 확인)
+    const leadDesk = await (await fetch(`${BASE}/api/lead-jobs?worker=agy_lead&token=${encodeURIComponent(mcpToken)}`)).json();
+    assert.equal(typeof leadDesk.count, 'number', 'lead desk returns count');
+    assert.equal(leadDesk.status.onDuty, 'agy_lead', 'polling as agy_lead marks AGY on duty');
+    const badClaim = await fetch(`${BASE}/api/lead-jobs/ldj_none/claim?token=${encodeURIComponent(mcpToken)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ worker: 'agy_lead' }) });
+    assert.equal(badClaim.status, 400, 'unknown lead job claim is rejected');
 
     // 7. Team Lead final synthesis
     const synthRes = await (
