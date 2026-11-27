@@ -7,6 +7,7 @@ import { appendLog, flushCloudBackup, loadDb, saveDb, uid } from '../store.js';
 import { leadSystemAudit } from '../orchestrator.js';
 import { rememberFact } from '../lead-engine.js';
 import { createOutsourcingRequest } from '../outsourcing.js';
+import { getGithubRepoConfig } from '../it-devops.js';
 import { kstParts } from '../operations.js';
 import { sendTelegramReport } from '../telegram.js';
 import { leadSay } from './missions.js';
@@ -299,6 +300,19 @@ function formatAuditReportMarkdown(audit, telemetry) {
   return lines.join('\n');
 }
 
+function resolveAllowedRepo(db, candidate = '') {
+  const fallback = 'alpinu83/ai-ceo-hub';
+  const clean = String(candidate || '').trim();
+  const validFormat = /^[\w.-]+\/[\w.-]+$/.test(clean) ? clean : fallback;
+  const cfg = getGithubRepoConfig(db?.settings || {});
+  if (Array.isArray(cfg.allowedRepos) && cfg.allowedRepos.length > 0) {
+    if (cfg.allowedRepos.includes(validFormat)) return validFormat;
+    if (cfg.allowedRepos.includes(fallback)) return fallback;
+    return cfg.allowedRepos[0];
+  }
+  return validFormat;
+}
+
 function applySystemAuditResult(db, record, audit, telemetry, { manual = false } = {}) {
   const nowIso = new Date().toISOString();
   const hubMission = findHubMission(db);
@@ -331,7 +345,7 @@ function applySystemAuditResult(db, record, audit, telemetry, { manual = false }
     if (!key || existingPendingKeys.has(key)) continue;
     existingPendingKeys.add(key);
 
-    const targetRepo = String(p.targetRepo || 'alpinu83/ai-ceo-hub').trim();
+    const targetRepo = resolveAllowedRepo(db, p.targetRepo);
     const leadBrief = [
       `## 문제 진단 및 배경`,
       p.rationale || audit.executiveSummary,
@@ -549,7 +563,7 @@ export async function handleSystemImprovementDecision(apr, decision, ceoNote = '
 
   if (decision === 'approved') {
     if (p.needsCodeChange) {
-      const targetRepo = p.targetRepo || 'alpinu83/ai-ceo-hub';
+      const targetRepo = resolveAllowedRepo(db, p.targetRepo);
       const goal = [
         `[총괄 팀장 시스템 회고 개선 제안 → 대표님 승인] ${p.title}`,
         '',
