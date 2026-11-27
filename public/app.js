@@ -773,7 +773,7 @@ function buildCeoInboxClient() {
   const sm = state.missions.find((m) => m.mode === 'project' && /쇼츠|shorts/i.test(m.title) && m.status !== 'completed');
   const sh = state.shorts || {};
   const fresh = (sh.candidates || []).filter((c) => c.status === 'new');
-  const inFlight = sm && (state.tasks || []).some((t) => t.missionId === sm.id && t.shorts && ['queued', 'running', 'awaiting_bridge', 'awaiting_approval', 'outsourced'].includes(t.status));
+  const inFlight = sm && (state.tasks || []).some((t) => t.missionId === sm.id && t.shorts && ['queued', 'running', 'awaiting_bridge', 'review_pending', 'awaiting_approval', 'outsourced'].includes(t.status));
   if (sm && fresh.length && !inFlight) items.push({ kind: 'shorts_pick', missionId: sm.id, missionTitle: sm.title, title: `쇼츠로 만들 뉴스 1개 고르기 (후보 ${fresh.length}건)`, detail: fresh[0].title, since: sh.lastCollectedAt || fresh[0].createdAt, open: `data-open-mission-board="${esc(sm.id)}"`, btn: '고르러 가기' });
   const blockedBy = new Map();
   for (const t of state.tasks || []) {
@@ -1865,7 +1865,11 @@ function missionPlanHtml(mission) {
   const msRows = (plan?.milestones || [])
     .map((m, i) => {
       const [cls, label] = MS_STATUS[m.status] || MS_STATUS.todo;
-      return `<li style="margin:4px 0;"><span class="badge ${cls}">${esc(label)}</span> <strong>${i + 1}. ${esc(m.title)}</strong>${m.gate ? ' <span class="badge badge-neutral">관문</span>' : ''}<div class="routine-sub" style="margin-left:4px;">완료 기준: ${esc(m.doneWhen)}${m.rounds ? ` · 시도 ${m.rounds}회` : ''}${m.decisionNote ? ` · 대표님: ${esc(m.decisionNote)}` : ''}</div></li>`;
+      const canAdvance = m.status === 'doing' || m.status === 'gate';
+      const advanceBtn = canAdvance
+        ? ` <button type="button" class="btn-inline-edit" data-advance-milestone="${esc(m.id)}" data-mission-id="${esc(mission.id)}" title="이 단계를 완료하고 바로 다음 단계로 넘깁니다">완료 · 다음 단계로 →</button>`
+        : '';
+      return `<li style="margin:6px 0;"><span class="badge ${cls}">${esc(label)}</span> <strong>${i + 1}. ${esc(m.title)}</strong>${m.gate ? ' <span class="badge badge-neutral">관문</span>' : ''}${advanceBtn}<div class="routine-sub" style="margin-left:4px;">완료 기준: ${esc(m.doneWhen)}${m.rounds ? ` · 시도 ${m.rounds}회` : ''}${m.decisionNote ? ` · 대표님: ${esc(m.decisionNote)}` : ''}</div></li>`;
     })
     .join('');
   return `<details class="mission-directive-quote" open>
@@ -3918,6 +3922,26 @@ function bindEvents() {
         toast(`재계획을 지시했습니다. 대기 작업 ${res.dropped}건을 정리하고 팀장이 곧 새 계획을 올립니다.`);
       } catch (err) {
         toast(err.message, true);
+      }
+      return;
+    }
+
+    if (target.dataset?.advanceMilestone) {
+      const mId = target.dataset.missionId;
+      const msId = target.dataset.advanceMilestone;
+      if (!window.confirm('이 단계를 완료 처리하고 바로 다음 단계로 넘길까요?')) return;
+      target.disabled = true;
+      try {
+        const res = await api(`/api/missions/${encodeURIComponent(mId)}/milestones/${encodeURIComponent(msId)}/advance`, {
+          method: 'POST',
+          body: JSON.stringify({})
+        });
+        state = res.state;
+        renderAll();
+        toast(res.next ? `완료 처리했습니다 → 다음 단계 "${res.next.title}"로 넘어갑니다.` : '완료 처리했습니다.');
+      } catch (err) {
+        toast(err.message, true);
+        target.disabled = false;
       }
       return;
     }

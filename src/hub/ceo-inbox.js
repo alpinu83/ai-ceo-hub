@@ -8,14 +8,14 @@ import { ensureShorts, findShortsMission, notifyCandidates } from './shorts.js';
 const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const clip = (s, n) => String(s || '').replace(/\s+/g, ' ').trim().slice(0, n);
 const hoursSince = (iso) => (iso ? Math.max(0, (Date.now() - Date.parse(iso)) / 3600000) : 0);
-const OPEN_TASK = ['queued', 'running', 'awaiting_bridge', 'awaiting_approval', 'outsourced'];
+const OPEN_TASK = ['queued', 'running', 'awaiting_bridge', 'review_pending', 'awaiting_approval', 'outsourced'];
 
 export const INBOX_KIND_LABEL = {
   approval: '결재',
   gate: '관문 결정',
   shorts_pick: '뉴스 고르기',
   blocked: '확인 필요',
-  outsource: '외주 조치'
+  outsource: '개발팀 요청'
 };
 
 /** 대표님이 해야 멈춘 일이 다시 굴러가는 항목들 (오래 기다린 순) */

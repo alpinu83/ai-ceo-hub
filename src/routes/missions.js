@@ -88,6 +88,54 @@ export function registerMissionsRoutes(app) {
     return c.json({ ok: true, dropped: res.dropped, state: sanitizeStateForClient(res.db) });
   });
 
+  // 현재 마일스톤 완료 처리 후 다음 단계로 바로 넘기기 (대표님 직접 전환)
+  app.post('/api/missions/:id/milestones/:milestoneId/advance', async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const memo = String(body.note || '').trim();
+    const db = loadDb();
+    const mission = db.missions.find((m) => m.id === c.req.param('id'));
+    if (!mission) return c.json({ error: '미션을 찾을 수 없습니다.' }, 404);
+    const milestones = Array.isArray(mission.plan?.milestones) ? mission.plan.milestones : [];
+    const ms = milestones.find((x) => x.id === c.req.param('milestoneId'));
+    if (!ms) return c.json({ error: '마일스톤을 찾을 수 없습니다.' }, 404);
+    const now = new Date().toISOString();
+    ms.status = 'done';
+    ms.doneAt = now;
+    if (memo) ms.decisionNote = memo;
+    else if (!ms.decisionNote) ms.decisionNote = '대표님 직접 완료 · 다음 단계 전환';
+
+    // 이 마일스톤에 걸린 대기 중 관문 결재도 자동 통과 정리
+    for (const a of db.approvals || []) {
+      if (a.kind === 'stage_gate' && a.missionId === mission.id && a.milestoneId === ms.id && a.status === 'pending') {
+        a.status = 'approved';
+        a.ceoNote = memo || '대표님 직접 다음 단계로 전환';
+        a.decidedAt = now;
+      }
+    }
+
+    const nextMs = milestones.find((x) => x.status === 'todo') || null;
+    if (nextMs) nextMs.status = 'doing';
+    appendLog(
+      db,
+      'CEO',
+      `[${mission.title}] 마일스톤 완료 처리: "${ms.title}" → ${nextMs ? `다음 단계 "${nextMs.title}" 시작` : '모든 마일스톤 완료'}`,
+      'success'
+    );
+    rememberFact(db, {
+      kind: 'decision',
+      missionId: mission.id,
+      pinned: true,
+      text: `[단계 완료] ${ms.title} → ${nextMs ? `다음 단계: ${nextMs.title}` : '전체 완료'}${memo ? ` (메모: ${memo})` : ''}`,
+      source: 'milestone_advance'
+    });
+    saveDb(db);
+    await flushCloudBackup(db);
+    if (nextMs && isOpsMission(mission)) {
+      setTimeout(() => opsCycle(mission.id).catch((err) => console.warn('ops cycle after milestone advance failed:', err.message)), 1000);
+    }
+    return c.json({ ok: true, completed: ms, next: nextMs, state: sanitizeStateForClient(db) });
+  });
+
   app.post('/api/missions/:id/run-all', async (c) => {
     const missionId = c.req.param('id');
     const db = loadDb();
