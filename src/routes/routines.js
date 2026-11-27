@@ -2,6 +2,7 @@
 import { appendLog, flushCloudBackup, loadDb, sanitizeStateForClient, saveDb, uid } from '../store.js';
 import { getAiProviderHealth } from '../ai-guard.js';
 import { describeRoutineSchedule, ensureRoutines, runRoutine, sanitizeRoutineInput } from '../hub/routines.js';
+import { collectSystemAuditTelemetry, runSystemAudit } from '../hub/system-audit.js';
 
 
 export function registerRoutinesRoutes(app) {
@@ -56,9 +57,14 @@ export function registerRoutinesRoutes(app) {
   app.delete('/api/routines/:id', async (c) => {
     const db = loadDb();
     ensureRoutines(db);
+    const targetId = c.req.param('id');
+    const target = db.routines.find((r) => r.id === targetId);
     const before = db.routines.length;
-    db.routines = db.routines.filter((r) => r.id !== c.req.param('id'));
+    db.routines = db.routines.filter((r) => r.id !== targetId);
     if (db.routines.length === before) return c.json({ error: '루틴을 찾을 수 없습니다.' }, 404);
+    if (target?.id === 'rtn_lead_system_audit' || target?.kind === 'system_audit') {
+      db.settings.systemAuditRoutineDismissed = true;
+    }
     saveDb(db);
     await flushCloudBackup(db);
     return c.json({ state: sanitizeStateForClient(db) });
@@ -73,6 +79,26 @@ export function registerRoutinesRoutes(app) {
 
   app.get('/api/ops/health', (c) => {
     const db = loadDb();
-    return c.json({ ai: getAiProviderHealth(), watchdog: db.settings.opsWatchdog || null });
+    return c.json({ ai: getAiProviderHealth(), watchdog: db.settings.opsWatchdog || null, lastSystemAudit: db.settings.lastSystemAudit || null });
+  });
+
+  // 총괄 팀장 전사 시스템·운영 회고 조회 및 수동 실행
+  app.get('/api/ops/system-audit', (c) => {
+    const db = loadDb();
+    const windowHours = Math.max(6, Math.min(168, Number(c.req.query('windowHours')) || 48));
+    return c.json({
+      ok: true,
+      telemetry: collectSystemAuditTelemetry(db, { windowHours }),
+      lastSystemAudit: db.settings.lastSystemAudit || null,
+      audits: (db.systemAudits || []).slice(0, 10)
+    });
+  });
+
+  app.post('/api/ops/system-audit', async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const windowHours = Math.max(6, Math.min(168, Number(body.windowHours) || 48));
+    const res = await runSystemAudit({ manual: true, windowHours });
+    const db = loadDb();
+    return c.json({ ...res, state: sanitizeStateForClient(db) }, res.ok ? 200 : 400);
   });
 }
