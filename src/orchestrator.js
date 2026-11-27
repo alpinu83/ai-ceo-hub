@@ -1298,6 +1298,15 @@ const LeadReviewSchema = z.object({
  * 팀장 검수: 팀원 결과물을 업무의 완료 기준과 업무 브리핑으로 판정
  * AI 엔진을 쓸 수 없으면 판정을 건너뜀(skipped) — 업무를 멈추지 않기 위해
  */
+// 결과물·피드백에 나온 파일 경로 (저장소 실제 확인용)
+const REPO_PATH_RE = /((?:[\w.-]+\/)+[\w.-]+\.(?:json|js|mjs|cjs|tsx|ts|jsx|css|html|ya?ml|md|xml|txt))(?![\w-])/g;
+const pathsIn = (text = '') => [...new Set([...String(text).matchAll(REPO_PATH_RE)].map((m) => m[1].replace(/^\.\//, '')).filter((p) => !/^(https?:|www\.)/.test(p)))];
+/** "없는 파일"이라고 했는데 실제로는 저장소에 있는 파일을 가리키는 지적 */
+export function isFalseMissingClaim(text = '', fileSet = null) {
+  if (!fileSet || !/(없|존재하지|가상|찾을 수 없)/.test(String(text))) return false;
+  return pathsIn(text).some((p) => fileSet.has(p));
+}
+
 export async function leadReviewDeliverable({ task, output, mission, agents, settings }) {
   const leadAgent = agents.find((a) => a.id === (mission?.leadAgentId || 'agent_gemini_neon')) || agents.find((a) => a.tier === 'lead') || agents[0];
   const chain = buildLeadModelChain(leadAgent, settings);
@@ -1311,7 +1320,25 @@ export async function leadReviewDeliverable({ task, output, mission, agents, set
 - 계획·목차·"정보를 주세요"·"~하겠습니다"만 있는 결과는 accept 금지.
 - 근거 없는 수치를 사실처럼 쓴 경우, 브리핑의 금지 사항을 어긴 경우 accept 금지.
 ${mission ? `\n${buildMissionBrief(mission)}` : ''}`;
-  const priorNotes = Array.isArray(task.leadNotes) ? task.leadNotes.slice(0, 3) : [];
+  // 저장소 실제 확인: 검수자가 파일 존재 여부를 추측하지 않게 (없는 파일 판정 오류 방지)
+  const snapshot = mission?.githubRepo ? await missionRepoSnapshot(mission, settings).catch(() => null) : null;
+  let repoFacts = '';
+  if (snapshot) {
+    const mentioned = pathsIn(output).slice(0, 30);
+    const exist = mentioned.filter((p) => snapshot.fileSet.has(p));
+    const absent = mentioned.filter((p) => !snapshot.fileSet.has(p));
+    const dirs = [...new Set(snapshot.files.map((f) => (f.includes('/') ? `${f.split('/')[0]}/` : f)))].slice(0, 40);
+    repoFacts = [
+      `[저장소 실제 확인 — ${snapshot.repo}@${snapshot.branch}, 파일 ${snapshot.files.length}개 · 서버가 직접 조회한 사실]`,
+      `- 최상위 구조: ${dirs.join(', ')}`,
+      mentioned.length ? `- 결과물에 나온 파일 중 실제로 있음: ${exist.join(', ') || '없음'}` : '',
+      mentioned.length ? `- 결과물에 나온 파일 중 저장소에 없음: ${absent.join(', ') || '없음'}` : '',
+      '- 파일이 있는지 없는지는 이 확인 결과만 따르세요. "실제로 있음"인 파일을 없다고 판정하거나, 위 구조에 없는 경로(예: src/app.js)를 요구하지 마세요.'
+    ]
+      .filter(Boolean)
+      .join('\n');
+  }
+  const priorNotes = (Array.isArray(task.leadNotes) ? task.leadNotes.slice(0, 3) : []).filter((n) => !isFalseMissingClaim(n.text, snapshot?.fileSet));
   const prompt = `[업무] ${task.title}
 [요구사항] ${baseTaskDescription(task).slice(0, 1500)}
 [완료 기준]
@@ -1321,17 +1348,28 @@ ${
     ? `\n[이전에 준 팀장 피드백 — 반영됐는지 확인, 같은 문제가 남아 있으면 accept 금지]\n${priorNotes.map((n) => `- ${String(n.text).slice(0, 400)}`).join('\n')}\n`
     : ''
 }
+${repoFacts ? `\n${repoFacts}\n` : ''}
 [팀원 결과물 (앞부분)]
 ${String(output || '').slice(0, 4500)}`;
   try {
     const { object, label } = await generateObjectChain(chain, { schema: LeadReviewSchema, system, prompt });
+    const rawMissing = (object.missing || []).map((x) => String(x).slice(0, 200)).slice(0, 6);
+    // 저장소에 실제로 있는 파일을 "없다"고 한 지적은 버림 (검수 AI의 추측)
+    const missing = rawMissing.filter((x) => !isFalseMissingClaim(x, snapshot?.fileSet));
+    const dropped = rawMissing.length - missing.length;
+    let verdict = object.verdict;
+    let feedback = String(object.feedback || '').slice(0, 1200);
+    if (dropped && verdict === 'revise' && !missing.length) verdict = 'accept';
+    if (dropped) feedback = `${feedback}\n(서버 확인: 검수 의견 중 "없는 파일" ${dropped}건은 실제로 저장소에 있는 파일이라 제외함)`.trim();
     return {
-      verdict: object.verdict,
+      verdict,
       score: Math.max(0, Math.min(10, Number(object.score) || 0)),
-      missing: (object.missing || []).map((x) => String(x).slice(0, 200)).slice(0, 6),
-      feedback: String(object.feedback || '').slice(0, 1200),
+      missing,
+      feedback,
       reviewer: label,
-      acceptance
+      acceptance,
+      corrected: dropped || 0,
+      existingFiles: snapshot ? pathsIn(`${output}\n${rawMissing.join('\n')}\n${object.feedback || ''}`).filter((p) => snapshot.fileSet.has(p)) : []
     };
   } catch (err) {
     return { verdict: 'accept', skipped: true, reason: String(err?.message || err).slice(0, 200), acceptance };
