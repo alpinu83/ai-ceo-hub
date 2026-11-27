@@ -12,11 +12,12 @@ export function registerChatRoutes(app) {
     const body = await c.req.json();
     const text = String(body.text || '').trim();
     if (!text) return c.json({ error: '메시지를 입력해 주세요.' }, 400);
-    const res = await processCeoChat(text, String(body.missionId || '').trim());
+    const res = await processCeoChat(text, String(body.missionId || '').trim(), { channel: 'web', quickOrder: Boolean(body.quickOrder) });
     return c.json({
       ceoMessage: res.ceoMessage,
       replies: res.replies,
       intake: res.intake,
+      memoryNote: res.memoryNote || '',
       state: sanitizeStateForClient(loadDb())
     });
   });

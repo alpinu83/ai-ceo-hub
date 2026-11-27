@@ -212,6 +212,17 @@ async function runTests() {
     assert.ok(synthRes.report.length > 50, 'synthesized executive report should be non-empty');
 
     // 8. Live Office Chat & Team Standup tests
+    const beforeQuickMissions = (await (await fetch(`${BASE}/api/state`)).json()).missions.length;
+    const quickRes = await (
+      await fetch(`${BASE}/api/chat/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: '앞으로 모든 보고서 첫 줄에 핵심 결론을 적어줘', missionId: '', quickOrder: true })
+      })
+    ).json();
+    assert.equal(quickRes.state.missions.length, beforeQuickMissions, 'quickOrder (전체 시스템) must NOT create a new standalone mission');
+    assert.ok((quickRes.intake?.note || quickRes.memoryNote || '').length > 0, 'quickOrder must record directive/intervention note');
+
     const leadOnlyChat = await (
       await fetch(`${BASE}/api/chat/send`, {
         method: 'POST',
