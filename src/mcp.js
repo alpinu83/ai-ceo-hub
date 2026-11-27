@@ -326,12 +326,20 @@ export function createCeoMcpServer() {
     async ({ worker = '', status = 'active', effort = '' }) => {
       const db = loadDb();
       const list = listRequests(db, { status, worker, effort });
+      // Gemini 앱: 당직 팀장 판단(ldj_)도 같은 목록·같은 잡기/제출 도구로 처리 (별도 도구가 Gemini 앱에서 막히는 문제 회피)
+      const leadJobs = worker === 'gemini' ? listLeadJobs(db, 'gemini_app') : [];
+      if (worker === 'gemini') touchLeadWorker(db, 'gemini_app', 'mcp outsourcing list');
+      saveDb(db);
+      const requests = [
+        ...leadJobs.map((j) => ({ ...summarizeLeadJob(j), kind: 'lead_review', title: `[팀장 판단] ${summarizeLeadJob(j).purposeLabel}`, howTo: '이 id로 claim_outsourcing_request → 받은 자료의 답안 형식대로 JSON을 만들어 submit_outsourcing_result의 document에 JSON만 넣어 제출' })),
+        ...list.map((r) => ({ ...summarizeRequest(r), target: resolveTarget(db.settings, r) }))
+      ];
       return {
         content: [
           {
             type: 'text',
             text: JSON.stringify(
-              { count: list.length, routing: describeRouting(db.settings), requests: list.map((r) => ({ ...summarizeRequest(r), target: resolveTarget(db.settings, r) })), next: '처리할 요청을 claim_outsourcing_request로 잡고 요청서 지시대로 작업 후 submit_outsourcing_result로 제출. 로그인·인증 등 대표님 손이 필요하면 request_ceo_action' },
+              { count: requests.length, routing: describeRouting(db.settings), requests, next: '처리할 요청을 claim_outsourcing_request로 잡고 요청서 지시대로 작업 후 submit_outsourcing_result로 제출. id가 ldj_로 시작하면 팀장 판단: document에 답안 형식 JSON만. 로그인·인증 등 대표님 손이 필요하면 request_ceo_action' },
               null,
               2
             )
@@ -350,6 +358,10 @@ export function createCeoMcpServer() {
     },
     async ({ request_id, worker }) => {
       try {
+        if (/^ldj_/.test(String(request_id))) {
+          const j = claimLeadJob(request_id, worker === 'antigravity' ? 'agy_lead' : 'gemini_app');
+          return { content: [{ type: 'text', text: `${buildLeadPacket(j)}\n\n## 이 창구에서 제출\nsubmit_outsourcing_result (request_id: ${j.id}, worker: "${worker}", summary: 한 줄, document: 답안 형식 JSON만)` }] };
+        }
         const req = claimRequest(request_id, worker);
         return { content: [{ type: 'text', text: buildPacket(loadDb(), req) }] };
       } catch (err) {
@@ -382,6 +394,10 @@ export function createCeoMcpServer() {
     },
     async ({ request_id, worker, summary, document, pr_url = '' }) => {
       try {
+        if (/^ldj_/.test(String(request_id))) {
+          const j = await submitLeadJob(request_id, { worker: worker === 'antigravity' ? 'agy_lead' : 'gemini_app', result: document || summary });
+          return { content: [{ type: 'text', text: `제출 완료: ${j.id} (팀장 판단). 다음 요청을 처리하세요.` }] };
+        }
         const req = await submitResult(request_id, { worker, summary, document, prUrl: pr_url });
         return { content: [{ type: 'text', text: `제출 완료: ${req.id} (${req.status}). 대표님께 보고됐습니다.` }] };
       } catch (err) {
@@ -431,7 +447,7 @@ export function createCeoMcpServer() {
   // ---- 팀장 업무함 (주간: AGY 팀장 감시기 · 야간 당직: Gemini 앱 예약 작업) ----
   server.tool(
     'list_lead_jobs',
-    '팀장 업무함에서 지금 내가 처리할 팀장 판단(결과물 검수, 작전 계획, 마일스톤 판정) 목록을 봅니다. 호출하면 근무 신호로 기록됩니다.',
+    '대기 중인 판단 요청(결과물 검수, 계획 수립) 목록을 조회합니다. 읽기 전용입니다.',
     { worker: z.string().describe('gemini_app (Gemini 앱 당직 팀장) 또는 agy_lead (AGY 팀장)') },
     async ({ worker }) => {
       const db = loadDb();
