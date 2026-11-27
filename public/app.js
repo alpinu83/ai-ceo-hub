@@ -196,7 +196,7 @@ const VIEW_META = {
   approvals: { title: '결재함', subtitle: '' },
   roster: { title: 'AI 팀', subtitle: '' },
   routines: { title: '루틴 업무', subtitle: '' },
-  outsourcing: { title: '외부 협업', subtitle: '' },
+  outsourcing: { title: '협업 큐', subtitle: '' },
   integrations: { title: '설정', subtitle: '' }
 };
 
@@ -1892,7 +1892,7 @@ function renderOutsourcingView() {
       <div class="routine-sub">외주 분담: <strong>${esc(rt.why || '-')}</strong></div>
       <div class="out-away">
         <button type="button" class="btn btn-ghost btn-sm" data-out-new-toggle="1">+ 외주 요청</button>
-        <button type="button" class="btn btn-ghost btn-sm" data-out-open-settings="1">외부 협업 설정</button>
+        <button type="button" class="btn btn-ghost btn-sm" data-out-open-settings="1">협업 설정</button>
       </div>
     </div>
     ${
@@ -1978,7 +1978,19 @@ function renderOutsourcingSettings(force = false) {
         </tr>`;
     })
     .join('');
+  const devPol = { small: 'aside', large: 'agy_aside', risky: 'design_first', incident: 'aside', ...(state.settings?.devPolicy || {}) };
+  const DEV_ROUTE_LABELS = { aside: 'Aside 혼자 (수정·자체 검수)', agy: 'AGY 혼자 (구현·테스트·PR)', agy_aside: 'AGY 구현 → Aside 검수', design_first: 'Aside 설계 → 대표님 확인 → AGY 구현 → Aside 검수' };
+  const DEV_CASE_LABELS = { small: '작은 수정 (파일 1~2개, 할 일이 분명)', large: '보통~큰 구현 (여러 파일, 테스트 필요)', risky: '애매하거나 위험한 일 (구조 변경·데이터·보안·돈)', incident: '운영 중 문제 (배포 후 오류·데이터 이상)' };
+  const devRows = Object.keys(DEV_CASE_LABELS)
+    .map((k) => `<tr><td style="padding:6px 4px;">${esc(DEV_CASE_LABELS[k])}</td><td style="padding:4px;"><select data-dev-policy="${k}">${Object.keys(DEV_ROUTE_LABELS).map((r) => `<option value="${r}" ${devPol[k] === r ? 'selected' : ''}>${esc(DEV_ROUTE_LABELS[r])}</option>`).join('')}</select></td></tr>`)
+    .join('');
   root.innerHTML = `
+    <div class="card">
+      <div class="card-head"><h3 class="card-title">개발 지침 (개발팀 Aside · AGY)</h3></div>
+      <p class="routine-desc" style="margin-top:0;">팀장이 코드 작업을 배정할 때 크기·위험도를 판단하면, 아래 지침대로 개발팀에 자동으로 보냅니다. Aside와 AGY는 같은 회사 개발팀입니다.</p>
+      <div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:13px;"><tbody>${devRows}</tbody></table></div>
+      <div class="routine-form-actions"><button type="button" class="btn btn-primary btn-sm" data-dev-policy-save="1">개발 지침 저장</button></div>
+    </div>
     <div class="card out-route">
       <div class="card-head"><h3 class="card-title">역할 분담 (우선순위)</h3></div>
       <p class="routine-desc" style="margin-top:0;">일의 종류마다 맡길 순서를 정합니다. 1순위가 정해진 시간 안에 안 가져가면 2순위, 그래도 안 되면 3순위로 자동으로 넘어갑니다(Gemini 앱은 예약 주기 때문에 최소 60분). 코드 수정에서 <strong>AGY 수정 + Aside 검수·보완</strong>을 고르면 Antigravity가 1차 수정·PR을 만든 직후 Aside가 자동으로 같은 PR을 검수·보완한 뒤 대표님 결재로 올립니다.</p>
@@ -2259,13 +2271,6 @@ function renderRosterView() {
     <div class="org-connector"></div>
     <div class="org-level">
       ${[apiLead, ...members].filter(Boolean).map(renderNodePill).join('')}
-    </div>
-    <div class="org-connector"></div>
-    <div class="org-level">
-      <span class="badge badge-neutral" style="align-self:center;">외주</span>
-      <div class="org-node-pill"><div style="text-align:left;"><div class="org-node-name">AGY (Antigravity)</div><div class="org-node-role">코드 수정 · 주간 팀장</div></div></div>
-      <div class="org-node-pill"><div style="text-align:left;"><div class="org-node-name">Aside</div><div class="org-node-role">코드 검수·보완 · 브라우저·계정</div></div></div>
-      <div class="org-node-pill"><div style="text-align:left;"><div class="org-node-name">Gemini 앱</div><div class="org-node-role">야간 당직 팀장 · 자문·리서치</div></div></div>
     </div>
     ${
       onLeave.length
@@ -3293,6 +3298,23 @@ function bindEvents() {
         refreshIcons();
         renderOutsourcingSettings(true);
         toast(hours > 0 ? `PC 자리비움 ${hours}시간: Aside를 건너뛰고 다음 순위로 바로 넘깁니다.` : 'PC 자리비움을 해제했습니다.');
+      } catch (err) {
+        toast(err.message, true);
+      }
+      return;
+    }
+    if (target.dataset.devPolicySave) {
+      const devPolicy = {};
+      document.querySelectorAll('[data-dev-policy]').forEach((el) => {
+        devPolicy[el.dataset.devPolicy] = el.value;
+      });
+      try {
+        const res = await api('/api/settings', { method: 'PUT', body: JSON.stringify({ devPolicy }) });
+        if (res.state) applyStateKeepingHealth(res.state);
+        renderAll();
+        refreshIcons();
+        renderOutsourcingSettings(true);
+        toast('개발 지침을 저장했습니다.');
       } catch (err) {
         toast(err.message, true);
       }
