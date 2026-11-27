@@ -69,7 +69,7 @@ export function leadDeskStatus(db) {
     agyLastSeenAt: leadWorkerSeenAt(db, 'agy_lead'),
     geminiAppLastSeenAt: leadWorkerSeenAt(db, 'gemini_app'),
     open: list.filter((j) => ['open', 'claimed'].includes(j.status)).length,
-    doneToday: list.filter((j) => j.status === 'done' && Date.now() - Date.parse(j.doneAt || 0) < 24 * 3600 * 1000).length
+    doneToday: list.filter((j) => ['done', 'used'].includes(j.status) && Date.now() - Date.parse(j.doneAt || 0) < 24 * 3600 * 1000).length
   };
 }
 
@@ -140,14 +140,11 @@ export function refreshLeadJobs(db) {
     }
     if (j.status !== 'open') continue;
     const age = now - Date.parse(j.queuedAt || j.createdAt);
-    if (j.worker === 'gemini_app' && agy && !j.agyGaveUp) {
+    if (j.worker === 'gemini_app' && agy) {
       j.worker = 'agy_lead';
       j.queuedAt = new Date().toISOString();
       changed = true;
-    } else if (j.worker === 'agy_lead' && age > AGY_GIVEUP_MS) {
-      // AGY가 꺼졌거나, 근무 중이어도 15분 안에 끝내지 못하면(실행 실패 반복 등) 당직 팀장에게 넘김
-      // agyGaveUp: AGY 감시기가 계속 접속해도 다시 AGY 몫으로 되돌리지 않음 (무한 대기 방지)
-      if (agy) j.agyGaveUp = true;
+    } else if (j.worker === 'agy_lead' && !agy && age > AGY_GIVEUP_MS) {
       j.worker = 'gemini_app';
       j.queuedAt = new Date().toISOString();
       changed = true;
@@ -233,7 +230,7 @@ export function summarizeLeadJob(j) {
 /** 이 작업자가 지금 처리할 일: AGY 팀장은 모든 대기 일, Gemini 앱은 당직 몫만 */
 export function listLeadJobs(db, worker = '') {
   refreshLeadJobs(db);
-  return jobs(db).filter((j) => j.status === 'open' && (!worker || (worker === 'agy_lead' && !j.agyGaveUp) || j.worker === worker));
+  return jobs(db).filter((j) => j.status === 'open' && (!worker || worker === 'agy_lead' || j.worker === worker));
 }
 
 export function buildLeadPacket(j) {
