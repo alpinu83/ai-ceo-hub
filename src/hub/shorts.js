@@ -108,10 +108,10 @@ function pickWriter(db) {
 export const SCRIPT_FORMAT = [
   '결과물 맨 끝에 아래 형식의 JSON 코드 블록을 반드시 넣으세요(자동 제작기가 이 블록만 읽습니다).',
   '```json',
-  '{"title":"영상 제목(40자 이내, #Shorts 제외)","scenes":[{"text":"화면 자막이자 내레이션 한두 문장(40자 안팎)","keywords":"배경 영상 검색용 영어 키워드 2~3개 (예: parliament building, city night)"}],"sources":["확인한 기사 URL"],"hashtags":["#정치","#뉴스"]}',
+  '{"title":"영상 제목(40자 이내, #Shorts 제외)","scenes":[{"text":"화면 자막이자 내레이션 한두 문장(40자 안팎)","keywords":"배경 영상 검색용 영어 키워드 2~3개 (예: seoul city night, korean flag)"}],"sources":["확인한 기사 URL"],"hashtags":["#정치","#뉴스"]}',
   '```',
   '- scenes는 5~8개, 전체 낭독 30~50초. 첫 장면은 3초 안에 핵심을 던지는 문장.',
-  '- 배경 키워드는 실존 인물 이름이 아닌 일반 장면(국회, 도시, 군중, 서류 등)으로.',
+  '- 배경 키워드는 실존 인물 이름이 아닌 일반 장면으로, 한국 장면이 나오게 seoul·korea·korean을 붙여서(예: seoul skyline, korean flag, seoul street crowd, documents desk). "parliament"만 쓰면 외국 의사당이 나옴.',
   '- 사실 문장은 sources의 기사로 확인한 내용만, "보도에 따르면" 식으로. 해설·주장은 의견임이 드러나게.'
 ].join('\n');
 
