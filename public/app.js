@@ -1594,8 +1594,8 @@ function renderApprovalsView() {
 }
 
 /* ==================== OUTSOURCING (외부 협업: Antigravity · Aside · Gemini 앱) ==================== */
-const OUT_KIND_LABELS = { task: '실무 작업', code: '코드 수정', consult: '외부 자문', browser: '브라우저·계정', research: '심층 리서치' };
-const OUT_WORKER_LABELS = { antigravity: 'Antigravity', aside: 'Aside', gemini: 'Gemini 앱', any: '먼저 잡는 쪽' };
+const OUT_KIND_LABELS = { task: '실무 작업', code: '코드 수정', consult: '결재 전 검토', browser: '브라우저·계정', research: '심층 리서치' };
+const OUT_WORKER_LABELS = { antigravity: 'AGY', aside: 'Aside', gemini: 'Gemini 앱', any: '먼저 잡는 쪽' };
 // 서버 WORKER_CAPS와 같음: 작업자별로 할 수 있는 일
 const OUT_WORKER_CAPS = { antigravity: ['task', 'code', 'consult', 'browser', 'research'], aside: ['task', 'code', 'consult', 'browser', 'research'], gemini: ['task', 'consult', 'research'] };
 const OUT_DEFAULT_PRIORITIES = {
@@ -1972,8 +1972,10 @@ function renderOutsourcingSettings(force = false) {
         })
         .join('');
       const now = rt.byKind?.[kind]?.label;
+      const botFirst = { research: 'Manus Cue', task: 'Meta Muse → Manus Cue (매일 반복 수집은 부이)' }[kind];
       return `<tr>
           <td style="padding:4px;"><strong>${esc(OUT_KIND_LABELS[kind])}</strong><div class="routine-sub">${esc(OUT_KIND_HINTS[kind])}</div></td>
+          <td class="routine-sub" style="padding:4px;">${botFirst ? `봇 팀원: ${esc(botFirst)}` : '-'}</td>
           ${cells}
           <td class="routine-sub" style="padding:4px;">${now ? `새 요청 → ${esc(now)}` : ''}</td>
         </tr>`;
@@ -2000,9 +2002,9 @@ function renderOutsourcingSettings(force = false) {
     </div>
     <div class="card out-route">
       <div class="card-head"><h3 class="card-title">코드 외 일의 담당 순서</h3></div>
-      <p class="routine-desc" style="margin-top:0;">팀장이 직접 배정하지 않고 시스템이 넘기는 일(결재 전 검토, 반복 실패한 작업, 계정·콘솔 작업)을 누가 먼저 맡을지 정합니다. 1순위가 정해진 시간 안에 안 가져가면 다음 순위로 넘어갑니다(Gemini 앱은 예약이 대략 1시간마다라 최소 60분). 코드 작업은 위 개발 지침을 따릅니다.</p>
+      <p class="routine-desc" style="margin-top:0;">팀장이 직접 배정하지 않고 시스템이 넘기는 일(결재 전 검토, 반복 실패한 작업, 계정·콘솔 작업)을 누가 맡을지 정합니다. 리서치·실무는 지금 접속 중인 봇 팀원이 먼저 맡고, 봇이 없거나 이미 시도했으면 1순위부터 차례로 넘어갑니다(정해진 시간 안에 안 가져가면 다음 순위, Gemini 앱은 최소 60분). 코드 작업은 위 개발 지침을 따릅니다.</p>
       <div style="overflow-x:auto;"><table class="out-role-table" style="width:100%;border-collapse:collapse;font-size:13px;">
-        <thead><tr><th style="text-align:left;padding:6px 4px;">일의 종류</th><th style="text-align:left;padding:6px 4px;">1순위</th><th style="text-align:left;padding:6px 4px;">2순위</th><th style="text-align:left;padding:6px 4px;">3순위</th><th style="text-align:left;padding:6px 4px;">현재</th></tr></thead>
+        <thead><tr><th style="text-align:left;padding:6px 4px;">일의 종류</th><th style="text-align:left;padding:6px 4px;">먼저 (접속 중인 봇)</th><th style="text-align:left;padding:6px 4px;">1순위</th><th style="text-align:left;padding:6px 4px;">2순위</th><th style="text-align:left;padding:6px 4px;">3순위</th><th style="text-align:left;padding:6px 4px;">현재</th></tr></thead>
         <tbody>${roleRows}</tbody>
       </table></div>
       <div class="out-settings">
