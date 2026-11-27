@@ -231,6 +231,7 @@ const STATUS_META = {
   queued: { label: '팀장 추진 중', cls: 'badge-neutral' },
   running: { label: '자동 작업 중', cls: 'badge-blue' },
   awaiting_bridge: { label: '외부 봇 위임됨', cls: 'badge-blue' },
+  review_pending: { label: '팀장 검수 대기', cls: 'badge-amber' },
   outsourced: { label: '외주 진행 중', cls: 'badge-blue' },
   awaiting_approval: { label: 'CEO 결재 대기', cls: 'badge-amber' },
   completed: { label: '완료', cls: 'badge-green' },
@@ -1059,7 +1060,7 @@ function renderOfficeView() {
     const isRunning = myTasks.some((t) => t.status === 'running');
     const isSpeaking = activeSpeakerId === ag.id;
 
-    let statusLabel = '대기';
+    let statusLabel = ag.tier === 'lead' ? leadDutyLabel() : '대기';
     if (!ag.active) statusLabel = '휴직';
     else if (isSpeaking) statusLabel = '발언 중';
     else if (isRunning) statusLabel = '작업 중';
@@ -1081,8 +1082,9 @@ function renderOfficeView() {
     </button>`;
   };
 
-  const leads = state.agents.filter((a) => a.tier === 'lead');
-  const workers = state.agents.filter((a) => a.tier !== 'lead');
+  // 휴직 팀원은 회의실에 표시하지 않음
+  const leads = state.agents.filter((a) => a.tier === 'lead' && a.active);
+  const workers = state.agents.filter((a) => a.tier !== 'lead' && a.active);
   leadWrap.innerHTML = leads.map(renderDesk).join('');
   workerWrap.innerHTML = workers.map(renderDesk).join('');
 
@@ -1763,9 +1765,15 @@ function geminiConnectorUrl() {
   return `${getPublicServerOrigin()}/api/mcp?token=${encodeURIComponent(state?.settings?.mcpToken || '')}`;
 }
 
+/** 팀장 근무: AGY 팀장 감시기가 3분 안에 접속했으면 주간(AGY), 아니면 Gemini 앱 당직 */
+function leadDutyLabel() {
+  const at = state?.agentConnections?.['lead:agy_lead']?.lastSeenAt;
+  return at && Date.now() - Date.parse(at) < 3 * 60 * 1000 ? 'AGY 근무' : 'Gemini 앱 당직';
+}
+
 /** Gemini 앱 예약 작업(Scheduled)에 넣을 지시문 */
 function geminiSchedulePrompt() {
-  return "연결된 앱 \"CEO Office 외주창구\"(맞춤 MCP 앱)의 도구로 CEO Office 외주를 처리해줘.\n1) list_outsourcing_requests를 worker \"gemini\"로 호출해서 지금 나한테 배정된 대기 요청을 확인해. 없으면 \"처리할 외주 없음\" 한 줄로 끝내.\n2) 가장 오래된 요청 1건을 claim_outsourcing_request(worker \"gemini\")로 잡고, 돌려받은 요청서를 끝까지 읽어.\n3) 요청서의 \"해야 할 일\"과 \"제출물\" 기준대로 작업해. 웹 검색으로 근거를 확인하고 수치·주장에는 출처 링크를 붙여. 확인한 사실과 추정은 구분해.\n4) 코드 저장소 수정이나 로그인이 필요한 사이트 작업이면 직접 하지 말고 pass_outsourcing_request로 넘겨 (코드 → antigravity, 로그인·콘솔 → aside). 결제·발송·광고비 집행은 하지 마.\n5) 끝나면 submit_outsourcing_result로 제출해 (worker \"gemini\", summary 2~4문장, document 마크다운 전문). 대화창에 답만 쓰고 끝내지 마.\n6) 시간이 남으면 다음 요청도 같은 방법으로 최대 2건까지 처리해.";
+  return "연결된 앱 \"CEO Office 외주창구\"(맞춤 MCP 앱)의 도구로 CEO Office 일을 처리해줘. 너는 야간·부재 시간의 당직 팀장이야.\n[1. 당직 팀장 판단 먼저]\n1) list_lead_jobs를 worker \"gemini_app\"으로 호출해. 대기 중인 팀장 판단이 있으면 오래된 것부터 최대 5건 처리해.\n2) 각 건마다 claim_lead_job(job_id, worker \"gemini_app\")으로 잡고, 받은 자료의 [역할·원칙]과 [자료]를 끝까지 읽고 판단해.\n3) [답안 형식]의 키를 그대로 쓴 JSON 하나만 만들어 submit_lead_job(job_id, worker \"gemini_app\", result_json)으로 제출해. 자료에 없는 사실은 지어내지 말고, 업무 브리핑의 금지 사항을 지켜.\n[2. 외주]\n4) list_outsourcing_requests를 worker \"gemini\"로 호출해서 나한테 배정된 대기 요청을 확인해. 가장 오래된 요청 1건을 claim_outsourcing_request(worker \"gemini\")로 잡고 요청서를 끝까지 읽어.\n5) 요청서의 \"해야 할 일\"과 \"제출물\" 기준대로 작업해. 웹 검색으로 근거를 확인하고 수치·주장에는 출처 링크를 붙여. 확인한 사실과 추정은 구분해.\n6) 코드 저장소 수정이나 로그인이 필요한 사이트 작업이면 직접 하지 말고 pass_outsourcing_request로 넘겨 (코드 → antigravity, 로그인·콘솔 → aside). 결제·발송·광고비 집행은 하지 마.\n7) 끝나면 submit_outsourcing_result로 제출해 (worker \"gemini\", summary 2~4문장, document 마크다운 전문). 대화창에 답만 쓰고 끝내지 마. 시간이 남으면 외주를 1건 더 처리해.\n8) 팀장 판단도 외주도 없으면 \"처리할 일 없음\" 한 줄로 끝내.";
 }
 
 function mcpConfigSnippet() {
