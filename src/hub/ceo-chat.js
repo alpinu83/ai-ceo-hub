@@ -1,4 +1,5 @@
 // hub/ceo-chat.js: server.js에서 분리 (공유 로직)
+import { handleDevDesignDecision } from './dev-policy.js';
 import { sendTelegramApprovalCard } from '../telegram.js';
 import { handleTodoCallback, sendInboxTelegram } from './ceo-inbox.js';
 import { handleShortsCallback } from './shorts.js';
@@ -26,7 +27,9 @@ export function getTelegramCallbacks() {
     onDecision: async (aprId, decision, note) => {
       const res = applyApprovalDecisionInDb(aprId, decision, note);
       const cleanNote = note === 'Telegram 모바일 원터치 결재' ? '' : note;
-      if (res.ok && res.approval?.kind === 'stage_gate') {
+      if (res.ok && res.approval?.kind === 'dev_design') {
+        await handleDevDesignDecision(res.approval, decision, cleanNote);
+      } else if (res.ok && res.approval?.kind === 'stage_gate') {
         await handleStageGateDecision(res.approval, decision, cleanNote);
       } else if (res.ok && res.approval?.kind === 'deliverable_review') {
         await handleDeliverableReviewDecision(res.approval, decision, cleanNote);

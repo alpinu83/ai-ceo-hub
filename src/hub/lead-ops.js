@@ -7,7 +7,7 @@ import { getAiProviderHealth } from '../ai-guard.js';
 import { describeGoogleDataStatus } from '../google-data.js';
 import { getOutsourcingSettings } from '../outsourcing.js';
 import { isLeadPending } from '../lead-desk.js';
-import { outsourceTask } from './task-results.js';
+import { DEV_TEAM, devPolicyRules, dispatchDevTeamTask, routeCodeTask } from './dev-policy.js';
 import { sendTelegramReport } from '../telegram.js';
 import { MAJOR_DECISION_RE } from './ceo-chat.js';
 import { autoStartLiveMissionTasks, leadSay } from './missions.js';
@@ -231,14 +231,9 @@ export function createLeadTasks(db, mission, specs = [], source = 'lead_followup
     task.dispatchPrompt = buildDispatchPrompt(ag, task, mission);
     db.tasks.unshift(task);
     existing.add(task.title);
-    // IT팀(무료 API)이 휴직이면 코드 수정은 AGY 수정 → Aside 검수로 바로 외주
-    if (spec.isCodeChange && repoLinked && !agentMap.agent_it_dev?.active) {
-      const req = outsourceTask(db, task, { kind: 'code', worker: 'antigravity', reason: 'IT팀 휴직: 코드 수정은 AGY가 하고 Aside가 검수·보완' });
-      if (req) {
-        req.pinnedWorker = 'antigravity';
-        req.codeWorkflow = 'agy_then_aside';
-      }
-    }
+    // 코드 수정은 개발 지침대로 개발팀(Aside·AGY)에게, 개발팀에 직접 배정한 일반 작업은 작업 큐로 바로
+    if (spec.isCodeChange && repoLinked && !agentMap.agent_it_dev?.active) routeCodeTask(db, task, spec);
+    else if (DEV_TEAM[task.assigneeId]) dispatchDevTeamTask(db, task);
     created.push({ task, agent: ag });
   }
   if (created.length) mission.status = 'in_progress';
@@ -514,7 +509,7 @@ export async function opsCycle(missionId, { depth = 0 } = {}) {
         digest: await digestWithTools(db, m),
         agents: db.agents,
         settings: db.settings,
-        teamLoad: `${buildPlanningRoster(db)}\n\n${ASSIGNMENT_RULES}`,
+        teamLoad: `${buildPlanningRoster(db)}\n\n${ASSIGNMENT_RULES}\n${devPolicyRules(db.settings)}`,
         deliverablesText: deliverablesTextFor(m)
       });
     } catch (err) {
@@ -577,7 +572,7 @@ export async function leadAutoAdvance(missionId) {
       digest: buildMissionDigest(db, missionId),
       agents: db.agents,
       settings: db.settings,
-      teamLoad: `${buildPlanningRoster(db)}\n\n${ASSIGNMENT_RULES}`
+      teamLoad: `${buildPlanningRoster(db)}\n\n${ASSIGNMENT_RULES}\n${devPolicyRules(db.settings)}`
     });
   } catch (err) {
     const fresh = loadDb();

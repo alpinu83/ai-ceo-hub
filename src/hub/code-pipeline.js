@@ -134,7 +134,7 @@ export function isCodeTask(task, agent) {
 }
 
 export function isCodeApproval(db, apr) {
-  if (!apr || apr.kind === 'next_phase') return false;
+  if (!apr || apr.kind === 'next_phase' || apr.kind === 'dev_design') return false; // 설계 결재는 코드 반영이 아니라 dev-policy가 처리
   if (apr.kind === 'it_pr_merge' || apr.prNumber) return true;
   const mission = db.missions.find((m) => m.id === apr.missionId);
   if (!getMissionRepoCfg(db.settings, mission)) return false;

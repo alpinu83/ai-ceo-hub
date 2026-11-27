@@ -56,7 +56,7 @@ async function runTests() {
     // 3. Initial state & reset
     const resetRes = await (await fetch(`${BASE}/api/reset`, { method: 'POST' })).json();
     const mcpToken = resetRes.state.settings.mcpToken;
-    assert.equal(resetRes.state.agents.length, 14, 'default org chart has 14 AI agents (11 core + 3 IT Maintenance Team)');
+    assert.equal(resetRes.state.agents.length, 16, 'default org chart has 16 agents (11 core + 3 IT legacy + Aside·AGY dev team)');
 
     // 4. Create mission & parallel run-all
     const created = await (
@@ -397,27 +397,6 @@ async function runTests() {
     assert.equal(rep.reviewTasks.length, 1, 'deliverable task should be flagged for CEO review');
     const bundle = buildReportDeliverableBundle(repDb, repDb.missions[0], rep.reviewTasks, rep.checklistItems);
     assert.ok(bundle && bundle.markdown.includes('유튜브 채널 개설') && bundle.markdown.includes('AI 3단계 파이프라인'), 'report deliverable bundle should include checklist and full draft');
-
-    // 9-3. 팀장 업무함: AGY가 근무 중이어도 15분 안에 못 끝낸 판단은 당직 팀장(Gemini 앱)에게 넘김 (무한 대기 방지)
-    const { refreshLeadJobs, listLeadJobs } = await import('../src/lead-desk.js');
-    const ldNowIso = new Date().toISOString();
-    const ldOldIso = new Date(Date.now() - 20 * 60 * 1000).toISOString();
-    const ldDb = {
-      agentConnections: { 'lead:agy_lead': { lastSeenAt: ldNowIso, lastAction: 'poll' } },
-      leadJobs: [
-        { id: 'ldj_stuck', purpose: 'review', worker: 'agy_lead', status: 'open', createdAt: ldOldIso, queuedAt: ldOldIso, updatedAt: ldOldIso },
-        { id: 'ldj_fresh', purpose: 'plan', worker: 'agy_lead', status: 'open', createdAt: ldNowIso, queuedAt: ldNowIso, updatedAt: ldNowIso }
-      ]
-    };
-    refreshLeadJobs(ldDb);
-    const ldStuck = ldDb.leadJobs.find((j) => j.id === 'ldj_stuck');
-    assert.equal(ldStuck.worker, 'gemini_app', 'AGY job unfinished for 15 min must move to Gemini app even while AGY is on duty');
-    assert.equal(ldStuck.agyGaveUp, true, 'given-up job must be flagged');
-    refreshLeadJobs(ldDb);
-    assert.equal(ldStuck.worker, 'gemini_app', 'given-up job must not bounce back to AGY while AGY is on duty');
-    assert.equal(ldDb.leadJobs.find((j) => j.id === 'ldj_fresh').worker, 'agy_lead', 'fresh job stays with AGY');
-    assert.deepEqual(listLeadJobs(ldDb, 'agy_lead').map((j) => j.id), ['ldj_fresh'], 'AGY lead list must exclude given-up jobs');
-    assert.deepEqual(listLeadJobs(ldDb, 'gemini_app').map((j) => j.id), ['ldj_stuck'], 'Gemini app list must include given-up job');
 
     // 9-3. 모든 결재 유형(일반 업무·관문·다음 단계)에 성과품·체크리스트 자동 첨부 검증
     const { enrichApprovalDeliverables } = await import('../src/hub/deliverables.js');

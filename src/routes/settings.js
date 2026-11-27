@@ -1,4 +1,5 @@
 // routes/settings.js: server.js에서 분리 (HTTP 라우트)
+import { normalizeDevPolicy } from '../hub/dev-policy.js';
 import { appendLog, flushCloudBackup, loadDb, sanitizeStateForClient, saveDb, uid } from '../store.js';
 import { buildAnalyticsContext, describeGoogleDataStatus } from '../google-data.js';
 import { buildCompanyContext, ensureLeadDefaults, forgetFact, getLeadSettings, rememberFact } from '../lead-engine.js';
@@ -93,6 +94,7 @@ export function registerSettingsRoutes(app) {
     if (typeof body.approvalThresholdKRW === 'number') s.approvalThresholdKRW = Math.max(0, body.approvalThresholdKRW);
     if (typeof body.webhookUrl === 'string') s.webhookUrl = body.webhookUrl.trim();
     if (typeof body.globalDirectives === 'string') s.globalDirectives = body.globalDirectives.slice(0, 4000);
+    if (body.devPolicy && typeof body.devPolicy === 'object') s.devPolicy = normalizeDevPolicy(body.devPolicy, s.devPolicy);
     if (body.outsourcing && typeof body.outsourcing === 'object') {
       const os = { ...getOutsourcingSettings(s) };
       for (const k of ['enabled', 'autoOnFailure', 'autoForBrowser']) {
