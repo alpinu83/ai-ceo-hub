@@ -5,7 +5,7 @@ import { processTaskResult } from './task-results.js';
 import { opsCycle } from './lead-ops.js';
 import { autoStartLiveMissionTasks, updateMissionStatus } from './missions.js';
 import { appendLog } from '../store.js';
-import { pickBotOrDevMember } from '../lead-engine.js';
+import { isAgentExhausted, pickBotOrDevMember } from '../lead-engine.js';
 import { buildDispatchPrompt } from '../orchestrator.js';
 import { DEV_TEAM, dispatchDevTeamTask } from './dev-policy.js';
 import { leadSay } from './missions.js';
@@ -80,7 +80,11 @@ export async function leadDeskTick() {
   const moved = rebalanceBridgeTasks(db);
   if (refreshLeadJobs(db) || moved) saveDb(db);
   // 오늘 한도 소진으로 멈춘 작업: 10분마다 다시 배정 시도 (봇·개발팀으로 대체)
-  for (const mid of new Set((db.tasks || []).filter((t) => t.status === 'queued' && t.quotaHold).map((t) => t.missionId))) {
+  const exhausted = (t) => {
+    const ag = db.agents.find((a) => a.id === t.assigneeId);
+    return ag ? isAgentExhausted(ag, db.settings) : false;
+  };
+  for (const mid of new Set((db.tasks || []).filter((t) => t.status === 'queued' && (t.quotaHold || exhausted(t))).map((t) => t.missionId))) {
     if (Date.now() - (nudgedAt.get(mid) || 0) < 10 * 60 * 1000) continue;
     nudgedAt.set(mid, Date.now());
     autoStartLiveMissionTasks(mid).catch(() => {});
