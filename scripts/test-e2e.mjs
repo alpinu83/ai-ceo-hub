@@ -473,6 +473,13 @@ async function runTests() {
     const done = await (await fetch(`${BASE}/api/shorts/hook/jobs/${claim.jobs[0].id}/result`, { method: 'POST', headers: SH, body: JSON.stringify({ ok: true, videoId: 'abc123', privacy: 'private' }) })).json();
     assert.equal(done.status, 'uploaded', 'render result is recorded');
 
+    // 대표님 할 일: 모든 프로젝트에서 대표님 때문에 멈춘 일
+    const ceoInbox = await (await fetch(`${BASE}/api/ceo-inbox`)).json();
+    const stInbox = await (await fetch(`${BASE}/api/state`)).json();
+    const pendingCount = stInbox.approvals.filter((a) => a.status === 'pending').length;
+    assert.ok(ceoInbox.items.filter((i) => ['approval', 'gate'].includes(i.kind)).length === pendingCount, 'every pending approval is in the CEO to-do list');
+    assert.ok(ceoInbox.items.every((i, k, arr) => k === 0 || arr[k - 1].ageHours >= i.ageHours), 'oldest waiting first');
+
     // 외부 AI 외주 창구: 요청 → 목록 → 잡기 → 요청서 → 결과 제출 → 반영
     const outCreated = await (
       await fetch(`${BASE}/api/outsourcing`, {
