@@ -1458,6 +1458,10 @@ ${companyContextFor(mission?.id, { compact: true })}`;
 const MilestoneWorkSchema = z.object({
   milestoneDone: z.boolean().describe('지금까지의 결과물로 이 마일스톤의 완료 기준(doneWhen)을 충족했으면 true'),
   report: z.string().describe('대표님께 드리는 2~3문장 진행 보고 (확인된 사실만)'),
+  synthesis: z
+    .string()
+    .optional()
+    .describe('팀장 취합본(마크다운): 지금까지 팀원 결과물을 하나로 정리. 중복 제거, 의견이 다르면 나란히, 담당·출처 유지, 확인된 사실과 추정 구분, 마지막에 다음 결정·할 일. 새로 취합할 결과물이 없으면 빈 문자열'),
   tasks: z
     .array(
       z.object({
@@ -1506,6 +1510,7 @@ ${buildComplianceChecklist(mission)}`;
   return {
     milestoneDone: Boolean(object.milestoneDone),
     report: String(object.report || '').slice(0, 800),
+    synthesis: String(object.synthesis || '').slice(0, 12000),
     tasks: (object.tasks || [])
       .filter((t) => t?.title && t?.description)
       .map((t) => ({ ...t, acceptance: (t.acceptance || []).map((x) => String(x).slice(0, 200)), assigneeId: validIds.has(t.assigneeId) ? t.assigneeId : leadAgent.id })),
