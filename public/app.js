@@ -554,8 +554,8 @@ function renderChrome() {
     mobBadge.classList.toggle('show', pendingCount > 0);
   }
 
-  // Executive 3-Cell KPI Strip (Approvals · Missions · Active AI)
-  document.getElementById('kpi-approvals-val').textContent = `${pendingCount}건`;
+  // Executive 3-Cell KPI Strip (대표님 To Do · Missions · Active AI) — 결재 대기는 To Do List에 포함
+  document.getElementById('kpi-approvals-val').textContent = `${buildCeoInboxClient().length}건`;
   document.getElementById('kpi-agents-val').textContent = `${state.missions.length}건 · ${taskPct}%`;
   document.getElementById('kpi-budget-val').textContent = `${activeAgents.length}명`;
 
@@ -627,7 +627,7 @@ function buildCeoInboxClient() {
   const hrs = (iso) => (iso ? Math.max(0, (Date.now() - Date.parse(iso)) / 3600000) : 0);
   for (const a of state.approvals || []) {
     if (a.status !== 'pending') continue;
-    items.push({ kind: a.kind === 'stage_gate' ? 'gate' : 'approval', missionId: a.missionId, missionTitle: mt(a.missionId), title: a.title, detail: a.kind === 'stage_gate' ? '이 결정이 나야 다음 단계로 넘어갑니다' : '', since: a.createdAt, open: `data-open-approval="${esc(a.id)}"`, btn: '결재하기' });
+    items.push({ kind: a.kind === 'stage_gate' ? 'gate' : 'approval', approvalId: a.id, missionId: a.missionId, missionTitle: mt(a.missionId), title: a.title, detail: a.kind === 'stage_gate' ? '이 결정이 나야 다음 단계로 넘어갑니다' : '', since: a.createdAt, open: `data-open-approval="${esc(a.id)}"`, btn: '결재하기' });
   }
   const sm = state.missions.find((m) => m.mode === 'project' && /쇼츠|shorts/i.test(m.title) && m.status !== 'completed');
   const sh = state.shorts || {};
@@ -733,7 +733,7 @@ function renderCeoInbox() {
             <div class="home-item-title">${esc(it.title)}</div>
             ${it.detail ? `<div class="routine-sub">${esc(String(it.detail).slice(0, 140))}</div>` : ''}
             ${it.kind === 'blocked' && it.tasks?.length ? renderInboxBlockedTasks(it) : ''}
-            <div class="home-item-actions">${it.kind === 'outsource' && it.outsource ? renderInboxOutsourceActions(it.outsource) : ''}<button type="button" class="btn ${it.btnGhost ? 'btn-ghost' : 'btn-primary'} btn-sm" ${it.open}>${it.btn}</button></div>
+            <div class="home-item-actions">${it.kind === 'outsource' && it.outsource ? renderInboxOutsourceActions(it.outsource) : ''}${it.kind === 'approval' && it.approvalId ? `<button type="button" class="btn btn-ghost btn-sm" data-quick-approve="${esc(it.approvalId)}">승인</button>` : ''}<button type="button" class="btn ${it.btnGhost ? 'btn-ghost' : 'btn-primary'} btn-sm" ${it.open}>${it.btn}</button></div>
           </div>`;
         })
         .join('')}${items.length > 10 ? `<div class="routine-sub">… 외 ${items.length - 10}건</div>` : ''}</div>
@@ -762,42 +762,9 @@ function renderQuickOrderTargets() {
 function renderHomeView() {
   renderCeoInbox();
   renderQuickOrderTargets();
-  const aprWrap = document.getElementById('home-approvals-list');
   const msnWrap = document.getElementById('home-missions-list');
   const chatTeaser = document.getElementById('home-chat-teaser');
-  if (!aprWrap || !msnWrap) return;
-
-  const pending = state.approvals.filter((a) => a.status === 'pending');
-  if (pending.length === 0) {
-    aprWrap.innerHTML = '<div class="empty-state">대기 중인 결재 없음</div>';
-  } else {
-    aprWrap.innerHTML = pending
-      .slice(0, 3)
-      .map((apr) => {
-        const ag = getAgent(apr.agentId);
-        const msn = state.missions.find((m) => m.id === apr.missionId);
-        const msnTag = msn
-          ? `${msn.mode === 'project' ? '프로젝트' : '업무'} · ${msn.title}`
-          : '';
-        const costTxt = apr.estimatedCostKRW > 0 ? formatKRW(apr.estimatedCostKRW) : '';
-        return `<div class="home-item pending-accent">
-          <div class="home-item-top">
-            <div style="display:flex;gap:5px;flex-wrap:wrap;min-width:0;">
-              ${msnTag ? `<span class="badge badge-blue" style="max-width:100%;overflow:hidden;text-overflow:ellipsis;">${esc(msnTag)}</span>` : ''}
-              <span class="badge badge-amber">${esc(ag?.name || 'AI')}</span>
-            </div>
-            ${costTxt ? `<span class="mono" style="font-weight:700;">${esc(costTxt)}</span>` : ''}
-          </div>
-          <div class="home-item-title">${esc(apr.title)}</div>
-          <div class="home-item-actions">
-            <button type="button" class="btn btn-primary btn-sm" data-quick-approve="${esc(apr.id)}">승인</button>
-            <button type="button" class="btn btn-ghost btn-sm" data-open-approval="${esc(apr.id)}">상세</button>
-            ${msn ? `<button type="button" class="btn btn-ghost btn-sm" data-open-mission-board="${esc(msn.id)}">원본 보기</button>` : ''}
-          </div>
-        </div>`;
-      })
-      .join('');
-  }
+  if (!msnWrap) return;
 
   if (state.missions.length === 0) {
     msnWrap.innerHTML = '<div class="empty-state">진행 중인 미션 없음</div>';
@@ -3104,7 +3071,11 @@ function bindEvents() {
   document.getElementById('btn-close-participants')?.addEventListener('click', closeParticipantsDrawer);
   document.getElementById('participants-backdrop')?.addEventListener('click', closeParticipantsDrawer);
 
-  document.getElementById('kpi-approvals-cell')?.addEventListener('click', () => switchView('approvals'));
+  // 대표님 To Do 지표: 홈의 To Do List(결재 포함)로 이동
+  document.getElementById('kpi-approvals-cell')?.addEventListener('click', () => {
+    if (currentView !== 'command') switchView('command');
+    document.getElementById('home-ceo-inbox')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
   document.getElementById('kpi-missions-cell')?.addEventListener('click', () => switchView('missions'));
   document.getElementById('kpi-budget-cell')?.addEventListener('click', () => switchView('roster'));
 
