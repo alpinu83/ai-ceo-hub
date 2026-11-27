@@ -53,19 +53,26 @@ export function buildCeoInbox(db) {
       });
     }
   }
+  // 보류된 작업은 프로젝트별로 한 줄 (여러 건이면 묶음)
+  const blockedBy = new Map();
   for (const t of db.tasks || []) {
     if (t.status !== 'blocked') continue;
     const m = db.missions.find((x) => x.id === t.missionId);
     if (!m || m.status === 'completed') continue;
+    if (!blockedBy.has(m.id)) blockedBy.set(m.id, { m, tasks: [] });
+    blockedBy.get(m.id).tasks.push(t);
+  }
+  for (const { m, tasks } of blockedBy.values()) {
+    tasks.sort((x, y) => String(x.updatedAt).localeCompare(String(y.updatedAt)));
     items.push({
-      key: `task:${t.id}`,
+      key: `blocked:${m.id}`,
       kind: 'blocked',
-      missionId: t.missionId,
+      missionId: m.id,
       missionTitle: m.title,
-      title: clip(t.title, 120),
-      detail: clip(t.blockedReason || '보류됨', 140),
-      since: t.updatedAt,
-      action: { type: 'mission', id: t.missionId }
+      title: tasks.length === 1 ? clip(tasks[0].title, 120) : `보류된 작업 ${tasks.length}건 — 다시 맡길지 정리할지 결정`,
+      detail: tasks.length === 1 ? clip(tasks[0].blockedReason || '보류됨', 140) : tasks.slice(0, 3).map((t) => clip(t.title, 30)).join(' · '),
+      since: tasks[0].updatedAt,
+      action: { type: 'mission', id: m.id }
     });
   }
   for (const r of db.outsourcing || []) {
