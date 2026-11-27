@@ -1972,7 +1972,7 @@ function renderOutsourcingSettings(force = false) {
         })
         .join('');
       const now = rt.byKind?.[kind]?.label;
-      const botFirst = { research: 'Manus Cue', task: 'Meta Muse → Manus Cue (매일 반복 수집은 부이)' }[kind];
+      const botFirst = { research: 'Manus Cue · 피클', task: 'Meta Muse → Manus Cue → 피클 (짧은 문구는 인스팅스, 매일 반복 수집은 부이)' }[kind];
       return `<tr>
           <td style="padding:4px;"><strong>${esc(OUT_KIND_LABELS[kind])}</strong><div class="routine-sub">${esc(OUT_KIND_HINTS[kind])}</div></td>
           <td class="routine-sub" style="padding:4px;">${botFirst ? `봇 팀원: ${esc(botFirst)}` : '-'}</td>
