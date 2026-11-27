@@ -55,7 +55,12 @@ export function registerSettingsRoutes(app) {
     const agent = db.agents.find((a) => a.id === agentId);
     if (!agent) return c.json({ error: '에이전트를 찾을 수 없습니다.' }, 404);
 
-    if (typeof body.active === 'boolean') agent.active = body.active;
+    // 폐지(retired): 조직에서 완전히 빠짐, 다시 활성화하려면 retired=false 먼저
+    if (typeof body.retired === 'boolean') {
+      agent.retired = body.retired;
+      if (body.retired) agent.active = false;
+    }
+    if (typeof body.active === 'boolean' && !(agent.retired && body.active)) agent.active = body.active;
     if (['api', 'litellm', 'mcp', 'bridge'].includes(body.connectionMode)) agent.connectionMode = body.connectionMode;
     if (['lead', 'specialist', 'executor'].includes(body.tier)) {
       agent.tier = body.tier;
