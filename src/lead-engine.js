@@ -410,6 +410,7 @@ function formatFact(f, missionTitles) {
  */
 // ---------------------------------------------------------------- orchestration (팀장의 지휘·검토)
 
+const AI_FAIL_RE = /(AI\s*(모델|엔진)?\s*호출\s*(실패|오류)|모델\s*호출\s*(실패|오류)|AI\s*엔진\s*(실패|오류|없음)|응답\s*생성\s*실패|RESOURCE_EXHAUSTED|quota\s*(exceeded|cooldown)|rate\s*limit(ed)?\b|\[quota cooldown\])/i;
 const CANNOT_RE = /(접근(이|할 수)?\s*(불가|없)|확인할 수 없|실행할 수 없|진행할 수 없|작성할 수 없|생성(이|할 수)?\s*(불가|없)|제공해\s*주(세요|십시오|시면)|알려\s*주(세요|십시오|시면)|미지정|지정되지 않|권한(이)?\s*(없|필요)|토큰(이)?\s*(없|필요)|정보가 (없|부족)|자료가 (없|부족))/;
 const LOGIN_RE = /(로그인|콘솔|계정 (설정|접속|등록)|애드센스|adsense|서치\s*콘솔\s*(설정|등록|제출|인증)|2단계|본인\s*인증|결제 수단)/i;
 const REPO_RE = /(저장소|repo|github|깃허브|\bPR\b|풀\s*리퀘|브랜치|커밋|파일 구조|기존 코드)/i;
@@ -421,6 +422,9 @@ const REPO_RE = /(저장소|repo|github|깃허브|\bPR\b|풀\s*리퀘|브랜치|
 export function detectNonResult(output = '', osFlag = '') {
   const text = String(output || '');
   if (osFlag) return { nonResult: true, reason: osFlag };
+  // AI 호출이 실패했다는 문구가 들어간 결과는 길이와 상관없이 결과물로 인정하지 않음 (실패를 완료로 보고하는 것 방지)
+  const fail = text.slice(0, 1500).match(AI_FAIL_RE);
+  if (fail) return { nonResult: true, reason: `AI 호출 실패가 결과에 포함됨: "${fail[0]}"` };
   const head = text.replace(/[*#>\s]+/g, ' ').slice(0, 500);
   const m = head.match(CANNOT_RE);
   if (!m) return { nonResult: false, reason: '' };
