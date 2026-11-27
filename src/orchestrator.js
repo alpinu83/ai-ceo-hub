@@ -1319,6 +1319,8 @@ export async function leadReviewDeliverable({ task, output, mission, agents, set
 - escalate: 이 팀원과 무료 도구로는 불가능할 때(실제 웹 조사, 로그인, 현실 행동 필요 등). feedback에 무엇이 필요한지.
 - 계획·목차·"정보를 주세요"·"~하겠습니다"만 있는 결과는 accept 금지.
 - 근거 없는 수치를 사실처럼 쓴 경우, 브리핑의 금지 사항을 어긴 경우 accept 금지.
+- 판정 범위는 이 작업의 [요구사항]과 [완료 기준]뿐입니다. 프로젝트 전체 목표나 다른 작업의 일(예: 분석 작업에 코드 수정·PR·배포·색인 요청)을 이 결과물에 요구하지 마세요. 필요한 후속 일은 feedback에 "후속 작업 제안"으로만 적고 판정에는 반영하지 마세요.
+- 팀원은 PR 생성·머지·배포·계정 로그인을 직접 할 수 없습니다(IT팀 코드 반영 절차와 외주가 담당). 그런 실행을 하지 않았다는 이유로 revise 금지.
 ${mission ? `\n${buildMissionBrief(mission)}` : ''}`;
   // 저장소 실제 확인: 검수자가 파일 존재 여부를 추측하지 않게 (없는 파일 판정 오류 방지)
   const snapshot = mission?.githubRepo ? await missionRepoSnapshot(mission, settings).catch(() => null) : null;
