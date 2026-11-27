@@ -42,6 +42,10 @@ export function registerAgentInboxRoutes(app) {
           requiresApproval: t.requiresApproval,
           estimatedCostKRW: t.estimatedCostKRW,
           dispatchPrompt: t.dispatchPrompt,
+          needsRevision: fb.needsRevision,
+          revisionRound: fb.revisionRound,
+          actionRequired: fb.actionRequired,
+          actionLabel: fb.actionLabel,
           ceoFeedback: fb.ceoFeedback,
           leadFeedback: fb.leadFeedback,
           leadVerdict: fb.leadVerdict,
@@ -51,6 +55,27 @@ export function registerAgentInboxRoutes(app) {
           lastDecision: fb.lastDecision
         };
       });
+
+    const revisionNeededCount = pendingTasks.filter((t) => t.actionRequired === 'revise_and_resubmit').length;
+    const newCount = pendingTasks.filter((t) => t.actionRequired === 'submit_result').length;
+    const waitingReviewCount = pendingTasks.filter((t) => ['wait_for_lead_review', 'wait_for_ceo_approval'].includes(t.actionRequired)).length;
+    const actionableCount = revisionNeededCount + newCount;
+    const inboxHeadline =
+      revisionNeededCount > 0
+        ? `⚠️ 지금 바로 처리할 업무 ${actionableCount}건 (팀장 보완 재제출 필요 ${revisionNeededCount}건 · 신규 ${newCount}건 · 검수/결재 대기 ${waitingReviewCount}건) — 보완 요청 업무는 검수 대기가 아니라 수정 후 바로 재제출해야 합니다!`
+        : newCount > 0
+          ? `📌 지금 바로 처리할 신규 업무 ${newCount}건 (검수/결재 대기 ${waitingReviewCount}건)`
+          : waitingReviewCount > 0
+            ? `⏳ 현재 신규·보완 요청 없음 (팀장 검수/결재 대기 ${waitingReviewCount}건 — 중복 제출 금지)`
+            : '현재 새로 처리할 업무가 없습니다.';
+    const inboxSummary = {
+      totalPending: pendingTasks.length,
+      actionableCount,
+      newCount,
+      revisionNeededCount,
+      waitingReviewCount,
+      headline: inboxHeadline
+    };
 
     const recentFeedback = buildAgentRecentFeedback(db, agent.id, 12);
     const ceoFeedbackItems = recentFeedback.filter((f) => f.source !== 'lead_review');
@@ -72,6 +97,7 @@ export function registerAgentInboxRoutes(app) {
       const lines = [
         `[${db.settings.companyName}] ${agent.name} 전용 업무·회의실 수신함`,
         `CEO: ${db.settings.ceoName || '대표님'}`,
+        `상태 요약: ${inboxHeadline}`,
         '',
         '=== CEO 전역 지침 · 회사 기억 (항상 적용) ===',
         buildCompanyContext(db, pendingTasks[0]?.missionId || '', { compact: true }),
@@ -80,7 +106,7 @@ export function registerAgentInboxRoutes(app) {
         ...(pendingTasks.length
           ? pendingTasks.map(
               (t, i) =>
-                `${i + 1}. [${t.id}] (${t.missionTitle || t.missionId}) ${t.title} [상태: ${t.status}]\n   설명: ${t.description}${t.leadFeedback ? `\n   팀장 피드백·답장: ${t.leadFeedback}` : ''}${t.ceoFeedback ? `\n   CEO 피드백·수정 지시: ${t.ceoFeedback}` : ''}\n   승인 필요: ${t.requiresApproval ? '예(확정·결제 전 정지)' : '아니오'}`
+                `${i + 1}. [${t.id}] (${t.missionTitle || t.missionId}) ${t.title} [상태: ${t.status} · ${t.actionLabel}]\n   설명: ${t.description}${t.leadFeedback ? `\n   팀장 피드백·답장: ${t.leadFeedback}` : ''}${t.ceoFeedback ? `\n   CEO 피드백·수정 지시: ${t.ceoFeedback}` : ''}\n   승인 필요: ${t.requiresApproval ? '예(확정·결제 전 정지)' : '아니오'}`
             )
           : ['현재 새로 배정된 업무가 없습니다.']),
         ...(leadFeedbackItems.length
@@ -104,8 +130,9 @@ export function registerAgentInboxRoutes(app) {
         `=== 답변/결과 제출 방법 (POST JSON) ===`,
         `URL: ${replyUrl}`,
         `규칙 1: 업무 결과를 제출할 때는 반드시 정확한 taskId와 missionId를 함께 보내세요. 일반 회의실 보고·정정 메시지는 taskId·deliverable 없이 message와 missionId만 보내세요.`,
-        `규칙 2(도구 한계·양방향 피드백): 영상 재생·자막 불가·로그인 차단 등 도구 제약으로 일부 항목을 끝낼 수 없을 때는 추정하지 말고 '미확인'으로 남긴 뒤 limitations/blockers/questions 배열에 사유를 적어 그대로 제출하세요. 팀장이 이를 검토해 recentFeedback과 회의실로 직접 답장(한계 반영 통과·우회 기준·타 팀원 이관)을 남깁니다. 대표님께 따로 전달을 부탁하지 마세요.`,
-        `규칙 3: 작업을 시작하거나 재제출하기 전에 반드시 위 '최근 팀장 검수·피드백 답장'과 '최근 CEO 결재 피드백'을 먼저 확인하세요.`,
+        `규칙 2(보완 재제출 vs 검수 대기 구분): '팀장 보완 요청 도착(revise_and_resubmit)'으로 표시된 업무는 이미 제출했던 taskId라도 검수 대기가 아니라 반려·수정 지시가 온 상태이므로 반드시 leadFeedback을 반영해 수정 재제출하세요. '팀장 검수 대기 중(wait_for_lead_review)' 상태만 중복 제출하지 말고 기다리세요.`,
+        `규칙 3(도구 한계·양방향 피드백): 영상 재생·자막 불가·로그인 차단 등 도구 제약으로 일부 항목을 끝낼 수 없을 때는 추정하지 말고 '미확인'으로 남긴 뒤 limitations/blockers/questions 배열에 사유를 적어 그대로 제출하세요. 팀장이 이를 검토해 recentFeedback과 회의실로 직접 답장(한계 반영 통과·우회 기준·타 팀원 이관)을 남깁니다. 대표님께 따로 전달을 부탁하지 마세요.`,
+        `규칙 4: 작업을 시작하거나 재제출하기 전에 반드시 위 '최근 팀장 검수·피드백 답장'과 '최근 CEO 결재 피드백'을 먼저 확인하세요.`,
         `Body: {"message":"회의실 보고 내용","missionId":"프로젝트ID","taskId":"업무ID","deliverable":"상세 결과","limitations":["도구 제약으로 미확인 처리한 항목과 사유"],"blockers":[],"questions":[],"requestApproval":false,"estimatedCostKRW":0}`
       ];
       return c.text(lines.join('\n'));
@@ -119,6 +146,7 @@ export function registerAgentInboxRoutes(app) {
       statusNote: externalBotConnected
         ? `실제 외부 봇(${agent.name})의 접속 기록이 있습니다.`
         : `우리 서버의 ${agent.name} 수신함 주소는 정상 열려있지만, 실제 외부 봇(${agent.name})은 아직 접속한 기록이 없습니다.`,
+      inboxSummary,
       company: db.settings.companyName,
       ceoName: db.settings.ceoName || '대표님',
       agent: { id: agent.id, name: agent.name, roleTitle: agent.roleTitle },
@@ -139,6 +167,7 @@ export function registerAgentInboxRoutes(app) {
         rules: [
           '업무 결과 제출 시 반드시 정확한 taskId와 missionId를 함께 보내세요 (대기 업무가 2건 이상이면 taskId 없이 제출 시 자동 연결되지 않습니다).',
           '일반 회의실 보충 보고·정정 메시지는 taskId와 deliverable을 생략하고 message와 missionId만 보내세요.',
+          'actionRequired가 "revise_and_resubmit"(needsRevision: true)인 업무는 검수 대기가 아니라 팀장이 보완 요청을 보낸 상태이므로, 이미 제출했던 taskId라도 leadFeedback을 반영해 수정 후 다시 제출하세요. actionRequired가 "wait_for_lead_review" 또는 "wait_for_ceo_approval"일 때만 중복 제출하지 말고 기다리세요.',
           '도구 제약(영상 재생·자막 불가, 로그인 차단 등)으로 지시의 일부를 완수하지 못할 때는 추정하지 말고 "미확인"으로 남긴 뒤 limitations/blockers/questions 배열에 구체적 사유와 질문을 적어 그대로 제출하세요. 팀장이 직접 검토해 recentFeedback과 회의실로 답장(한계 인정 통과·우회 기준·타 팀원 이관)을 남기므로 대표님께 중계를 요청할 필요가 없습니다.',
           '업무를 시작하거나 재시도하기 전에 반드시 recentFeedback을 확인해 팀장의 이전 답장(통과·이관 종료·우회 재작업)을 반영하세요.'
         ],
