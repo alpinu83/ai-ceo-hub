@@ -951,6 +951,46 @@ function scheduleGistBackup(serialized) {
   }, 1000);
 }
 
+/** 백업 Gist의 이전 버전 목록 (관리자 복구용) */
+export async function listBackupRevisions(limit = 40) {
+  if (!isGistTokenSet() || !activeGistId) throw new Error('클라우드 백업이 연결되어 있지 않습니다.');
+  const res = await fetch(`https://api.github.com/gists/${encodeURIComponent(activeGistId)}/commits?per_page=${Math.min(100, limit)}`, { headers: getGistHeaders() });
+  if (!res.ok) throw new Error(`Gist 이력 조회 실패 HTTP ${res.status}`);
+  const list = await res.json();
+  return (Array.isArray(list) ? list : []).map((c) => ({ version: c.version, committedAt: c.committed_at, changes: c.change_status || {} }));
+}
+
+/** 특정 백업 버전 내용 요약 (복구 전 확인) 또는 복구 */
+export async function restoreBackupRevision(version, { dryRun = false } = {}) {
+  if (!isGistTokenSet() || !activeGistId) throw new Error('클라우드 백업이 연결되어 있지 않습니다.');
+  if (!/^[0-9a-f]{7,40}$/i.test(String(version || ''))) throw new Error('버전 값이 올바르지 않습니다.');
+  const headers = getGistHeaders();
+  const res = await fetch(`https://api.github.com/gists/${encodeURIComponent(activeGistId)}/${encodeURIComponent(version)}`, { headers });
+  if (!res.ok) throw new Error(`Gist 버전 조회 실패 HTTP ${res.status}`);
+  const gist = await res.json();
+  const raw = await readGistFileContent(gist?.files?.[GIST_ENC_FILENAME], headers);
+  const data = decryptBackupPayload(raw);
+  if (!data || !Array.isArray(data.missions)) throw new Error('이 버전은 복호화하거나 읽을 수 없습니다.');
+  const summary = {
+    version,
+    missions: data.missions.length,
+    tasks: (data.tasks || []).length,
+    approvals: (data.approvals || []).length,
+    routines: (data.routines || []).length,
+    memory: (data.memory?.facts || []).length,
+    agents: (data.agents || []).length,
+    globalDirectives: String(data.settings?.globalDirectives || '').length,
+    missionTitles: data.missions.map((m) => m.title).slice(0, 10)
+  };
+  if (dryRun) return summary;
+  fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2), 'utf8');
+  dbCache = null; // 다음 읽기에서 마이그레이션 포함해 다시 로드
+  const fresh = loadDb();
+  saveDb(fresh);
+  await flushCloudBackup(fresh);
+  return summary;
+}
+
 export async function flushCloudBackup(db) {
   if (!isGistTokenSet() || !activeGistId) return false;
   if (gistSyncTimer) {
