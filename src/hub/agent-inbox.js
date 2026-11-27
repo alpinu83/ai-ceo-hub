@@ -116,43 +116,26 @@ export async function handleAgentInboxReply(c) {
     task.executionModeUsed = 'external_agent_https';
     task.updatedAt = now;
     if (estimatedCostKRW > 0) task.estimatedCostKRW = estimatedCostKRW;
+    if (requestApproval) task.requiresApproval = true;
+    if (body.approvalTitle) task.pendingApprovalTitle = String(body.approvalTitle).trim();
+    if (message) task.pendingApprovalReason = message.slice(0, 320);
 
-    const shouldPause = requestApproval || task.requiresApproval;
-    if (shouldPause) {
-      task.status = 'awaiting_approval';
-      const existing = db.approvals.find((a) => a.taskId === task.id && a.status === 'pending');
-      if (!existing) {
-        const apr = {
-          id: uid('apr'),
-          missionId: task.missionId,
-          taskId: task.id,
-          agentId: agent.id,
-          title: body.approvalTitle || `${task.title} — ${agent.name} 실행 승인 요청`,
-          category: (task.estimatedCostKRW || 0) > 0 ? '예약 · 결제' : '외부 에이전트 실행 승인',
-          riskLevel: (task.estimatedCostKRW || 0) >= 100000 ? 'high' : 'medium',
-          estimatedCostKRW: task.estimatedCostKRW || 0,
-          depositKRW: 0,
-          summary: message.slice(0, 260),
-          proposedAction: `승인 시 ${agent.name}에서 최종 확정 처리`,
-          status: 'pending',
-          ceoNote: '',
-          createdAt: now,
-          decidedAt: null
-        };
-        db.approvals.unshift(apr);
-        approvalId = apr.id;
-        notifyAllApprovalChannels(db.settings, apr, agent.name);
-      } else {
-        approvalId = existing.id;
-      }
-      appendLog(db, `${agent.name} (HTTPS 보고)`, `"${task.title}" 실제 보고 접수 → CEO 결재함 상신.`, 'approval');
-    } else {
-      // 외부 봇 결과도 같은 처리 경로: 지침 위반·팀장 검수·결과물 등록
-      const missionX = db.missions.find((m) => m.id === task.missionId);
-      const outX = await processTaskResult(db, task, agent, missionX, { output: deliverable, executionModeUsed: 'external_agent_https' }, { message: false });
-      appendLog(db, `${agent.name} (HTTPS 보고)`, `"${task.title}" 결과 보고 → ${task.status === 'completed' ? '검수 통과' : task.status === 'queued' || task.status === 'awaiting_bridge' ? '보완 요청' : task.status}.`, 'info');
-      if (outX.requeued) setTimeout(() => autoStartLiveMissionTasks(task.missionId).catch(() => {}), 1500);
-    }
+    // 결재가 필요한 업무도 반드시 팀장 검수·재가공(processTaskResult)을 거쳐 대표님 결재함으로 상신
+    const missionX = db.missions.find((m) => m.id === task.missionId);
+    const outX = await processTaskResult(db, task, agent, missionX, { output: deliverable, executionModeUsed: 'external_agent_https' }, { message: false });
+    approvalId = outX?.approvalId || db.approvals.find((a) => a.taskId === task.id && a.status === 'pending')?.id || null;
+    const statusText =
+      task.status === 'review_pending'
+        ? '팀장 검수·재가공 대기'
+        : task.status === 'awaiting_approval'
+          ? '팀장 검토 후 CEO 결재 상신'
+          : task.status === 'completed'
+            ? '검수 통과'
+            : task.status === 'queued' || task.status === 'awaiting_bridge'
+              ? '보완 요청'
+              : task.status;
+    appendLog(db, `${agent.name} (HTTPS 보고)`, `"${task.title}" 결과 보고 → ${statusText}.`, task.status === 'awaiting_approval' ? 'approval' : 'info');
+    if (outX?.requeued) setTimeout(() => autoStartLiveMissionTasks(task.missionId).catch(() => {}), 1500);
     updateMissionStatus(db, task.missionId);
   } else if (requestApproval) {
     const apr = {

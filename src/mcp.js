@@ -176,8 +176,13 @@ export function createCeoMcpServer() {
       const shouldPause = requires_ceo_approval || task.requiresApproval;
       let approvalId = null;
 
-      // 결재가 필요 없는 결과는 팀장 검수를 거침 (통과·재작업·상위 처리)
-      if (!shouldPause && taskResultHandler) {
+      if (shouldPause) {
+        task.requiresApproval = true;
+        if (approval_reason) task.pendingApprovalReason = String(approval_reason).trim().slice(0, 320);
+      }
+
+      // 모든 업무 결과(결재 필요 포함)는 팀장 검수·재가공을 거침 (통과·재작업·상위 처리 → 필요 시 결재 상신)
+      if (taskResultHandler) {
         saveDb(db);
         const handled = await taskResultHandler(task.id, deliverable, 'mcp_sdk_live').catch((err) => ({ status: 'error', error: err.message }));
         return {
@@ -185,7 +190,19 @@ export function createCeoMcpServer() {
             {
               type: 'text',
               text: JSON.stringify(
-                { ok: handled.status !== 'error', task_id: task.id, status: handled.status, review: handled.review || null, note: handled.status === 'queued' || handled.status === 'awaiting_bridge' ? '팀장 검수에서 보완 요청: review.feedback을 반영해 다시 제출하세요.' : '' },
+                {
+                  ok: handled.status !== 'error',
+                  task_id: task.id,
+                  status: handled.status,
+                  approval_id: handled.approvalId || null,
+                  review: handled.review || null,
+                  note:
+                    handled.status === 'review_pending'
+                      ? '총괄 팀장이 결과물을 검수·재가공한 뒤 CEO 결재함으로 상신합니다.'
+                      : handled.status === 'queued' || handled.status === 'awaiting_bridge'
+                        ? '팀장 검수에서 보완 요청: review.feedback을 반영해 다시 제출하세요.'
+                        : ''
+                },
                 null,
                 2
               )

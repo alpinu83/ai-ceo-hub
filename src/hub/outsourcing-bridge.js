@@ -350,7 +350,8 @@ setTaskResultHandler(async (taskId, output, mode) => {
   saveDb(db);
   await flushCloudBackup(db);
   if (out.requeued) setTimeout(() => autoStartLiveMissionTasks(task.missionId).catch(() => {}), 1500);
-  return { status: task.status, review: task.review || null };
+  const approvalId = out?.approvalId || db.approvals.find((a) => a.taskId === task.id && a.status === 'pending')?.id || null;
+  return { status: task.status, approvalId, review: task.review || null };
 });
 
 export function updateOutsourceRouting(db, { routing, awayHours, officeHours, leaseMinutes, roles, geminiWaitMinutes, priorities, waitMinutes, codeWorkflow } = {}) {

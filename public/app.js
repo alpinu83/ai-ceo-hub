@@ -1611,8 +1611,8 @@ function renderApprovalsView() {
         <div class="memo-fact-val">${esc(msn ? msn.title : '단독 안건')}</div>
       </div>
       <div>
-        <div class="memo-fact-label">상신 AI 팀원</div>
-        <div class="memo-fact-val">${esc(ag?.name || apr.agentId)}</div>
+        <div class="memo-fact-label">상신 · 검토</div>
+        <div class="memo-fact-val">${esc(apr.agentId === 'agent_gemini_neon' ? '총괄 팀장' : ag?.name || apr.agentId)}${apr.workerName ? ` (실무: ${esc(apr.workerName)})` : ''}${apr.leadScore != null ? ` · 검수 ${apr.leadScore}/10` : ''}</div>
       </div>
       <div>
         <div class="memo-fact-label">예상 비용 · 유형</div>
@@ -1624,6 +1624,18 @@ function renderApprovalsView() {
       <h4>상신 배경 및 요약</h4>
       <p style="margin:0;font-size:14px;white-space:pre-line;line-height:1.6;">${esc(apr.summary)}</p>
     </div>
+
+    ${(() => {
+      const leadBrief = String(apr.leadBrief || task?.leadBrief || '').trim();
+      if (!leadBrief) return '';
+      return `<div class="memo-section lead-brief-panel">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
+            <h4 style="margin:0;color:var(--accent-primary);">🧭 총괄 팀장 재가공 보고서</h4>
+            ${apr.leadScore != null ? `<span class="badge badge-green">팀장 검수 ${apr.leadScore}/10</span>` : '<span class="badge badge-green">팀장 검토·재가공 완료</span>'}
+          </div>
+          <div class="markdown-body">${renderMarkdown(leadBrief)}</div>
+        </div>`;
+    })()}
 
     ${
       Array.isArray(apr.checklist) && apr.checklist.length
@@ -1637,7 +1649,7 @@ function renderApprovalsView() {
     }
 
     <div class="memo-section">
-      <h4>승인 시 실행될 작업</h4>
+      <h4>팀장 권고 · 승인 시 실행될 작업</h4>
       <div class="prompt-box">${esc(apr.proposedAction)}</div>
     </div>
 
@@ -1659,6 +1671,7 @@ function renderApprovalsView() {
     }
 
     ${(() => {
+      const hasLeadBrief = Boolean(String(apr.leadBrief || task?.leadBrief || '').trim());
       const idSet = new Set();
       if (apr.taskId) idSet.add(apr.taskId);
       for (const id of Array.isArray(apr.taskIds) ? apr.taskIds : []) if (id) idSet.add(id);
@@ -1670,19 +1683,20 @@ function renderApprovalsView() {
         .filter((t) => t && String(t.output || '').trim());
       const hasBundleable =
         attachedTasks.length > 0 ||
+        hasLeadBrief ||
         (Array.isArray(apr.checklist) && apr.checklist.length > 0) ||
         Boolean(apr.proposedDirective || apr.prUrl || apr.consult?.document);
       if (!hasBundleable) return '';
       return `<div class="memo-section">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
-            <h4 style="margin:0;">📎 첨부 성과품 · 시안 (${attachedTasks.length}건)</h4>
+            <h4 style="margin:0;">📎 ${hasLeadBrief ? '실무 팀원 원문 · 첨부 성과품' : '첨부 성과품 · 시안'} (${attachedTasks.length}건)</h4>
             <button type="button" class="btn btn-ghost btn-sm" data-download-deliverable="${esc(apr.id)}">성과품·체크리스트(.md) 다운로드</button>
           </div>
           ${attachedTasks
             .map((t, idx) => {
               const tAg = state.agents.find((a) => a.id === t.assigneeId);
-              return `<details ${idx === 0 ? 'open' : ''} style="margin-bottom:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg-subtle);padding:10px 14px;">
-                <summary style="cursor:pointer;font-weight:600;font-size:13.5px;">${esc(t.title)} <span style="font-weight:400;color:var(--ink-muted);">(${esc(tAg?.name || '팀원')})</span></summary>
+              return `<details ${idx === 0 && !hasLeadBrief ? 'open' : ''} style="margin-bottom:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg-subtle);padding:10px 14px;">
+                <summary style="cursor:pointer;font-weight:600;font-size:13.5px;">${esc(t.title)} <span style="font-weight:400;color:var(--ink-muted);">(${esc(tAg?.name || '팀원')}${hasLeadBrief ? ' · 원문 펼치기' : ''})</span></summary>
                 <div class="markdown-body" style="margin-top:10px;">${renderMarkdown(t.output)}</div>
               </details>`;
             })
