@@ -93,7 +93,9 @@ export async function approvalFromExternalPr(db, req, mission) {
   const blocked = files.filter((f) => /^(\.github\/|data\/db\.json$|\.env)/.test(f.filename));
   if (blocked.length) throw new Error(`보호된 파일 수정이 포함돼 자동 결재에 올리지 않았습니다: ${blocked.map((f) => f.filename).join(', ')}`);
   const isTwoStageReviewed = req.reviewStage === 'aside_review';
-  const workerTag = isTwoStageReviewed ? 'AGY+Aside 검수' : req.result.by;
+  // Aside가 3번 반려한 뒤 AGY가 다시 낸 PR: 검수를 통과하지 못한 채 올라오므로 대표님 결재 카드에 분명히 표시
+  const reviewExhausted = req.reviewStage === 'agy_rework' && (Number(req.reviewRound) || 0) > 3;
+  const workerTag = isTwoStageReviewed ? 'AGY+Aside 검수' : reviewExhausted ? 'AGY · Aside 검수 미통과' : req.result.by;
   const result = {
     repo,
     branch: pr.base?.ref || 'main',
@@ -108,9 +110,11 @@ export async function approvalFromExternalPr(db, req, mission) {
       .join('\n\n')
       .slice(0, 12000),
     audit: {
-      passed: true,
-      riskLevel: 'medium',
-      notes: isTwoStageReviewed
+      passed: !reviewExhausted,
+      riskLevel: reviewExhausted ? 'high' : 'medium',
+      notes: reviewExhausted
+        ? `Aside 검수에서 ${Number(req.reviewRound) - 1}번 반려된 뒤 Antigravity가 다시 낸 PR입니다(검수 미통과). 반려 사유를 확인하고 승인 여부를 결정해 주세요.`
+        : isTwoStageReviewed
         ? 'Antigravity 1차 수정 후 Aside 검수·보완을 거친 PR입니다. 승인 시 CI 통과를 확인한 뒤 머지합니다.'
         : `외부 작업자(${req.result.by})가 만든 PR입니다. 승인 시 CI 통과를 확인한 뒤 머지합니다.`
     },
