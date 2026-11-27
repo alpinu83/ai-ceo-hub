@@ -2455,6 +2455,7 @@ function renderRosterView() {
   const agyAt = seen('lead:agy_lead');
   const gemAt = seen('lead:gemini_app');
   const agyOn = agyAt && Date.now() - Date.parse(agyAt) < 3 * 60 * 1000;
+  const gemOn = Boolean(gemAt && Date.now() - Date.parse(gemAt) < 90 * 60 * 1000);
   const dutyName = agyOn ? 'AGY (Hydrogen)' : 'Gemini 앱 당직';
   const ago = (iso) => (iso ? formatTime(iso) : '기록 없음');
   const isStandbyLead = (ag) => leadDeskOn && ag.tier === 'lead' && ag.active;
@@ -2470,14 +2471,23 @@ function renderRosterView() {
     <i class="dot ${!ag.active || standby ? 'dot-amber' : modeDot(ag.connectionMode)}"></i>
   </button>`;
   };
-  const leadPill = `<div class="org-node-pill">
-    <span class="agent-avatar sm" style="background:${agyOn ? '#0E6245' : '#2563EB'}">${agyOn ? 'AG' : '팀장'}</span>
+  const agyLeadPill = `<div class="org-node-pill ${agyOn ? '' : 'inactive'}">
+    <span class="agent-avatar sm" style="background:#0E6245">AG</span>
     <div style="text-align:left;">
-      <div class="org-node-name">총괄 팀장 · ${esc(dutyName)}</div>
-      <div class="org-node-role">주간 AGY (Hydrogen) · 야간 Gemini 앱 · 비상 Gemini API 대기</div>
+      <div class="org-node-name">${agyOn ? '총괄 팀장 · AGY (Hydrogen)' : '주간 팀장 대기 · AGY (Hydrogen)'}</div>
+      <div class="org-node-role">${agyOn ? '주간 근무 중 · 30초 감시' : '오프라인 대기 (PC 꺼짐)'}</div>
     </div>
-    <i class="dot ${agyOn ? 'dot-green' : 'dot-blue'}"></i>
+    <i class="dot ${agyOn ? 'dot-green' : 'dot-amber'}"></i>
   </div>`;
+  const geminiLeadPill = `<div class="org-node-pill ${agyOn ? 'inactive' : ''}">
+    <span class="agent-avatar sm" style="background:#2563EB">GM</span>
+    <div style="text-align:left;">
+      <div class="org-node-name">${agyOn ? '당직 대기 · Gemini 앱' : '총괄 팀장 · Gemini 앱'}</div>
+      <div class="org-node-role">${agyOn ? `야간·자리비움 대기 · 마지막 ${esc(ago(gemAt))}` : '야간 당직 근무 중 · 매시간'}</div>
+    </div>
+    <i class="dot ${!agyOn || gemOn ? 'dot-blue' : 'dot-amber'}"></i>
+  </div>`;
+  const leadPills = agyOn ? `${agyLeadPill}${geminiLeadPill}` : `${geminiLeadPill}${agyLeadPill}`;
 
   const treeCanvas = document.getElementById('org-tree-canvas');
   treeCanvas.innerHTML = `
@@ -2491,7 +2501,7 @@ function renderRosterView() {
       </div>
     </div>
     <div class="org-connector"></div>
-    <div class="org-level">${leadDeskOn ? leadPill : apiLead ? renderNodePill(apiLead) : leadPill}</div>
+    <div class="org-level">${leadDeskOn ? leadPills : apiLead ? renderNodePill(apiLead) : leadPills}</div>
     <div class="org-connector"></div>
     <div class="org-level">
       ${members.map(renderNodePill).join('')}
