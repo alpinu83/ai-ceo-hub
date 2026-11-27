@@ -483,8 +483,8 @@ export const AGENT_PROFILES = {
   agent_it_qa: { good: '테스트 시나리오·QA 체크리스트·릴리스 노트', bad: '비즈니스 기획' },
   agent_cue: { good: '실제 웹 딥리서치(가상 컴퓨터로 사이트 방문)·시장·경쟁·가격 조사·외부 메일 초안', bad: '즉시 응답 아님(외부 앱이 가져가 몇 시간 내 처리). 메일 실제 발송은 대표님 승인', async: true, web: true },
   agent_muse: { good: '대표님 취향·제약 기억 정리, 프로젝트 보드·체크리스트, 개인화 기획', bad: '즉시 응답 아님(외부 앱이 가져가 처리)', async: true },
-  agent_pickle: { good: '국내 전화 문의·예약 실행(결제 전 대표님 승인)', bad: '문서·분석 업무 불가. 실제 전화가 필요한 일만', async: true, realWorld: true },
-  agent_instinct: { good: '문자·전화로 빠른 확인·심부름', bad: '문서·분석 업무 불가', async: true, realWorld: true },
+  agent_pickle: { good: '웹 조사·라이브 사이트 실측·정책/시장 리서치 보고서(지금까지 검수 10/10), 국내 전화 문의·예약(결제 전 대표님 승인)', bad: '코드 작업 불가. 즉시 응답 아님(피클 앱이 가져가 처리)', async: true, web: true },
+  agent_instinct: { good: '짧은 메시지·안내 문구·연락/리마인드 초안, 문자·전화로 빠른 확인', bad: '긴 문서·분석·리서치는 맡기지 말 것. 지시에 받는 사람·목적·핵심 정보를 넣어야 빈칸 템플릿이 안 나옴', async: true, shortOnly: true },
   agent_agy: { good: '여러 파일 코드 구현·테스트 실행·PR 작성(대표님 PC의 git·npm test), 로컬 실행이 필요한 일', bad: '로그인된 브라우저·계정 작업과 운영 데이터 확인은 못 함. 대표님 PC가 켜져 있을 때 처리', async: true },
   agent_aside: { good: '설계서·원인 분석, 코드 검수, 작은 코드 수정(파일 1~2개), 로그인된 브라우저로 콘솔·계정 작업, 실제 데이터 확인', bad: '일반 리서치·문서·카피는 봇 팀원(Cue·Muse·부이)에게 먼저. 큰 구현은 AGY에게. 대표님 PC가 켜져 있을 때 처리', async: true, web: true },
   agent_vooy: { good: '매일 같은 조건의 뉴스·트렌드·가격 반복 수집·정기 브리핑', bad: '코드·전략 판단·일회성 심층 분석은 맡기지 말 것. 즉시 응답 아님(부이 앱이 수신함에서 가져가 처리)', async: true }
@@ -529,7 +529,9 @@ export const ASSIGNMENT_RULES = [
   '- 리서치·문서·카피·기획 정리 같은 일반 실무는 봇 팀원에게 먼저 나눠 맡기세요: 웹 조사·근거 수집은 Manus Cue, 기획 정리·보드·체크리스트·카피는 Meta Muse, 매일 반복 수집·브리핑은 부이. 각자 개성을 살려 같은 주제를 다른 관점으로 맡겨도 됩니다. 팀장은 결과를 취합해 하나로 정리합니다.',
   '- 개발팀 Aside·AGY는 코드 작업, 로그인이 필요한 계정·콘솔 작업, 실제 운영 데이터 확인처럼 봇이 못 하는 일에 쓰세요. 봇이 접속하지 않을 때만 일반 실무를 Aside에게 맡기세요.',
   '- 실제 웹 조사(시장·경쟁·가격·사례)가 필요한 일은 웹 조사가 되는 팀원(Manus Cue, Aside)에게 맡기세요. 웹을 못 보는 API 팀원에게 맡기면 근거를 지어냅니다.',
-  '- 실제 전화·예약·문자처럼 현실 행동이 필요한 일만 피클·인스팅스에게 맡기세요(결제·확정은 대표님 승인).',
+  '- 피클은 웹 조사·라이브 사이트 실측·정책 리서치 보고서를 잘합니다(지금까지 검수 10/10). Cue와 함께 리서치에 적극 쓰세요. 전화·예약도 피클(결제·확정은 대표님 승인).',
+  '- 인스팅스에게는 짧은 메시지·안내 문구·연락 초안을 맡기세요. 받는 사람·목적·핵심 정보를 지시에 넣어야 빈칸 템플릿이 나오지 않습니다.',
+  '- 한 마일스톤에서 접속 중인 봇 팀원(Cue·Muse·피클·인스팅스·부이)이 고르게 일하도록 나눠 주세요. 진행 0건인 봇이 있으면 그 봇에게 맞는 일을 먼저 찾으세요.',
   '- LG EXAONE에게는 짧은 요약·정리·번역 같은 단순 작업만 맡기세요.',
   '- "최근 접속 없음" 외부 앱 팀원에게는 배정하지 마세요.',
   '- "오늘 사용 한도 소진" 팀원에게는 오늘 배정하지 마세요. 같은 일을 할 수 있는 다른 팀원에게 맡기세요.'
@@ -558,6 +560,7 @@ export function rebalanceAssignments(db, tasks = []) {
     else if (p.simpleOnly && COMPLEX_RE.test(text)) reassign(t, '단순 업무 전용 팀원');
     else if (p.async && lastSeenHours(db, t.assigneeId) >= 48) reassign(t, '외부 앱 최근 접속 없음');
     else if (p.realWorld && !/(전화|예약|문자|연락|방문|확인 전화)/.test(text)) reassign(t, '현실 행동 전용 팀원');
+    else if (p.shortOnly && COMPLEX_RE.test(text)) reassign(t, '짧은 문구 전용 팀원');
     planLoad[t.assigneeId] = (planLoad[t.assigneeId] || 0) + 1;
     if (planLoad[t.assigneeId] > 2) {
       planLoad[t.assigneeId] -= 1;
@@ -699,20 +702,22 @@ export function isAgentExhausted(agent, settings = {}) {
 /** 한도 소진 팀원의 작업을 대신할 팀원: 같은 역할 힌트 → 다른 엔진 → 일이 적은 사람 순 */
 /** 봇 팀원 우선 대체자: 성격에 맞는 접속 중인 봇 → 없으면 개발팀 Aside (전화·문자 봇은 현실 행동일 때만) */
 const BOT_ROLE_HINTS = [
-  { re: /(전화|예약|문자|연락)/, ids: ['agent_pickle', 'agent_instinct'] },
-  { re: /(시장|경쟁|수요|사례|가격\s*조사|웹\s*조사|리서치|딥\s*리서치|벤치마크|트렌드|뉴스|근거|출처)/, ids: ['agent_cue', 'agent_aside'] },
+  { re: /(전화|예약)/, ids: ['agent_pickle', 'agent_instinct'] },
+  { re: /(문자|메시지|안내문|알림\s*문구|리마인드|공지|연락)/, ids: ['agent_instinct', 'agent_muse'] },
+  { re: /(시장|경쟁|수요|사례|가격\s*조사|웹\s*조사|리서치|딥\s*리서치|벤치마크|트렌드|뉴스|근거|출처|실측|라이브\s*점검|정책)/, ids: ['agent_cue', 'agent_pickle', 'agent_aside'] },
   { re: /(매일|정기|반복|모니터링|브리핑)/, ids: ['agent_vooy', 'agent_cue'] },
-  { re: /(카피|문구|문서|초안|정리|요약|기획|체크리스트|보드|제목|설명란|대본|가이드)/, ids: ['agent_muse', 'agent_cue', 'agent_aside'] }
+  { re: /(카피|문구|문서|초안|정리|요약|기획|체크리스트|보드|제목|설명란|대본|가이드)/, ids: ['agent_muse', 'agent_cue', 'agent_pickle', 'agent_aside'] }
 ];
 export function pickBotOrDevMember(db, task, triedIds = []) {
   const text = `${task?.title || ''} ${task?.description || ''}`;
   const byId = Object.fromEntries((db.agents || []).map((a) => [a.id, a]));
   const realWorld = /(전화|예약|문자|연락)/.test(text);
-  const order = [...new Set([...BOT_ROLE_HINTS.filter((h) => h.re.test(text)).flatMap((h) => h.ids), 'agent_muse', 'agent_cue', 'agent_aside'])];
+  const order = [...new Set([...BOT_ROLE_HINTS.filter((h) => h.re.test(text)).flatMap((h) => h.ids), 'agent_muse', 'agent_cue', 'agent_pickle', 'agent_aside'])];
   for (const id of order) {
     const a = byId[id];
     if (!a?.active || a.retired || triedIds.includes(id)) continue;
     if (AGENT_PROFILES[id]?.realWorld && !realWorld) continue;
+    if (AGENT_PROFILES[id]?.shortOnly && COMPLEX_RE.test(text)) continue;
     if (lastSeenHours(db, id) > 3) continue;
     return a;
   }
