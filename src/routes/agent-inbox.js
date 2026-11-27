@@ -43,12 +43,18 @@ export function registerAgentInboxRoutes(app) {
           estimatedCostKRW: t.estimatedCostKRW,
           dispatchPrompt: t.dispatchPrompt,
           ceoFeedback: fb.ceoFeedback,
+          leadFeedback: fb.leadFeedback,
+          leadVerdict: fb.leadVerdict,
+          acceptedWithGaps: fb.acceptedWithGaps,
+          botReport: fb.botReport,
           leadNotes: fb.leadNotes,
           lastDecision: fb.lastDecision
         };
       });
 
-    const recentFeedback = buildAgentRecentFeedback(db, agent.id, 10);
+    const recentFeedback = buildAgentRecentFeedback(db, agent.id, 12);
+    const ceoFeedbackItems = recentFeedback.filter((f) => f.source !== 'lead_review');
+    const leadFeedbackItems = recentFeedback.filter((f) => f.source === 'lead_review');
 
     const recentMeetingRoom = (db.messages || []).slice(-15).map((m) => ({
       sender: m.senderName,
@@ -74,14 +80,21 @@ export function registerAgentInboxRoutes(app) {
         ...(pendingTasks.length
           ? pendingTasks.map(
               (t, i) =>
-                `${i + 1}. [${t.id}] (${t.missionTitle || t.missionId}) ${t.title} [상태: ${t.status}]\n   설명: ${t.description}${t.ceoFeedback ? `\n   CEO 피드백·수정 지시: ${t.ceoFeedback}` : ''}\n   승인 필요: ${t.requiresApproval ? '예(확정·결제 전 정지)' : '아니오'}`
+                `${i + 1}. [${t.id}] (${t.missionTitle || t.missionId}) ${t.title} [상태: ${t.status}]\n   설명: ${t.description}${t.leadFeedback ? `\n   팀장 피드백·답장: ${t.leadFeedback}` : ''}${t.ceoFeedback ? `\n   CEO 피드백·수정 지시: ${t.ceoFeedback}` : ''}\n   승인 필요: ${t.requiresApproval ? '예(확정·결제 전 정지)' : '아니오'}`
             )
           : ['현재 새로 배정된 업무가 없습니다.']),
-        ...(recentFeedback.length
+        ...(leadFeedbackItems.length
           ? [
               '',
-              `=== 최근 CEO 결재 피드백 (반려·수정 지시·승인, ${recentFeedback.length}건) ===`,
-              ...recentFeedback.map((f) => `- [${f.taskId || f.approvalId}] ${f.title} → ${f.decisionLabel}: ${f.reason}`)
+              `=== 최근 팀장 검수·피드백 답장 (한계 반영·보완 요청·이관·통과, ${leadFeedbackItems.length}건) ===`,
+              ...leadFeedbackItems.map((f) => `- [${f.taskId}] ${f.title} → ${f.decisionLabel}: ${f.reason}`)
+            ]
+          : []),
+        ...(ceoFeedbackItems.length
+          ? [
+              '',
+              `=== 최근 CEO 결재 피드백 (반려·수정 지시·승인, ${ceoFeedbackItems.length}건) ===`,
+              ...ceoFeedbackItems.map((f) => `- [${f.taskId || f.approvalId}] ${f.title} → ${f.decisionLabel}: ${f.reason}`)
             ]
           : []),
         '',
@@ -90,8 +103,10 @@ export function registerAgentInboxRoutes(app) {
         '',
         `=== 답변/결과 제출 방법 (POST JSON) ===`,
         `URL: ${replyUrl}`,
-        `규칙: 업무 결과를 제출할 때는 반드시 정확한 taskId와 missionId를 함께 보내세요. 일반 회의실 보고·정정 메시지는 taskId·deliverable 없이 message와 missionId만 보내세요.`,
-        `Body: {"message":"회의실 보고 내용","missionId":"프로젝트ID","taskId":"업무ID","deliverable":"상세 결과","requestApproval":false,"estimatedCostKRW":0}`
+        `규칙 1: 업무 결과를 제출할 때는 반드시 정확한 taskId와 missionId를 함께 보내세요. 일반 회의실 보고·정정 메시지는 taskId·deliverable 없이 message와 missionId만 보내세요.`,
+        `규칙 2(도구 한계·양방향 피드백): 영상 재생·자막 불가·로그인 차단 등 도구 제약으로 일부 항목을 끝낼 수 없을 때는 추정하지 말고 '미확인'으로 남긴 뒤 limitations/blockers/questions 배열에 사유를 적어 그대로 제출하세요. 팀장이 이를 검토해 recentFeedback과 회의실로 직접 답장(한계 반영 통과·우회 기준·타 팀원 이관)을 남깁니다. 대표님께 따로 전달을 부탁하지 마세요.`,
+        `규칙 3: 작업을 시작하거나 재제출하기 전에 반드시 위 '최근 팀장 검수·피드백 답장'과 '최근 CEO 결재 피드백'을 먼저 확인하세요.`,
+        `Body: {"message":"회의실 보고 내용","missionId":"프로젝트ID","taskId":"업무ID","deliverable":"상세 결과","limitations":["도구 제약으로 미확인 처리한 항목과 사유"],"blockers":[],"questions":[],"requestApproval":false,"estimatedCostKRW":0}`
       ];
       return c.text(lines.join('\n'));
     }
@@ -123,13 +138,18 @@ export function registerAgentInboxRoutes(app) {
         contentType: 'application/json',
         rules: [
           '업무 결과 제출 시 반드시 정확한 taskId와 missionId를 함께 보내세요 (대기 업무가 2건 이상이면 taskId 없이 제출 시 자동 연결되지 않습니다).',
-          '일반 회의실 보충 보고·정정 메시지는 taskId와 deliverable을 생략하고 message와 missionId만 보내세요.'
+          '일반 회의실 보충 보고·정정 메시지는 taskId와 deliverable을 생략하고 message와 missionId만 보내세요.',
+          '도구 제약(영상 재생·자막 불가, 로그인 차단 등)으로 지시의 일부를 완수하지 못할 때는 추정하지 말고 "미확인"으로 남긴 뒤 limitations/blockers/questions 배열에 구체적 사유와 질문을 적어 그대로 제출하세요. 팀장이 직접 검토해 recentFeedback과 회의실로 답장(한계 인정 통과·우회 기준·타 팀원 이관)을 남기므로 대표님께 중계를 요청할 필요가 없습니다.',
+          '업무를 시작하거나 재시도하기 전에 반드시 recentFeedback을 확인해 팀장의 이전 답장(통과·이관 종료·우회 재작업)을 반영하세요.'
         ],
         exampleBody: {
           message: '조사 결과를 보고합니다.',
           missionId: pendingTasks[0]?.missionId || '',
           taskId: pendingTasks[0]?.id || '',
           deliverable: '상세 결과 내용',
+          limitations: ['영상 재생·자막 확인 불가로 훅 문구는 추정하지 않고 미확인으로 표기'],
+          blockers: [],
+          questions: [],
           requestApproval: false,
           approvalTitle: '예약/실행 승인 요청',
           estimatedCostKRW: 0

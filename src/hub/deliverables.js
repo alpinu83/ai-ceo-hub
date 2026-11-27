@@ -256,10 +256,27 @@ export function buildApprovalDeliverable(db, aprId) {
     const t = (db.tasks || []).find((x) => x.id === id);
     if (!t || !String(t.output || '').trim()) continue;
     const score = t.review?.score ?? t.quality?.score;
+    const gapNotes = [];
+    if (t.review?.acceptedWithGaps) {
+      const miss = Array.isArray(t.review.missing) && t.review.missing.length ? t.review.missing.join(' / ') : '';
+      gapNotes.push(`> ⚠️ **도구 제약·미확인 항목 반영 통과**${miss ? `: ${miss}` : ''}`);
+    }
+    if (t.botReport && (t.botReport.limitations?.length || t.botReport.blockers?.length)) {
+      const items = [...(t.botReport.limitations || []), ...(t.botReport.blockers || [])].join(' / ');
+      gapNotes.push(`> ℹ️ **담당 봇 한계 보고**: ${items}`);
+    }
+    const rawBody = clip(formatDeliverableOutput(t.output));
     sections.push({
       heading: `시안·결과물: ${t.title}`,
-      meta: [agentName(t.assigneeId), t.status ? `상태 ${t.status}` : '', score != null ? `팀장 검수 ${score}/10` : ''].filter(Boolean).join(' · '),
-      body: clip(formatDeliverableOutput(t.output))
+      meta: [
+        agentName(t.assigneeId),
+        t.status ? `상태 ${t.status}` : '',
+        score != null ? `팀장 검수 ${score}/10` : '',
+        t.review?.acceptedWithGaps ? '한계 명시 통과' : ''
+      ]
+        .filter(Boolean)
+        .join(' · '),
+      body: gapNotes.length ? `${gapNotes.join('\n')}\n\n${rawBody}` : rawBody
     });
   }
 
@@ -344,7 +361,7 @@ export function buildReportDeliverableBundle(db, mission, tasks = [], checklistI
 
   for (const t of validTasks) {
     const score = t.review?.score ?? t.quality?.score;
-    const meta = [agentName(t.assigneeId), score != null ? `팀장 검수 ${score}/10` : ''].filter(Boolean).join(' · ');
+    const meta = [agentName(t.assigneeId), score != null ? `팀장 검수 ${score}/10` : '', t.review?.acceptedWithGaps ? '한계 명시 통과' : ''].filter(Boolean).join(' · ');
     lines.push(`## 📄 ${t.title}`, meta ? `_${meta}_` : '', '', clip(formatDeliverableOutput(t.output)), '');
   }
 
@@ -367,19 +384,39 @@ const DECISION_LABELS = {
   rejected: '반려',
   retry: '수정 재지시',
   accept: '완료 처리',
-  drop: '반려·중단'
+  drop: '반려·중단',
+  lead_accepted_with_gaps: '팀장 검수 통과(한계 반영)',
+  lead_accepted: '팀장 검수 통과',
+  lead_revise: '팀장 보완 요청',
+  lead_escalated: '팀장 담당 이관(종료)',
+  lead_blocked: '팀장 보류(대표님 확인 대기)'
 };
 
 export function taskFeedbackSummary(db, task) {
-  if (!task) return { ceoFeedback: '', rejectionReason: '', leadNotes: [], lastDecision: null };
+  if (!task) {
+    return {
+      ceoFeedback: '',
+      rejectionReason: '',
+      leadFeedback: '',
+      leadVerdict: '',
+      acceptedWithGaps: false,
+      botReport: null,
+      leadNotes: [],
+      lastDecision: null
+    };
+  }
   const linkedApr = (db?.approvals || []).find((a) => a.taskId === task.id && a.status !== 'pending');
   const ceoFeedback = String(task.ceoFeedback || task.ceoDecision?.feedback || linkedApr?.ceoNote || '').trim();
   const rejectionReason =
     task.status === 'rejected'
       ? String(task.rejectionReason || ceoFeedback || '상세 사유 미입력').trim()
       : String(task.rejectionReason || '').trim();
+  const leadFeedback = String(task.leadFeedback?.botReply || task.review?.botReply || task.review?.feedback || '').trim();
+  const leadVerdict = String(task.leadFeedback?.verdict || task.review?.verdict || '').trim();
+  const acceptedWithGaps = Boolean(task.leadFeedback?.acceptedWithGaps || task.review?.acceptedWithGaps);
+  const botReport = task.botReport || null;
   const leadNotes = Array.isArray(task.leadNotes)
-    ? task.leadNotes.slice(-3).map((n) => ({ by: n.by || '', text: String(n.text || '').trim(), at: n.at || '' }))
+    ? task.leadNotes.slice(0, 4).map((n) => ({ by: n.by || '', kind: n.kind || '', text: String(n.text || '').trim(), at: n.at || '' }))
     : [];
   const lastDecision =
     task.ceoDecision ||
@@ -392,7 +429,7 @@ export function taskFeedbackSummary(db, task) {
           at: linkedApr.decidedAt || linkedApr.createdAt || ''
         }
       : null);
-  return { ceoFeedback, rejectionReason, leadNotes, lastDecision };
+  return { ceoFeedback, rejectionReason, leadFeedback, leadVerdict, acceptedWithGaps, botReport, leadNotes, lastDecision };
 }
 
 export function buildAgentRecentFeedback(db, agentId, limit = 10) {
@@ -409,6 +446,7 @@ export function buildAgentRecentFeedback(db, agentId, limit = 10) {
     if (seenKeys.has(key)) continue;
     seenKeys.add(key);
     items.push({
+      source: 'ceo_approval',
       approvalId: a.id,
       taskId: a.taskId || '',
       missionId: a.missionId || t?.missionId || '',
@@ -421,22 +459,69 @@ export function buildAgentRecentFeedback(db, agentId, limit = 10) {
   }
 
   for (const t of db.tasks || []) {
-    if (t.assigneeId !== agentId) continue;
-    const hasDecision = Boolean(t.ceoDecision || t.rejectionReason || t.ceoFeedback);
-    if (!hasDecision && t.status !== 'rejected') continue;
-    const decision = t.ceoDecision?.decision || t.ceoDecision?.action || (t.status === 'rejected' ? 'rejected' : 'revision_requested');
-    const key = `tsk:${t.id}:${decision}`;
-    if (seenKeys.has(key)) continue;
-    seenKeys.add(key);
+    const matchesCeo = t.assigneeId === agentId;
+    if (matchesCeo) {
+      const hasDecision = Boolean(t.ceoDecision || t.rejectionReason || t.ceoFeedback);
+      if (hasDecision || t.status === 'rejected') {
+        const decision = t.ceoDecision?.decision || t.ceoDecision?.action || (t.status === 'rejected' ? 'rejected' : 'revision_requested');
+        const key = `tsk:${t.id}:${decision}`;
+        if (!seenKeys.has(key)) {
+          seenKeys.add(key);
+          items.push({
+            source: 'ceo_task',
+            approvalId: t.ceoDecision?.approvalId || '',
+            taskId: t.id,
+            missionId: t.missionId || '',
+            title: t.title || t.id,
+            decision,
+            decisionLabel: DECISION_LABELS[decision] || decision,
+            reason: String(t.rejectionReason || t.ceoFeedback || t.ceoDecision?.feedback || '').trim() || '상세 사유 미입력',
+            decidedAt: t.ceoDecision?.at || t.updatedAt || t.createdAt || ''
+          });
+        }
+      }
+    }
+
+    // 팀장 검수·한계 반영·보완 요청·담당 이관 2방향 피드백 (이관돼 다른 담당자로 바뀐 업무도 원래 봇에게 답장 전달)
+    const matchesLeadForAgent =
+      t.assigneeId === agentId ||
+      t.leadFeedback?.forAgentId === agentId ||
+      t.botReport?.agentId === agentId;
+    if (!matchesLeadForAgent) continue;
+
+    const lf = t.leadFeedback;
+    const rv = t.review && t.review.verdict && t.review.verdict !== 'pending' ? t.review : null;
+    const replyText = String(lf?.botReply || rv?.botReply || rv?.feedback || '').trim();
+    const withGaps = Boolean(lf?.acceptedWithGaps || rv?.acceptedWithGaps);
+    const verdict = String(lf?.verdict || rv?.verdict || '').trim();
+    if (!verdict || (!replyText && !withGaps)) continue;
+
+    const leadDecision =
+      verdict === 'accept'
+        ? withGaps
+          ? 'lead_accepted_with_gaps'
+          : 'lead_accepted'
+        : verdict === 'revise'
+          ? 'lead_revise'
+          : verdict === 'escalate'
+            ? 'lead_escalated'
+            : verdict === 'blocked'
+              ? 'lead_blocked'
+              : `lead_${verdict}`;
+    const leadKey = `lead:${t.id}:${leadDecision}:${lf?.at || rv?.at || ''}`;
+    if (seenKeys.has(leadKey)) continue;
+    seenKeys.add(leadKey);
     items.push({
-      approvalId: t.ceoDecision?.approvalId || '',
+      source: 'lead_review',
+      approvalId: '',
       taskId: t.id,
       missionId: t.missionId || '',
       title: t.title || t.id,
-      decision,
-      decisionLabel: DECISION_LABELS[decision] || decision,
-      reason: String(t.rejectionReason || t.ceoFeedback || t.ceoDecision?.feedback || '').trim() || '상세 사유 미입력',
-      decidedAt: t.ceoDecision?.at || t.updatedAt || t.createdAt || ''
+      decision: leadDecision,
+      decisionLabel: DECISION_LABELS[leadDecision] || `팀장 검수(${verdict})`,
+      acceptedWithGaps: withGaps,
+      reason: replyText || (Array.isArray(rv?.missing) && rv.missing.length ? rv.missing.join(' / ') : '팀장 검수 완료'),
+      decidedAt: lf?.at || rv?.at || t.updatedAt || t.createdAt || ''
     });
   }
 

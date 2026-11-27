@@ -933,6 +933,124 @@ async function runTests() {
         body: JSON.stringify({ taskId: leadMission.tasks[1].id, missionId: 'msn_wrong_other', message: '테스트', deliverable: '테스트' })
       });
       assert.equal(wrongMissionRes.status, 400, 'Cross-project taskId/missionId mismatch must return 400');
+
+      // 16. 봇 도구 한계·미확인 보고 → 팀장 검수(한계 반영 통과 + botReply) → 봇 수신함(JSON/text) & 회의실 2방향 피드백 자동 전달 검증
+      const benchTask = leadMission.tasks[1];
+      await fetch(`${BASE}/api/lead-jobs?worker=agy_lead&${tokQ}`);
+      const benchDeliverable = [
+        '영상 재생·자막을 확인할 수 없어 훅 문구는 추정하지 않고 미확인으로 남겼습니다. 조회수 기준 6개 쇼츠 벤치마크 사례를 정리했습니다.',
+        '',
+        '| 순위 | 채널 | 제목 | 조회수 | 훅 문구 | 출처 URL |',
+        '|---|---|---|---|---|---|',
+        '| 1 | 사례A | 정치 이슈 1분 정리 | 42만 | 미확인 | https://www.youtube.com/shorts/example1 |',
+        '| 2 | 사례B | 국회 속보 핵심 요약 | 31만 | 미확인 | https://www.youtube.com/shorts/example2 |',
+        '| 3 | 사례C | 여론조사 추이 분석 | 27만 | 미확인 | https://www.youtube.com/shorts/example3 |',
+        '| 4 | 사례D | 정책 쟁점 비교 | 19만 | 미확인 | https://www.youtube.com/shorts/example4 |',
+        '| 5 | 사례E | 현장 발언 핵심 | 15만 | 미확인 | https://www.youtube.com/shorts/example5 |',
+        '| 6 | 사례F | 법안 처리 전망 | 12만 | 미확인 | https://www.youtube.com/shorts/example6 |'
+      ].join('\n');
+      const benchSubmit = await (
+        await fetch(`${BASE}/api/agent-inbox/cue/reply?${tokQ}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            taskId: benchTask.id,
+            missionId: leadMission.mission.id,
+            message: '쇼츠 벤치마크 6개 사례 제출합니다. 영상 재생·자막 확인 불가로 훅 문구는 미확인으로 표기했습니다.',
+            deliverable: benchDeliverable,
+            limitations: ['유튜브 영상 직접 재생·자막 추출 불가로 훅 문구는 추정 없이 미확인 처리'],
+            questions: ['공개 제목·조회수 기준 6개 사례로 통과 가능한지, 별도 확인이 필요한지 피드백 부탁드립니다.']
+          })
+        })
+      ).json();
+      assert.equal(benchSubmit.ok, true, 'Partial deliverable with honest limitations should submit cleanly');
+      assert.equal(benchSubmit.botReportRecorded, true, 'Server must record structured botReport');
+      assert.equal(benchSubmit.taskStatus, 'review_pending', 'Substantial partial report with limitations must reach Team Lead review_pending without false non-result bounce');
+      assert.ok((benchSubmit.nextStep || '').includes('recentFeedback'), 'Response nextStep must instruct bot to check recentFeedback');
+
+      const benchJobs = await (await fetch(`${BASE}/api/lead-jobs?worker=agy_lead&${tokQ}`)).json();
+      const benchReviewJob = (benchJobs.jobs || []).find((j) => j.purpose === 'review' && String(j.title || '').includes(benchTask.title));
+      assert.ok(benchReviewJob, 'Team Lead desk must contain a review job for the partial benchmark task');
+      const benchClaim = await (
+        await fetch(`${BASE}/api/lead-jobs/${encodeURIComponent(benchReviewJob.id)}/claim?${tokQ}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ worker: 'agy_lead' })
+        })
+      ).json();
+      assert.ok(benchClaim.packet.includes('유튜브 영상 직접 재생·자막 추출 불가'), 'Lead review packet must include bot reported limitations');
+      assert.ok(benchClaim.packet.includes('acceptedWithGaps') && benchClaim.packet.includes('botReply'), 'Lead review packet must include acceptedWithGaps and botReply schema fields');
+
+      const leadBotReplyText = '영상 재생·자막 불가 한계를 반영해 훅 문구 미확인 상태로 6개 벤치마크 사례를 통과 처리했습니다. 추가 재작업은 필요 없습니다.';
+      const benchLeadSubmit = await (
+        await fetch(`${BASE}/api/lead-jobs/${encodeURIComponent(benchReviewJob.id)}/submit?${tokQ}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            worker: 'agy_lead',
+            result: {
+              verdict: 'accept',
+              score: 8,
+              missing: ['영상 실제 훅 문구(도구 제약으로 미확인)'],
+              feedback: '공개 메타데이터 기준 6개 사례 검증 완료',
+              acceptedWithGaps: true,
+              botReply: leadBotReplyText,
+              executiveSummary: '조회수 기준 쇼츠 벤치마크 6개 사례를 확보했습니다. 봇 도구 제약으로 영상 훅 문구는 미확인으로 투명하게 표기해 통과 처리했습니다.',
+              refinedReport: '## 핵심 결론\n- 조회수 기준 6개 쇼츠 사례 확보 완료\n\n## 리스크·확인 포인트\n- 영상 재생·자막 제약으로 훅 문구는 미확인 처리',
+              recommendedAction: '완료 인정: 공개 제목·조회수 기준 벤치마크로 다음 대본 기획에 활용'
+            }
+          })
+        })
+      ).json();
+      assert.equal(benchLeadSubmit.ok, true, 'Team Lead acceptedWithGaps submit should succeed');
+
+      let cueInboxAfterLead = null;
+      for (let i = 0; i < 15; i += 1) {
+        await new Promise((r) => setTimeout(r, 150));
+        const res = await (await fetch(`${BASE}/api/agent-inbox/cue?${tokQ}`)).json();
+        if ((res.recentFeedback || []).some((f) => f.source === 'lead_review' && f.taskId === benchTask.id)) {
+          cueInboxAfterLead = res;
+          break;
+        }
+      }
+      assert.ok(cueInboxAfterLead, 'Cue inbox must automatically receive Team Lead review reply in recentFeedback');
+      const leadFbEntry = cueInboxAfterLead.recentFeedback.find((f) => f.source === 'lead_review' && f.taskId === benchTask.id);
+      assert.equal(leadFbEntry.decision, 'lead_accepted_with_gaps', 'recentFeedback must tag acceptedWithGaps clearly');
+      assert.ok(leadFbEntry.reason.includes('추가 재작업은 필요 없습니다'), 'recentFeedback must deliver Team Lead botReply verbatim');
+      assert.ok(
+        (cueInboxAfterLead.recentMeetingRoom || []).some((m) => String(m.text || '').includes('추가 재작업은 필요 없습니다')),
+        'Meeting room must contain Team Lead direct reply to Cue'
+      );
+      const cueTextAfterLead = await (await fetch(`${BASE}/api/agent-inbox/cue?${tokQ}&format=text`)).text();
+      assert.ok(
+        cueTextAfterLead.includes('최근 팀장 검수·피드백 답장') && cueTextAfterLead.includes('추가 재작업은 필요 없습니다'),
+        'Text inbox must render Team Lead feedback reply section'
+      );
+
+      // 16b. 로그인·유튜브 스튜디오·GSC/GA4 업무는 pickTwinBot이 외부 봇 교차 조사로 복제하지 않는지 단위 검증
+      const { pickTwinBot } = await import('../src/lead-engine.js');
+      const mockDb = {
+        agents: [
+          { id: 'agent_aside', name: '개발팀 Aside', active: true },
+          { id: 'agent_cue', name: 'Manus Cue', active: true },
+          { id: 'agent_pickle', name: '피클', active: true }
+        ],
+        agentConnections: {
+          agent_cue: { lastSeenAt: new Date().toISOString() },
+          agent_pickle: { lastSeenAt: new Date().toISOString() }
+        },
+        tasks: []
+      };
+      assert.equal(
+        pickTwinBot(mockDb, { assigneeId: 'agent_aside', title: '구국열사 유튜브 스튜디오 현재 지표 및 비공개 업로드 상태 실측 확인', description: '' }),
+        null,
+        'pickTwinBot must NOT clone private YouTube Studio login tasks to external bots'
+      );
+      assert.equal(
+        pickTwinBot(mockDb, { assigneeId: 'agent_aside', title: 'PR 코드 검수 및 서치콘솔·GA4 실측 지표 점검', description: '' }),
+        null,
+        'pickTwinBot must NOT clone PR code / GSC / GA4 tasks to external bots'
+      );
     }
 
     // Clean reset after tests

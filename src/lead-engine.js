@@ -412,14 +412,15 @@ function formatFact(f, missionTitles) {
 
 const AI_FAIL_RE = /(AI\s*(모델|엔진)?\s*호출\s*(실패|오류)|모델\s*호출\s*(실패|오류)|AI\s*엔진\s*(실패|오류|없음)|응답\s*생성\s*실패|RESOURCE_EXHAUSTED|quota\s*(exceeded|cooldown)|rate\s*limit(ed)?\b|\[quota cooldown\])/i;
 const CANNOT_RE = /(접근(이|할 수)?\s*(불가|없)|확인할 수 없|실행할 수 없|진행할 수 없|작성할 수 없|생성(이|할 수)?\s*(불가|없)|제공해\s*주(세요|십시오|시면)|알려\s*주(세요|십시오|시면)|미지정|지정되지 않|권한(이)?\s*(없|필요)|토큰(이)?\s*(없|필요)|정보가 (없|부족)|자료가 (없|부족))/;
-const LOGIN_RE = /(로그인|콘솔|계정 (설정|접속|등록)|애드센스|adsense|서치\s*콘솔\s*(설정|등록|제출|인증)|2단계|본인\s*인증|결제 수단)/i;
+const LOGIN_RE = /(로그인|콘솔|계정 (설정|접속|등록)|애드센스|adsense|서치\s*콘솔|search\s*console|\bGSC\b|\bGA4\b|유튜브\s*스튜디오|youtube\s*studio|비공개\s*업로드|2단계|본인\s*인증|결제 수단)/i;
 const REPO_RE = /(저장소|repo|github|깃허브|\bPR\b|풀\s*리퀘|브랜치|커밋|파일 구조|기존 코드)/i;
 
 /**
  * 팀원 결과가 "실제 결과물"이 아니라 못 한다는 말·정보 요청뿐인지 판단
  * osFlag: 팀원이 [외주 필요: 사유]를 단 경우 그 사유
+ * opts.hasLimitations: 봇이 구조화된 limitations/blockers와 함께 부분 결과물을 제출한 경우
  */
-export function detectNonResult(output = '', osFlag = '') {
+export function detectNonResult(output = '', osFlag = '', { hasLimitations = false } = {}) {
   const text = String(output || '');
   if (osFlag) return { nonResult: true, reason: osFlag };
   // AI 호출이 실패했다는 문구가 들어간 결과는 길이와 상관없이 결과물로 인정하지 않음 (실패를 완료로 보고하는 것 방지)
@@ -428,9 +429,19 @@ export function detectNonResult(output = '', osFlag = '') {
   const head = text.replace(/[*#>\s]+/g, ' ').slice(0, 500);
   const m = head.match(CANNOT_RE);
   if (!m) return { nonResult: false, reason: '' };
-  // 앞부분이 "못 함/정보 달라"이고 본문이 짧으면 결과물이 아님
+  // 앞부분에 도구 한계·확인 불가 안내가 있더라도 실제 표·목록·출처 URL 등 실질 산출물이 충분하면
+  // 빈 거절이 아니라 "한계를 솔직히 밝힌 부분 결과물"로 인정해 팀장 검수로 넘긴다.
   const substantive = text.replace(/\s+/g, ' ').length;
   if (substantive > 2200) return { nonResult: false, reason: '' };
+  const hasTable = /\n\|[^\n]+\|/.test(text);
+  const listCount = (text.match(/(?:^|\n)\s*(?:\d+[.)]|[-*•])\s+\S+/g) || []).length;
+  const urlCount = (text.match(/https?:\/\/\S+/g) || []).length;
+  if (substantive >= 700 && (hasTable || listCount >= 4 || urlCount >= 2)) {
+    return { nonResult: false, reason: '' };
+  }
+  if (hasLimitations && substantive >= 400 && (hasTable || listCount >= 2 || urlCount >= 1)) {
+    return { nonResult: false, reason: '' };
+  }
   const idx = Math.max(0, head.indexOf(m[0]) - 60);
   return { nonResult: true, reason: head.slice(idx, idx + 160).trim() };
 }
@@ -481,13 +492,13 @@ export const AGENT_PROFILES = {
   agent_it_dev: { good: '코드 수정·버그 수정·리팩토링(연결 저장소 있을 때 PR까지)', bad: '비즈니스 기획' },
   agent_it_sec: { good: '보안 감사·코드 리뷰·배포 전 점검', bad: '비즈니스 기획' },
   agent_it_qa: { good: '테스트 시나리오·QA 체크리스트·릴리스 노트', bad: '비즈니스 기획' },
-  agent_cue: { good: '실제 웹 딥리서치(가상 컴퓨터로 사이트 방문)·시장·경쟁·가격 조사·외부 메일 초안', bad: '즉시 응답 아님(외부 앱이 가져가 몇 시간 내 처리). 메일 실제 발송은 대표님 승인', async: true, web: true },
-  agent_muse: { good: '대표님 취향·제약 기억 정리, 프로젝트 보드·체크리스트, 개인화 기획', bad: '즉시 응답 아님(외부 앱이 가져가 처리)', async: true },
-  agent_pickle: { good: '웹 조사·라이브 사이트 실측·정책/시장 리서치 보고서(지금까지 검수 10/10), 국내 전화 문의·예약(결제 전 대표님 승인)', bad: '코드 작업 불가. 즉시 응답 아님(피클 앱이 가져가 처리)', async: true, web: true },
+  agent_cue: { good: '실제 웹 딥리서치(가상 컴퓨터로 사이트 방문)·시장·경쟁·가격 조사·외부 메일 초안(공개 웹·기사·메타데이터 기준 실측)', bad: '즉시 응답 아님(외부 앱이 가져가 몇 시간 내 처리). 유튜브 영상 직접 재생·자막 추출·비공개 스튜디오/GSC/GA4 로그인 불가. 메일 실제 발송은 대표님 승인', async: true, web: true },
+  agent_muse: { good: '대표님 취향·제약 기억 정리, 프로젝트 보드·체크리스트, 개인화 기획', bad: '즉시 응답 아님(외부 앱이 가져가 처리). 웹 실측·영상 재생·계정 로그인 불가', async: true },
+  agent_pickle: { good: '웹 조사·라이브 사이트 실측·정책/시장 리서치 보고서(지금까지 검수 10/10), 국내 전화 문의·예약(결제 전 대표님 승인)', bad: '코드 작업·유튜브 영상 직접 재생/자막 추출·Google 계정(GSC/GA4/스튜디오) 로그인 불가. 즉시 응답 아님(피클 앱이 가져가 처리)', async: true, web: true },
   agent_instinct: { good: '짧은 메시지·안내 문구·연락/리마인드 초안, 문자·전화로 빠른 확인', bad: '긴 문서·분석·리서치는 맡기지 말 것. 지시에 받는 사람·목적·핵심 정보를 넣어야 빈칸 템플릿이 안 나옴', async: true, shortOnly: true },
   agent_agy: { good: '여러 파일 코드 구현·테스트 실행·PR 작성(대표님 PC의 git·npm test), 로컬 실행이 필요한 일', bad: '로그인된 브라우저·계정 작업과 운영 데이터 확인은 못 함. 대표님 PC가 켜져 있을 때 처리', async: true },
   agent_aside: { good: '설계서·원인 분석, 코드 검수, 작은 코드 수정(파일 1~2개), 로그인된 브라우저로 콘솔·계정 작업, 실제 데이터 확인', bad: '일반 리서치·문서·카피는 봇 팀원(Cue·Muse·부이)에게 먼저. 큰 구현은 AGY에게. 대표님 PC가 켜져 있을 때 처리', async: true, web: true },
-  agent_vooy: { good: '매일 같은 조건의 뉴스·트렌드·가격 반복 수집·정기 브리핑', bad: '코드·전략 판단·일회성 심층 분석은 맡기지 말 것. 즉시 응답 아님(부이 앱이 수신함에서 가져가 처리)', async: true }
+  agent_vooy: { good: '매일 같은 조건의 뉴스·트렌드·가격 반복 수집·정기 브리핑', bad: '코드·전략 판단·일회성 심층 분석·계정 로그인 불가. 즉시 응답 아님(부이 앱이 수신함에서 가져가 처리)', async: true }
 };
 const COMPLEX_RE = /(분석|전략|설계|조사|리서치|코드|구현|개발|비교|진단|수익|기획안|검증|아키텍처|리스크)/;
 // 실제 웹을 봐야 하는 일 (시장·경쟁·수요·사례·가격 조사)
@@ -528,6 +539,7 @@ export const ASSIGNMENT_RULES = [
   '- "대기 중, 우선 배정" 팀원을 먼저 쓰세요. 같은 팀원만 반복해서 쓰지 마세요.',
   '- 리서치·문서·카피·기획 정리 같은 일반 실무는 봇 팀원에게 먼저 나눠 맡기세요: 웹 조사·근거 수집은 Manus Cue, 기획 정리·보드·체크리스트·카피는 Meta Muse, 매일 반복 수집·브리핑은 부이. 각자 개성을 살려 같은 주제를 다른 관점으로 맡겨도 됩니다. 팀장은 결과를 취합해 하나로 정리합니다.',
   '- 개발팀 Aside·AGY는 코드 작업, 로그인이 필요한 계정·콘솔 작업, 실제 운영 데이터 확인처럼 봇이 못 하는 일에 쓰세요. 봇이 접속하지 않을 때만 일반 실무를 Aside에게 맡기세요.',
+  '- 외부 봇(Cue·피클·Muse·부이)은 유튜브 영상 직접 재생·자막 추출·비공개 스튜디오/GSC/GA4 로그인을 못 합니다. 그런 업무는 Aside에게 배정하고, 봇에게 쇼츠 벤치마크를 맡길 때는 공개 제목·조회수·설명란·메타데이터 기준으로 지시하세요.',
   '- 실제 웹 조사(시장·경쟁·가격·사례)가 필요한 일은 웹 조사가 되는 팀원(Manus Cue, Aside)에게 맡기세요. 웹을 못 보는 API 팀원에게 맡기면 근거를 지어냅니다.',
   '- 피클은 웹 조사·라이브 사이트 실측·정책 리서치 보고서를 잘합니다(지금까지 검수 10/10). Cue와 함께 리서치에 적극 쓰세요. 전화·예약도 피클(결제·확정은 대표님 승인).',
   '- 인스팅스에게는 짧은 메시지·안내 문구·연락 초안을 맡기세요. 받는 사람·목적·핵심 정보를 지시에 넣어야 빈칸 템플릿이 나오지 않습니다.',
@@ -716,9 +728,12 @@ export function botConnected(db, id, hours = 6) {
 
 const TWIN_RESEARCH_RE = /(시장|경쟁|수요|사례|가격\s*조사|웹\s*조사|리서치|딥\s*리서치|벤치마크|트렌드|실측|라이브\s*점검|정책|현황\s*조사)/;
 const TWIN_COPY_RE = /(카피|문구|문서|초안|기획|체크리스트|보드|제목|설명란|대본|가이드|점수표)/;
+const TWIN_NO_BOT_RE = /(PR\s*코드|코드\s*검수|pull\s*request|유튜브\s*스튜디오|youtube\s*studio|비공개\s*(업로드|동영상|지표)|서치\s*콘솔|search\s*console|\bGSC\b|\bGA4\b)/i;
 /** 같은 일을 다른 봇도 동시에: 리서치는 Cue↔피클 교차 조사, 문서·카피·기획은 Muse 대안안(Cue·피클 중 한가한 쪽) */
 export function pickTwinBot(db, task) {
   const text = `${task?.title || ''} ${task?.description || ''}`;
+  // 로그인·콘솔·스튜디오·GSC/GA4·PR 코드 검수처럼 외부 봇이 할 수 없는 일은 교차 조사로 복제하지 않음
+  if (LOGIN_RE.test(text) || TWIN_NO_BOT_RE.test(text)) return null;
   const open = (id) => (db.tasks || []).filter((t) => t.assigneeId === id && !['completed', 'rejected'].includes(t.status)).length;
   const pairs = { agent_cue: ['agent_pickle'], agent_pickle: ['agent_cue'], agent_aside: ['agent_cue', 'agent_pickle'] };
   let cands = [];
