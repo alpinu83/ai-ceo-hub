@@ -1051,6 +1051,100 @@ async function runTests() {
         null,
         'pickTwinBot must NOT clone PR code / GSC / GA4 tasks to external bots'
       );
+
+      // 17. 부이(Vooy) 반복 수집·정기 브리핑 배정 보호 + 팀장 보완 요청(revise) 시 검수 대기와 명확히 구분되는 actionRequired/inboxSummary 검증
+      const { rebalanceAssignments } = await import('../src/lead-engine.js');
+      const mockVooyDb = {
+        agents: [
+          { id: 'agent_cue', name: 'Manus Cue', active: true, provider: 'manus', tier: 'worker' },
+          { id: 'agent_vooy', name: '부이 (vooy)', active: true, provider: 'vooy', tier: 'worker' },
+          { id: 'agent_muse', name: 'Meta Muse', active: true, provider: 'muse', tier: 'worker' }
+        ],
+        agentConnections: {
+          agent_cue: { lastSeenAt: new Date().toISOString() },
+          agent_vooy: { lastSeenAt: new Date().toISOString() },
+          agent_muse: { lastSeenAt: new Date().toISOString() }
+        },
+        settings: {},
+        tasks: []
+      };
+      const rbVooy = rebalanceAssignments(mockVooyDb, [
+        { title: '국내 앱 트렌드·수요 키워드 일일 정기 브리핑', description: '매일 동일 조건 반복 수집', assigneeId: 'agent_vooy' },
+        { title: '연말정산 뉴스·검색 트렌드 매일 반복 수집 브리핑', description: '일일 정기 수집', assigneeId: 'agent_cue' }
+      ]);
+      assert.equal(rbVooy.tasks[0].assigneeId, 'agent_vooy', 'Recurring trend briefing assigned to Vooy must NOT be stolen by Cue via WEB_RE');
+      assert.equal(rbVooy.tasks[1].assigneeId, 'agent_vooy', 'Daily recurring collection task should route to connected Vooy');
+
+      const vooyTask = leadMission.tasks[2];
+      await fetch(`${BASE}/api/tasks/${encodeURIComponent(vooyTask.id)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assigneeId: 'agent_vooy' })
+      });
+      await fetch(`${BASE}/api/lead-jobs?worker=agy_lead&${tokQ}`);
+      const vooyFirst = await (
+        await fetch(`${BASE}/api/agent-inbox/vooy/reply?${tokQ}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            taskId: vooyTask.id,
+            missionId: leadMission.mission.id,
+            message: '정기 브리핑 1차 초안 제출합니다.',
+            deliverable: '정기 브리핑 초안입니다. 출처 URL 2건: https://example.com/a https://example.com/b'
+          })
+        })
+      ).json();
+      assert.equal(vooyFirst.taskStatus, 'review_pending', 'Vooy first submission should enter review_pending');
+
+      const vooyWaitingInbox = await (await fetch(`${BASE}/api/agent-inbox/vooy?${tokQ}`)).json();
+      const vooyWaitingRow = (vooyWaitingInbox.myPendingTasks || []).find((t) => t.id === vooyTask.id);
+      assert.equal(vooyWaitingRow?.actionRequired, 'wait_for_lead_review', 'review_pending task must show wait_for_lead_review');
+      assert.equal(vooyWaitingInbox.inboxSummary?.waitingReviewCount >= 1, true, 'inboxSummary must count waitingReviewCount');
+
+      const vooyJobs = await (await fetch(`${BASE}/api/lead-jobs?worker=agy_lead&${tokQ}`)).json();
+      const vooyReviewJob = (vooyJobs.jobs || []).find((j) => j.purpose === 'review' && String(j.title || '').includes(vooyTask.title));
+      assert.ok(vooyReviewJob, 'Team Lead desk must contain review job for Vooy task');
+      await fetch(`${BASE}/api/lead-jobs/${encodeURIComponent(vooyReviewJob.id)}/claim?${tokQ}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ worker: 'agy_lead' })
+      });
+      await fetch(`${BASE}/api/lead-jobs/${encodeURIComponent(vooyReviewJob.id)}/submit?${tokQ}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          worker: 'agy_lead',
+          result: {
+            verdict: 'revise',
+            score: 5,
+            missing: ['항목별 수집 시각 누락'],
+            feedback: '각 행에 수집 시각(YYYY-MM-DD HH:MM KST)을 추가해 재제출하세요.',
+            botReply: '항목별 수집 시각(KST)을 추가해 바로 재제출해 주세요.'
+          }
+        })
+      });
+
+      let vooyRevInbox = null;
+      for (let i = 0; i < 15; i += 1) {
+        await new Promise((r) => setTimeout(r, 150));
+        const res = await (await fetch(`${BASE}/api/agent-inbox/vooy?${tokQ}`)).json();
+        const row = (res.myPendingTasks || []).find((t) => t.id === vooyTask.id);
+        if (row && row.actionRequired === 'revise_and_resubmit') {
+          vooyRevInbox = res;
+          break;
+        }
+      }
+      assert.ok(vooyRevInbox, 'Vooy inbox must immediately flag revise_and_resubmit after Team Lead revise');
+      const vooyRevRow = vooyRevInbox.myPendingTasks.find((t) => t.id === vooyTask.id);
+      assert.equal(vooyRevRow.needsRevision, true, 'Vooy revised task must set needsRevision=true');
+      assert.equal(vooyRevRow.revisionRound, 1, 'Vooy revised task must report revisionRound=1');
+      assert.equal(vooyRevInbox.inboxSummary.revisionNeededCount >= 1, true, 'inboxSummary must report revisionNeededCount');
+      assert.ok(vooyRevInbox.inboxSummary.headline.includes('보완 재제출 필요'), 'inboxSummary headline must highlight revision needed');
+      const vooyRevText = await (await fetch(`${BASE}/api/agent-inbox/vooy?${tokQ}&format=text`)).text();
+      assert.ok(
+        vooyRevText.includes('팀장 보완 요청 도착') && vooyRevText.includes('항목별 수집 시각(KST)'),
+        'Vooy text inbox must clearly mark revision needed instead of review waiting'
+      );
     }
 
     // Clean reset after tests

@@ -401,6 +401,10 @@ export function taskFeedbackSummary(db, task) {
       leadVerdict: '',
       acceptedWithGaps: false,
       botReport: null,
+      needsRevision: false,
+      revisionRound: 0,
+      actionRequired: 'submit_result',
+      actionLabel: '신규 업무 — 작업 후 제출 필요',
       leadNotes: [],
       lastDecision: null
     };
@@ -415,6 +419,29 @@ export function taskFeedbackSummary(db, task) {
   const leadVerdict = String(task.leadFeedback?.verdict || task.review?.verdict || '').trim();
   const acceptedWithGaps = Boolean(task.leadFeedback?.acceptedWithGaps || task.review?.acceptedWithGaps);
   const botReport = task.botReport || null;
+  const revisionRound = Number(task.reviewRounds || 0);
+  const needsRevision = Boolean(
+    ['awaiting_bridge', 'queued'].includes(task.status) &&
+      (leadVerdict === 'revise' ||
+        task.ceoDecision?.action === 'revision_requested' ||
+        task.ceoDecision?.action === 'retry' ||
+        revisionRound > 0)
+  );
+  let actionRequired = 'submit_result';
+  let actionLabel = '신규 업무 — 작업 후 제출 필요';
+  if (task.status === 'review_pending') {
+    actionRequired = 'wait_for_lead_review';
+    actionLabel = '팀장 검수 대기 중 (중복 제출 금지)';
+  } else if (task.status === 'awaiting_approval') {
+    actionRequired = 'wait_for_ceo_approval';
+    actionLabel = 'CEO 결재 대기 중 (중복 제출 금지)';
+  } else if (task.status === 'blocked') {
+    actionRequired = 'wait_for_ceo';
+    actionLabel = '보류 · 대표님 확인 대기 (재시도 금지)';
+  } else if (needsRevision) {
+    actionRequired = 'revise_and_resubmit';
+    actionLabel = `팀장 보완 요청 도착 — 수정 후 바로 재제출 필요${revisionRound > 0 ? ` (${revisionRound}차)` : ''}`;
+  }
   const leadNotes = Array.isArray(task.leadNotes)
     ? task.leadNotes.slice(0, 4).map((n) => ({ by: n.by || '', kind: n.kind || '', text: String(n.text || '').trim(), at: n.at || '' }))
     : [];
@@ -429,7 +456,20 @@ export function taskFeedbackSummary(db, task) {
           at: linkedApr.decidedAt || linkedApr.createdAt || ''
         }
       : null);
-  return { ceoFeedback, rejectionReason, leadFeedback, leadVerdict, acceptedWithGaps, botReport, leadNotes, lastDecision };
+  return {
+    ceoFeedback,
+    rejectionReason,
+    leadFeedback,
+    leadVerdict,
+    acceptedWithGaps,
+    botReport,
+    needsRevision,
+    revisionRound,
+    actionRequired,
+    actionLabel,
+    leadNotes,
+    lastDecision
+  };
 }
 
 export function buildAgentRecentFeedback(db, agentId, limit = 10) {

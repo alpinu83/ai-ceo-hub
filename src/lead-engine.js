@@ -498,11 +498,13 @@ export const AGENT_PROFILES = {
   agent_instinct: { good: '짧은 메시지·안내 문구·연락/리마인드 초안, 문자·전화로 빠른 확인', bad: '긴 문서·분석·리서치는 맡기지 말 것. 지시에 받는 사람·목적·핵심 정보를 넣어야 빈칸 템플릿이 안 나옴', async: true, shortOnly: true },
   agent_agy: { good: '여러 파일 코드 구현·테스트 실행·PR 작성(대표님 PC의 git·npm test), 로컬 실행이 필요한 일', bad: '로그인된 브라우저·계정 작업과 운영 데이터 확인은 못 함. 대표님 PC가 켜져 있을 때 처리', async: true },
   agent_aside: { good: '설계서·원인 분석, 코드 검수, 작은 코드 수정(파일 1~2개), 로그인된 브라우저로 콘솔·계정 작업, 실제 데이터 확인', bad: '일반 리서치·문서·카피는 봇 팀원(Cue·Muse·부이)에게 먼저. 큰 구현은 AGY에게. 대표님 PC가 켜져 있을 때 처리', async: true, web: true },
-  agent_vooy: { good: '매일 같은 조건의 뉴스·트렌드·가격 반복 수집·정기 브리핑', bad: '코드·전략 판단·일회성 심층 분석·계정 로그인 불가. 즉시 응답 아님(부이 앱이 수신함에서 가져가 처리)', async: true }
+  agent_vooy: { good: '매일 같은 조건의 뉴스·트렌드·가격 반복 수집·정기 브리핑(공개 웹 페이지·공지·피드 직접 수집 가능)', bad: '코드·전략 판단·일회성 심층 분석·계정 로그인 불가. 즉시 응답 아님(부이 앱이 수신함에서 가져가 처리)', async: true, web: true, recurring: true }
 };
 const COMPLEX_RE = /(분석|전략|설계|조사|리서치|코드|구현|개발|비교|진단|수익|기획안|검증|아키텍처|리스크)/;
 // 실제 웹을 봐야 하는 일 (시장·경쟁·수요·사례·가격 조사)
 const WEB_RE = /(시장\s*(조사|검증)|경쟁|수요|사례|가격\s*조사|웹\s*조사|리서치|벤치마크|트렌드|겹치는지)/;
+// 매일/일일/정기 반복 수집·브리핑 업무 (부이 전용 강점)
+const RECURRING_RE = /(매일|일일|정기\s*(수집|브리핑|모니터링|점검)|반복\s*수집|주간\s*브리핑|모니터링\s*브리핑)/;
 
 const SEEN_ALIASES = { agent_agy: ['lead:agy_lead', 'worker:antigravity'], agent_aside: ['worker:aside'] };
 function lastSeenHours(db, id) {
@@ -564,8 +566,18 @@ export function rebalanceAssignments(db, tasks = []) {
   for (const t of out) {
     const p = AGENT_PROFILES[t.assigneeId] || {};
     const text = `${t.title || ''} ${t.description || ''}`;
-    const webAgent = Object.keys(AGENT_PROFILES).find((id) => AGENT_PROFILES[id].web && agentsById[id]?.active && lastSeenHours(db, id) < 48 && (planLoad[id] || 0) < 2);
-    if (WEB_RE.test(text) && !p.web && webAgent && !/(초안|기획서|명세)/.test(String(t.title || ''))) {
+    const isRecurringTask = RECURRING_RE.test(text) && !LOGIN_RE.test(text) && !/(코드|PR|전화|예약|결제)/.test(text);
+    const vooyReady =
+      Boolean(agentsById.agent_vooy?.active) &&
+      lastSeenHours(db, 'agent_vooy') < 48 &&
+      (planLoad.agent_vooy || 0) < 2;
+    const webAgent = Object.keys(AGENT_PROFILES).find(
+      (id) => AGENT_PROFILES[id].web && !AGENT_PROFILES[id].recurring && agentsById[id]?.active && lastSeenHours(db, id) < 48 && (planLoad[id] || 0) < 2
+    );
+    if (isRecurringTask && t.assigneeId !== 'agent_vooy' && vooyReady && !['agent_aside', 'agent_agy'].includes(t.assigneeId)) {
+      changes.push(`"${String(t.title).slice(0, 40)}": ${agentsById[t.assigneeId]?.name || t.assigneeId} → ${agentsById.agent_vooy.name} (정기 반복 수집·브리핑 전용)`);
+      t.assigneeId = 'agent_vooy';
+    } else if (WEB_RE.test(text) && !p.web && webAgent && !/(초안|기획서|명세)/.test(String(t.title || ''))) {
       changes.push(`"${String(t.title).slice(0, 40)}": ${agentsById[t.assigneeId]?.name || t.assigneeId} → ${agentsById[webAgent]?.name || webAgent} (실제 웹 조사 필요)`);
       t.assigneeId = webAgent;
     } else if (agentsById[t.assigneeId] && isAgentExhausted(agentsById[t.assigneeId], db.settings)) reassign(t, '오늘 사용 한도 소진');
