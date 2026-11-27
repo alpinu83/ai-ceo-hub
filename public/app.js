@@ -1067,6 +1067,7 @@ function renderOfficeView() {
     else if (hasApproval) statusLabel = '결재';
     else if (myTasks.some((t) => t.status === 'completed')) statusLabel = '완료';
     else if (myTasks.length > 0) statusLabel = '배정';
+    if (ag.active && ag.tier === 'lead' && !isSpeaking) statusLabel = leadDutyLabel(); // 팀장 카드는 지금 근무 중인 팀장 표시
 
     const cls = `desk-card${isSpeaking ? ' speaking' : ''}${hasApproval && !isSpeaking ? ' waiting-approval' : ''}`;
     return `<button type="button" class="${cls}" data-mention-desk="${esc(ag.name)}">
