@@ -64,6 +64,13 @@ export const DEFAULT_PRIORITIES = {
 export const ROLE_CHOICES = ['time', 'gemini', 'aside', 'antigravity'];
 export const DEFAULT_ROLES = { consult: 'gemini', research: 'gemini', task: 'gemini', browser: 'aside', code: 'antigravity' };
 export const CODE_WORKFLOWS = ['single', 'agy_then_aside'];
+/** 이 요청이 2단계(AGY 수정 → Aside 검수)로 진행되는지: 요청별 지정이 우선, 없으면 설정(자동 배정일 때만) */
+export function wantsTwoStage(settings, req = {}) {
+  if (req.kind !== 'code' || req.reviewStage) return false;
+  if (req.codeWorkflow === 'agy_then_aside') return true;
+  const cfg = getOutsourcingSettings(settings);
+  return cfg.routing === 'auto' && !req.pinnedWorker && cfg.codeWorkflow === 'agy_then_aside';
+}
 export const CODE_WORKFLOW_LABELS = {
   single: '단독 처리 (우선순위대로)',
   agy_then_aside: 'AGY 수정 → Aside 검수·보완'
@@ -356,6 +363,7 @@ export function createOutsourcingRequest(db, spec = {}) {
     reviewRound: Number(spec.reviewRound) || (spec.reviewStage ? 1 : 0),
     sourceOutsourceId: spec.sourceOutsourceId || '',
     sourcePrUrl: spec.sourcePrUrl || '',
+    codeWorkflow: spec.codeWorkflow === 'agy_then_aside' ? 'agy_then_aside' : '',
     effort: inferEffort({ kind, title: spec.title, goal: spec.goal, effort: spec.effort }),
     queuedAt: new Date().toISOString(),
     skipWorkers: [],
@@ -415,6 +423,7 @@ export function summarizeRequest(r) {
     sourceOutsourceId: r.sourceOutsourceId || '',
     sourcePrUrl: r.sourcePrUrl || '',
     reviewRequestId: r.reviewRequestId || '',
+    codeWorkflow: r.codeWorkflow || '',
     ceoAction: r.ceoAction || null,
     claimedBy: r.claimedBy,
     leaseUntil: r.leaseUntil,
@@ -525,7 +534,14 @@ export function assignRequest(id, worker = 'auto') {
   const db = loadDb();
   const req = findRequest(db, id);
   if (!req) throw new Error(`외주 요청을 찾을 수 없습니다: ${id}`);
-  req.pinnedWorker = worker === 'auto' || worker === 'any' || !OUTSOURCE_WORKER_LABELS[worker] ? '' : worker;
+  if (worker === 'agy_aside') {
+    if (req.kind !== 'code') throw new Error('AGY 수정 + Aside 검수는 코드 수정 요청에만 쓸 수 있습니다.');
+    req.pinnedWorker = 'antigravity';
+    req.codeWorkflow = 'agy_then_aside';
+  } else {
+    req.pinnedWorker = worker === 'auto' || worker === 'any' || !OUTSOURCE_WORKER_LABELS[worker] ? '' : worker;
+    req.codeWorkflow = '';
+  }
   const target = resolveTarget(db.settings, req);
   if (req.status === 'claimed' && req.claimedBy && req.claimedBy !== target) {
     req.status = 'open';
@@ -535,7 +551,7 @@ export function assignRequest(id, worker = 'auto') {
   }
   req.updatedAt = new Date().toISOString();
   if (req.status === 'open') req.queuedAt = req.updatedAt;
-  req.history.push({ at: req.updatedAt, event: `assigned:${req.pinnedWorker || 'auto'}`, by: 'CEO' });
+  req.history.push({ at: req.updatedAt, event: `assigned:${req.codeWorkflow === 'agy_then_aside' ? 'agy_aside' : req.pinnedWorker || 'auto'}`, by: 'CEO' });
   saveDb(db);
   return req;
 }
@@ -655,7 +671,7 @@ export function buildPacket(db, req, baseUrl = publicBaseUrl(), { forChat = fals
   const cfg = getOutsourcingSettings(db.settings);
   const isAsideReview = req.reviewStage === 'aside_review';
   const isAgyRework = req.reviewStage === 'agy_rework';
-  const isTwoStageFirst = isCode && !isAsideReview && !isAgyRework && cfg.routing === 'auto' && !req.pinnedWorker && cfg.codeWorkflow === 'agy_then_aside' && target === 'antigravity';
+  const isTwoStageFirst = isCode && !isAsideReview && !isAgyRework && wantsTwoStage(db.settings, { ...req, kind: 'code' }) && target === 'antigravity';
   const lines = [
     `# 외주 요청서 ${req.id}`,
     '',
