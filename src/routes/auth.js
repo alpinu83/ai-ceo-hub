@@ -14,7 +14,8 @@ export const ADMIN_OPEN_PATHS = [
   /^\/api\/telegram\/webhook$/,
   /^\/api\/mcp(\/info)?$/,
   /^\/api\/auth\/telegram-(request|verify)$/,
-  /^\/api\/outsourcing/
+  /^\/api\/outsourcing/,
+  /^\/api\/shorts\/hook\//
 ];
 
 export function safeEqual(a, b) {
