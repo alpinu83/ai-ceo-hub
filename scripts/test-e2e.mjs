@@ -54,7 +54,7 @@ async function runTests() {
     }
 
     // 3. Initial state & reset
-    const resetRes = await (await fetch(`${BASE}/api/reset`, { method: 'POST' })).json();
+    const resetRes = await (await fetch(`${BASE}/api/reset`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: 'RESET-ALL-DATA' }) })).json();
     const mcpToken = resetRes.state.settings.mcpToken;
     assert.equal(resetRes.state.agents.length, 16, 'default org chart has 16 agents (11 core + 3 IT legacy + Aside·AGY dev team)');
 
@@ -720,7 +720,7 @@ async function runTests() {
     assert.equal(backSingle.routing.codeWorkflow, 'single', 'codeWorkflow should switch back to single');
 
     // Clean reset after tests
-    await fetch(`${BASE}/api/reset`, { method: 'POST' });
+    await fetch(`${BASE}/api/reset`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: 'RESET-ALL-DATA' }) });
     console.log('✅ All AI CEO Hub E2E tests (REST + Continuous Project Loop + Team Lead Chat + Official MCP SDK + Async Pickle HTTPS Inbox + Heartbeat + Cascade Delete + Web Push + Telegram) passed!');
   } finally {
     child.kill('SIGTERM');

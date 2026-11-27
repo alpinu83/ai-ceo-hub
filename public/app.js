@@ -4555,16 +4555,14 @@ function bindEvents() {
     }
   });
 
+  // 회사 기억만 비우기 (고정 지침은 남김). 전체 데이터 초기화는 화면에서 하지 않음
   document.getElementById('btn-reset-demo').addEventListener('click', async () => {
-    if (!confirm('샘플 미션과 설정을 초기 상태로 되돌릴까요?')) return;
+    if (!confirm('자동으로 쌓인 회사 기억을 비울까요? (고정 지침과 프로젝트·업무는 그대로 남습니다)')) return;
     try {
-      const res = await api('/api/reset', { method: 'POST' });
-      state = res.state;
-      selectedMissionId = state.missions[0]?.id || null;
-      officeMissionFilter = state.missions[0]?.id || 'all';
-      selectedApprovalId = state.approvals[0]?.id || null;
+      const res = await api('/api/memory/clear', { method: 'POST' });
+      if (res.state) state = res.state;
       renderAll();
-      toast('초기 샘플 상태로 복원했습니다.');
+      toast(`회사 기억 ${res.removed || 0}건을 비웠습니다 (고정 지침 유지).`);
     } catch (err) {
       toast(err.message, true);
     }
