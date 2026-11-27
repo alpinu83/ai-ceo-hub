@@ -1578,7 +1578,12 @@ function renderApprovalsView() {
         ? `<div class="memo-decision-box">
             <label class="field">
               <span class="field-label">CEO 결재 메모 또는 수정 지시 (선택)</span>
-              <textarea id="memo-ceo-note" rows="2" placeholder="예: 룸 좌석 창가로 요청하고 예약 확정 진행해줘 / 예산을 20만원 이내로 다시 찾아줘"></textarea>
+              <div style="display:flex;gap:6px;align-items:flex-start;">
+                <textarea id="memo-ceo-note" rows="2" style="flex:1;" placeholder="예: 룸 좌석 창가로 요청하고 예약 확정 진행해줘 / 예산을 20만원 이내로 다시 찾아줘"></textarea>
+                <button type="button" class="icon-btn voice-btn${voiceCtl.active?.targetId === 'memo-ceo-note' ? ' listening' : ''}" data-voice-target="memo-ceo-note" title="음성 입력" aria-label="결재 의견 음성 입력" aria-pressed="false">
+                  <i data-lucide="mic" class="icon-sm"></i>
+                </button>
+              </div>
             </label>
             <div class="memo-decision-actions">
               <button type="button" class="btn btn-primary" data-decide-id="${esc(apr.id)}" data-decision="approved">
@@ -4651,69 +4656,158 @@ function bindEvents() {
   setupVoiceInput('btn-voice-chat', 'lounge-chat-input');
 }
 
-function setupVoiceInput(btnId, targetInputId) {
-  const btn = document.getElementById(btnId);
-  const input = document.getElementById(targetInputId);
-  if (!btn || !input) return;
+// 음성 입력: 대표님이 마이크 버튼을 다시 누를 때까지 켜 둔다.
+// 말을 멈추거나 브라우저 음성 엔진이 스스로 끝나도(onend) 자동으로 다시 시작하고, 인식된 문장은 입력란에 이어 붙인다.
+// 한 번에 한 입력란만 듣는다(다른 마이크를 누르면 앞의 것은 꺼짐). 입력란이 화면에서 사라지면 마이크도 끈다.
+const voiceCtl = { active: null };
 
+function isVoiceListening() {
+  return Boolean(voiceCtl.active);
+}
+
+function joinVoiceText(a, b) {
+  const left = String(a || '');
+  const right = String(b || '').trim();
+  if (!right) return left;
+  if (!left.trim()) return right;
+  return `${left.replace(/\s+$/, '')} ${right}`;
+}
+
+function setVoiceBtnState(targetId, on) {
+  document.querySelectorAll('[data-voice-target]').forEach((b) => {
+    if (b.dataset.voiceTarget !== targetId) return;
+    b.classList.toggle('listening', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    b.title = on ? '음성 입력 끄기 (다시 누르면 꺼짐)' : '음성 입력';
+  });
+}
+
+function stopVoiceInput(silent = false) {
+  const s = voiceCtl.active;
+  if (!s) return;
+  s.manualStop = true;
+  voiceCtl.active = null;
+  clearTimeout(s.restartTimer);
+  try {
+    s.rec?.stop();
+  } catch {
+    // already stopped
+  }
+  setVoiceBtnState(s.targetId, false);
+  if (!silent) toast('음성 입력을 껐습니다.');
+}
+
+function startVoiceInput(targetId) {
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  let recognition = null;
-  let isListening = false;
-  let baseText = '';
+  if (!SpeechRecognition) {
+    toast('이 브라우저에서는 음성 인식을 지원하지 않습니다. (크롬/삼성 브라우저 HTTPS에서 지원)', true);
+    return;
+  }
+  stopVoiceInput(true);
+  const s = { targetId, manualStop: false, rec: null, committed: null, lastWritten: null, restartTimer: null, quickEnds: 0, lastFinalText: '', lastFinalAt: 0 };
+  voiceCtl.active = s;
+  setVoiceBtnState(targetId, true);
 
-  btn.addEventListener('click', () => {
-    if (!SpeechRecognition) {
-      toast('이 브라우저에서는 음성 인식을 지원하지 않습니다. (크롬/삼성 브라우저 HTTPS에서 지원)', true);
+  const liveInput = () => {
+    const el = document.getElementById(targetId);
+    return el && el.isConnected ? el : null;
+  };
+  // 대표님이 직접 고치거나 전송해서 비운 내용은 그대로 존중하고, 그 뒤에 이어서 적는다
+  const syncBase = (el) => {
+    if (s.committed === null || el.value !== s.lastWritten) s.committed = el.value;
+  };
+
+  const run = () => {
+    if (s.manualStop || voiceCtl.active !== s) return;
+    if (!liveInput()) {
+      stopVoiceInput(true);
       return;
     }
-
-    if (isListening && recognition) {
-      recognition.stop();
+    if (document.hidden) {
+      // 백그라운드에서는 브라우저가 마이크를 막으므로 화면으로 돌아오면 다시 켬
+      document.addEventListener('visibilitychange', run, { once: true });
       return;
     }
+    const rec = new SpeechRecognition();
+    s.rec = rec;
+    rec.lang = 'ko-KR';
+    rec.interimResults = true;
+    rec.continuous = true;
+    const startedAt = Date.now();
 
-    recognition = new SpeechRecognition();
-    recognition.lang = 'ko-KR';
-    recognition.interimResults = true;
-    recognition.continuous = false;
-    baseText = input.value.trim();
-
-    recognition.onstart = () => {
-      isListening = true;
-      btn.classList.add('listening');
-      toast('듣고 있습니다… 말씀해 주세요');
-    };
-
-    recognition.onresult = (event) => {
-      let spoken = '';
-      for (let i = 0; i < event.results.length; i++) {
-        spoken += event.results[i][0].transcript;
+    rec.onresult = (event) => {
+      if (voiceCtl.active !== s) return;
+      const el = liveInput();
+      if (!el) return;
+      syncBase(el);
+      let interim = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const piece = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          const norm = String(piece || '').trim();
+          const now = Date.now();
+          // 안드로이드 크롬·삼성 브라우저에서 continuous=true 시 같은 확정 문장이 연속 중복 들어오는 현상 방지
+          if (norm && !(norm === s.lastFinalText && now - s.lastFinalAt < 1500)) {
+            s.committed = joinVoiceText(s.committed, norm);
+            s.lastFinalText = norm;
+            s.lastFinalAt = now;
+          }
+        } else {
+          interim = joinVoiceText(interim, piece);
+        }
       }
-      input.value = baseText ? `${baseText} ${spoken.trim()}` : spoken.trim();
+      const next = joinVoiceText(s.committed, interim);
+      el.value = next;
+      s.lastWritten = next;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
     };
 
-    recognition.onerror = (event) => {
-      if (event.error === 'not-allowed') {
-        toast('마이크 권한을 허용해 주세요.', true);
-      } else if (event.error !== 'no-speech' && event.error !== 'aborted') {
-        toast(`음성 인식 오류: ${event.error}`, true);
+    rec.onerror = (event) => {
+      if (event.error === 'not-allowed' || event.error === 'service-not-allowed' || event.error === 'audio-capture') {
+        toast(event.error === 'audio-capture' ? '마이크를 찾을 수 없습니다.' : '마이크 권한을 허용해 주세요.', true);
+        stopVoiceInput(true);
+      } else if (event.error !== 'no-speech' && event.error !== 'aborted' && event.error !== 'network') {
+        toast(`음성 인식 오류: ${event.error} (자동으로 다시 연결합니다)`, true);
       }
     };
 
-    recognition.onend = () => {
-      isListening = false;
-      btn.classList.remove('listening');
-      input.focus();
+    rec.onend = () => {
+      if (s.manualStop || voiceCtl.active !== s) return;
+      // 말 멈춤·시간 제한으로 엔진이 끝나도 대표님이 끄기 전까지 다시 시작. 연속으로 바로 끝나면 잠깐 쉬었다가 재시도
+      s.quickEnds = Date.now() - startedAt < 1500 ? s.quickEnds + 1 : 0;
+      s.restartTimer = setTimeout(run, s.quickEnds >= 3 ? 2000 : 250);
     };
 
     try {
-      recognition.start();
+      rec.start();
     } catch {
-      isListening = false;
-      btn.classList.remove('listening');
+      s.restartTimer = setTimeout(run, 1000);
     }
-  });
+  };
+
+  toast('듣고 있습니다. 끌 때는 마이크 버튼을 다시 누르세요.');
+  run();
 }
+
+function toggleVoiceInput(targetId) {
+  if (voiceCtl.active?.targetId === targetId) stopVoiceInput();
+  else startVoiceInput(targetId);
+}
+
+function setupVoiceInput(btnId, targetInputId) {
+  const btn = document.getElementById(btnId);
+  if (!btn || !document.getElementById(targetInputId)) return;
+  btn.dataset.voiceTarget = targetInputId;
+  btn.setAttribute('aria-pressed', 'false');
+}
+
+// 마이크 버튼 클릭(정적 버튼 + 결재 의견처럼 다시 그려지는 버튼 모두)
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest?.('[data-voice-target]');
+  if (!btn) return;
+  e.preventDefault();
+  toggleVoiceInput(btn.dataset.voiceTarget);
+});
 
 async function handleRunTask(taskId, btn) {
   const prev = btn.textContent;
@@ -4751,7 +4845,7 @@ async function init() {
     // Auto-sync live server state (auto-running EXAONE tasks, Pickle/Cue/Muse reports, PC↔Mobile changes)
     if (runtimeMode === 'server') {
       setInterval(async () => {
-        if (isPlayingLiveSession || document.hidden) return;
+        if (isPlayingLiveSession || document.hidden || isVoiceListening()) return;
         const activeTag = document.activeElement?.tagName;
         if (activeTag === 'INPUT' || activeTag === 'TEXTAREA' || activeTag === 'SELECT') return;
         try {
