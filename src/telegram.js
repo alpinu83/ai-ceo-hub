@@ -406,6 +406,13 @@ export async function handleTelegramUpdate(update, callbacks) {
       const r = await deliverApprovalDeliverable(tg.botToken, cq.message?.chat?.id || tg.chatId, parts[1], callbacks);
       return { handled: true, deliverable: parts[1], ok: r.ok };
     }
+    // 쇼츠: 뉴스 후보 선택 → 대본 작업
+    if (parts[0] === 'sh' && parts.length === 3 && typeof callbacks.onShortsCallback === 'function') {
+      const r = await callbacks.onShortsCallback(parts[1], parts[2]);
+      await tgCall(tg.botToken, 'answerCallbackQuery', { callback_query_id: cq.id, text: String(r?.text || '처리됨').slice(0, 180) }).catch(() => {});
+      if (r?.ok && cq.message?.chat?.id) await sendTelegramText(tg.botToken, cq.message.chat.id, escapeHtml(r.text)).catch(() => {});
+      return { handled: true, shorts: parts[1] };
+    }
     // 외주: 대표님 개입 후 재개 / 다른 작업자로 넘기기 / 취소
     if (parts[0] === 'out' && parts.length === 3 && typeof callbacks.onOutsourceCallback === 'function') {
       const r = await callbacks.onOutsourceCallback(parts[1], parts[2]);
