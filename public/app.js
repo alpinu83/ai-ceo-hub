@@ -1813,7 +1813,7 @@ function renderOutsourcingView() {
 
   root.innerHTML = `
     <div class="out-topbar">
-      <div class="routine-sub">지금 외주 대상: <strong>${esc(rt.label || '-')}</strong> · ${esc(rt.why || '')}</div>
+      <div class="routine-sub">외주 분담: <strong>${esc(rt.why || '-')}</strong></div>
       <div class="out-away">
         <button type="button" class="btn btn-ghost btn-sm" data-out-new-toggle="1">+ 외주 요청</button>
         <button type="button" class="btn btn-ghost btn-sm" data-out-open-settings="1">외부 협업 설정</button>
@@ -1846,7 +1846,7 @@ function renderOutsourcingView() {
     }</div>`;
 }
 
-/** 설정 → 외부 협업: 외주 대상(라우팅)·업무 시간·이동 중 모드·자동 외주·외부 자문·Antigravity/Aside 연결 */
+/** 설정 → 외부 협업: 역할 분담(우선순위)·PC 자리비움·자동 외주·외부 자문·Antigravity/Aside 연결 */
 function renderOutsourcingSettings(force = false) {
   const root = document.getElementById('outsourcing-settings-root');
   if (!root || !state) return;
