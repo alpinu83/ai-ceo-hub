@@ -19,6 +19,12 @@ export function registerOutsourcingRoutes(app) {
     const worker = String(c.req.query('worker') || '');
     const effort = String(c.req.query('effort') || '');
     const list = listRequests(db, { status, worker, effort });
+    // 작업자 감시기가 자기 몫을 조회하면 근무 신호로 기록 (개발팀 Aside·AGY 접속 표시)
+    if (['aside', 'antigravity', 'gemini'].includes(worker)) {
+      if (!db.agentConnections || typeof db.agentConnections !== 'object') db.agentConnections = {};
+      db.agentConnections[`worker:${worker}`] = { lastSeenAt: new Date().toISOString(), lastAction: 'poll' };
+      saveDb(db);
+    }
     return c.json({
       count: list.length,
       routing: describeRouting(db.settings),

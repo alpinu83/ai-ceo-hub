@@ -1,4 +1,5 @@
 // routes/missions.js: server.js에서 분리 (HTTP 라우트)
+import { DEV_TEAM, dispatchDevTeamTask, handleDevDesignDecision } from '../hub/dev-policy.js';
 import { appendLog, appendMessage, flushCloudBackup, loadDb, sanitizeStateForClient, saveDb, uid } from '../store.js';
 import { buildDispatchPrompt, createApprovalForTask, executeAgentTask, synthesizeMissionReport } from '../orchestrator.js';
 import { buildMissionLiveContext } from '../live-context.js';
@@ -620,6 +621,7 @@ export function registerMissionsRoutes(app) {
           task.status = 'queued';
         }
         appendLog(db, 'CEO', `"${task.title}" 담당자를 ${ag.name}(으)로 재배정했습니다.`, 'info');
+        if (DEV_TEAM[ag.id]) dispatchDevTeamTask(db, task);
       }
     }
     if (typeof body.requiresApproval === 'boolean') task.requiresApproval = body.requiresApproval;
@@ -738,7 +740,10 @@ export function registerMissionsRoutes(app) {
     if (!res.ok) return c.json({ error: res.error }, res.status || 400);
 
     let latestDb = res.db;
-    if (res.approval?.kind === 'stage_gate') {
+    if (res.approval?.kind === 'dev_design') {
+      await handleDevDesignDecision(res.approval, body.decision, body.ceoNote);
+      latestDb = loadDb();
+    } else if (res.approval?.kind === 'stage_gate') {
       const handled = await handleStageGateDecision(res.approval, body.decision, body.ceoNote);
       latestDb = handled?.db || loadDb();
     } else if (res.approval?.kind === 'deliverable_review') {
