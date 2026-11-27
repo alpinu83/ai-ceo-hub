@@ -819,8 +819,8 @@ async function runTests() {
     ).json();
     // Cue에게 배정된 승인 필요 업무 1건 확보
     const cueTask = leadMission.tasks[0];
-    await fetch(`${BASE}/api/tasks/${encodeURIComponent(cueTask.id)}/reassign`, {
-      method: 'POST',
+    await fetch(`${BASE}/api/tasks/${encodeURIComponent(cueTask.id)}`, {
+      method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ assigneeId: 'agent_cue' })
     });
@@ -892,6 +892,48 @@ async function runTests() {
 
     const refinedDoc = await (await fetch(`${BASE}/api/approvals/${encodeURIComponent(refinedApr.id)}/deliverable?format=json`)).json();
     assert.ok(refinedDoc.markdown.includes('총괄 팀장 재가공 보고서') && refinedDoc.markdown.includes('## 핵심 결론'), 'Deliverable markdown must include Team Lead refined report');
+
+    // 15. Cue 등 외부 봇에 대기 업무가 2건 이상 있을 때 taskId 누락/오류 보고가 다른 프로젝트 업무에 잘못 붙지 않는지 검증
+    if (leadMission.tasks.length >= 3) {
+      await fetch(`${BASE}/api/tasks/${encodeURIComponent(leadMission.tasks[1].id)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assigneeId: 'agent_cue' })
+      });
+      await fetch(`${BASE}/api/tasks/${encodeURIComponent(leadMission.tasks[2].id)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assigneeId: 'agent_cue' })
+      });
+      // taskId 없이 deliverable 제출 → 임의 업무에 붙이면 안 되고 taskAutoMatchSkipped 경고 반환
+      const ambigRes = await (
+        await fetch(`${BASE}/api/agent-inbox/cue/reply?${tokQ}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: '보충 보고입니다.', deliverable: '보충 내용' })
+        })
+      ).json();
+      assert.equal(ambigRes.ok, true, 'Ambiguous reply should still post message safely');
+      assert.equal(ambigRes.taskId, null, 'Ambiguous reply must NOT auto-attach when 2+ tasks are open');
+      assert.equal(ambigRes.taskAutoMatchSkipped, true, 'Ambiguous reply must flag taskAutoMatchSkipped');
+      assert.ok(Array.isArray(ambigRes.openTasks) && ambigRes.openTasks.length >= 2, 'Ambiguous reply must list openTasks for retry');
+
+      // 존재하지 않는 taskId → 404 (다른 업무로 폴백 금지)
+      const badTaskRes = await fetch(`${BASE}/api/agent-inbox/cue/reply?${tokQ}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ taskId: 'tsk_nonexistent_999', message: '테스트', deliverable: '테스트' })
+      });
+      assert.equal(badTaskRes.status, 404, 'Unknown taskId must return 404 instead of attaching to another task');
+
+      // taskId와 다른 missionId 조합 → 400 차단
+      const wrongMissionRes = await fetch(`${BASE}/api/agent-inbox/cue/reply?${tokQ}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ taskId: leadMission.tasks[1].id, missionId: 'msn_wrong_other', message: '테스트', deliverable: '테스트' })
+      });
+      assert.equal(wrongMissionRes.status, 400, 'Cross-project taskId/missionId mismatch must return 400');
+    }
 
     // Clean reset after tests
     await fetch(`${BASE}/api/reset`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: 'RESET-ALL-DATA' }) });

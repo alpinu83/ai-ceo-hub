@@ -278,16 +278,18 @@ export function leadTriageResult(db, task, agent, mission, output, osFlag = '') 
     const nowIso0 = new Date().toISOString();
     if (task.triage.scopeRetries < 1) {
       task.triage.scopeRetries += 1;
-      task.description = `${task.description || ''}\n\n[팀장 피드백] ${triageGuidance('scope', { violations })}`.slice(0, 6000);
-      addLeadNote(task, 'scope', triageGuidance('scope', { violations }));
+      const scopeFeedback = triageGuidance('scope', { violations });
+      task.description = `${task.description || ''}\n\n[팀장 피드백] ${scopeFeedback}`.slice(0, 6000);
+      addLeadNote(task, 'scope', scopeFeedback);
       addReviewLesson(mission, `업무 지침 위반: ${violations.join(', ')} 관련 내용을 썼음`);
-      task.status = 'queued';
+      task.status = agent?.connectionMode === 'bridge' ? 'awaiting_bridge' : 'queued';
+      if (agent && mission) task.dispatchPrompt = buildDispatchPrompt(agent, task, mission);
       task.previousOutput = String(output || '').slice(0, 1500);
       task.output = '';
       task.updatedAt = nowIso0;
       leadSay(db, mission, '팀장 검토', `"${task.title}" 결과가 업무 지침을 어겨(${violations.join(', ')}) ${agent?.name || '담당자'}에게 고쳐 오도록 다시 맡겼습니다.`);
       appendLog(db, '총괄 팀장', `"${task.title}" 지침 위반으로 재작업: ${violations.join(', ')}`, 'info');
-      return { handled: true, requeued: true };
+      return { handled: true, requeued: task.status === 'queued', needsRevision: true, revisionReason: scopeFeedback };
     }
     task.status = 'blocked';
     task.blockedReason = `지침 위반 반복: ${violations.join(', ')}`;
@@ -316,16 +318,18 @@ export function leadTriageResult(db, task, agent, mission, output, osFlag = '') 
     const next = alt || agent;
     task.triage.retries += 1;
     task.assigneeId = next.id;
-    task.description = `${task.description || ''}\n\n[팀장 피드백] 이전 결과("${String(nr.reason).slice(0, 120)}")는 실제 결과물이 아니라 완료로 인정하지 않았습니다. ${triageGuidance(blocker, { repoLinked })}`.slice(0, 6000);
-      addLeadNote(task, 'triage', `이전 결과("${String(nr.reason).slice(0, 120)}")는 실제 결과물이 아니라 반려. ${triageGuidance(blocker, { repoLinked })}`);
-      addReviewLesson(mission, '결과물 없이 "정보를 달라·할 수 없다"만 제출');
-    task.status = 'queued';
+    const triageMsg = `이전 결과("${String(nr.reason).slice(0, 120)}")는 실제 결과물이 아니라 완료로 인정하지 않았습니다. ${triageGuidance(blocker, { repoLinked })}`;
+    task.description = `${task.description || ''}\n\n[팀장 피드백] ${triageMsg}`.slice(0, 6000);
+    addLeadNote(task, 'triage', triageMsg);
+    addReviewLesson(mission, '결과물 없이 "정보를 달라·할 수 없다"만 제출');
+    task.status = next?.connectionMode === 'bridge' ? 'awaiting_bridge' : 'queued';
+    if (next && mission) task.dispatchPrompt = buildDispatchPrompt(next, task, mission);
     task.previousOutput = String(output || '').slice(0, 1500);
     task.output = '';
     task.updatedAt = nowIso;
     leadSay(db, mission, '팀장 검토', `"${task.title}" 결과가 실제 결과물이 아니어서 ${next.id === agent.id ? `${next.name}에게 방향을 다시 주고` : `${next.name}에게 넘겨`} 다시 맡겼습니다. (${String(nr.reason).slice(0, 80)})`);
     appendLog(db, '총괄 팀장', `"${task.title}" 재배정 → ${next.name} (${blocker})`, 'info');
-    return { handled: true, requeued: true };
+    return { handled: true, requeued: task.status === 'queued', needsRevision: next.id === agent.id, revisionReason: triageMsg };
   }
   if (blocker === 'repo' || blocker === 'info') {
     task.status = 'blocked';

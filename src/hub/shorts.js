@@ -179,19 +179,29 @@ export function pickCandidate(db, candId) {
   const writer = pickWriter(db);
   if (!writer) return { ok: false, error: '대본을 쓸 AI 팀원이 없습니다.' };
   const now = new Date().toISOString();
-  const srcLines = [cand.url ? `- ${cand.source || '출처'}: ${cand.url}` : '', ...cand.related.map((r) => `- ${r.source || '관련 기사'}: ${r.title} ${r.url}`)].filter(Boolean);
+  const isGoogleNewsRedirect = (u = '') => /news\.google\.com\/(?:rss\/)?articles\//i.test(String(u));
+  const rawSources = [
+    cand.url ? { source: cand.source || '출처', title: cand.title, url: cand.url } : null,
+    ...(cand.related || []).map((r) => (r?.url ? { source: r.source || '관련 기사', title: r.title || '', url: r.url } : null))
+  ].filter(Boolean);
+  // 언론사 직접 URL을 news.google.com 리다이렉트 URL보다 먼저 배치
+  rawSources.sort((a, b) => Number(isGoogleNewsRedirect(a.url)) - Number(isGoogleNewsRedirect(b.url)));
+  const hasGoogleRedirect = rawSources.some((s) => isGoogleNewsRedirect(s.url));
+  const srcLines = rawSources.map((s) => `- ${s.source}: ${s.title ? `${s.title} ` : ''}${s.url}`);
   const task = {
     id: uid('tsk'),
     missionId: mission.id,
+    phase: Number(mission.phase) || 1,
     title: `쇼츠 대본: ${clip(cand.title, 60)}`,
     description: [
       `대표님이 고른 이슈로 구국열사 채널 쇼츠 대본(30~50초)을 쓰세요. 시각: 우파 성향의 차분하지만 단호한 분석형 해설.`,
       `이슈: ${cand.title}${cand.signal?.youtubeViews ? ` (유튜브 화제도: 관련 영상 조회 ${fmtViews(cand.signal.youtubeViews)})` : ''}${cand.summary ? `\n요약: ${cand.summary}` : ''}`,
       '※ 다른 유튜브 채널 영상의 화면·음성·자막·대사·구성은 절대 가져오지 마세요(저작권 신고 = 채널 경고). 화제도 참고만 하고, 사실은 아래 언론 기사로만 확인해 직접 쓰세요.',
       srcLines.length ? `참고 출처:\n${srcLines.join('\n')}` : '참고 출처: 없음 → 확인 가능한 기사만 쓰고 sources에 URL을 넣을 것',
+      hasGoogleRedirect ? '※ 참고 URL이 news.google.com 리다이렉트 링크라 봇 브라우저에서 바로 열리지 않으면, 기사 제목과 언론사명으로 네이버 뉴스·언론사 원문 페이지를 직접 검색해 확인한 뒤 실제 언론사 원문 URL을 sources에 넣으세요.' : '',
       '',
       SCRIPT_FORMAT
-    ].join('\n'),
+    ].filter((line) => line !== undefined).join('\n'),
     assigneeId: writer.id,
     status: writer.connectionMode === 'api' ? 'queued' : 'awaiting_bridge',
     requiresApproval: true,
