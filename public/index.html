@@ -127,8 +127,8 @@
         <section class="view active" id="view-command" aria-label="CEO 홈">
           <div id="home-ceo-inbox"></div>
           <div class="kpi-strip" aria-label="핵심 지표">
-            <button type="button" class="kpi-card accent-amber" id="kpi-approvals-cell">
-              <span class="kpi-label">결재 대기</span>
+            <button type="button" class="kpi-card accent-amber" id="kpi-approvals-cell" title="대표님 To Do List로 이동 (결재 포함)">
+              <span class="kpi-label">대표님 To Do</span>
               <strong class="kpi-value" id="kpi-approvals-val">0건</strong>
             </button>
             <button type="button" class="kpi-card" id="kpi-missions-cell">
@@ -225,16 +225,8 @@
             </form>
           </div>
 
-          <!-- Core Executive Lists -->
-          <div class="home-grid">
-            <div class="card">
-              <div class="card-head">
-                <h2 class="card-title">결재 대기</h2>
-                <button type="button" class="text-link" data-jump-view="approvals">전체</button>
-              </div>
-              <div id="home-approvals-list" class="clean-stack"></div>
-            </div>
-
+          <!-- Core Executive Lists (결재 대기 카드는 위 대표님 To Do List에 통합되어 삭제) -->
+          <div class="home-grid" style="grid-template-columns:minmax(0,1fr);">
             <div class="card">
               <div class="card-head">
                 <h2 class="card-title">진행 미션</h2>
@@ -1002,6 +994,6 @@
   </nav>
 
   <div class="toast-region" id="toast-region" aria-live="polite"></div>
-  <script type="module" src="./app.js?v=20261127n"></script>
+  <script type="module" src="./app.js?v=20261127p"></script>
 </body>
 </html>
