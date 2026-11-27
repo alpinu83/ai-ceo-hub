@@ -103,7 +103,10 @@ async function runTests() {
       'get_outsourcing_request',
       'submit_outsourcing_result',
       'request_ceo_action',
-      'pass_outsourcing_request'
+      'pass_outsourcing_request',
+      'list_lead_jobs',
+      'claim_lead_job',
+      'submit_lead_job'
     ]);
 
     // MCP는 토큰 필수 (헤더 없음·가짜 토큰·가짜 ?token= 모두 거부, 올바른 ?token=은 통과)
