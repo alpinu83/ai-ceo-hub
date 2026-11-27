@@ -128,7 +128,7 @@ export function getOutsourcingSettings(settings) {
     autoOnFailure: o.autoOnFailure !== false,
     autoForBrowser: o.autoForBrowser !== false,
     consultMode: ['off', 'proposals', 'proposals_and_reports'].includes(o.consultMode) ? o.consultMode : 'proposals',
-    // 외주 대상: auto(업무 시간엔 Aside, 그 외·이동 중엔 Antigravity) / aside / antigravity
+    // 한 곳에 몰기: auto(종류별 우선순위대로) / aside / antigravity / gemini
     routing: ['auto', 'aside', 'antigravity', 'gemini'].includes(o.routing) ? o.routing : 'auto',
     officeHours: {
       days: Array.isArray(oh.days) && oh.days.length ? oh.days.map(Number).filter((d) => d >= 0 && d <= 6) : [1, 2, 3, 4, 5],
@@ -231,12 +231,11 @@ export function nextHandoffAt(settings, req = {}, date = new Date()) {
 
 export function describeRouting(settings, date = new Date()) {
   const cfg = getOutsourcingSettings(settings);
-  // 한 곳에 몰기 설정이면 그 작업자, 아니면 시간대 담당
-  const target = cfg.routing !== 'auto' ? cfg.routing : timeWorker(settings, date);
-  let why = '';
-  if (cfg.awayUntil) why = `이동 중 모드 (${new Date(cfg.awayUntil).toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul', hour: '2-digit', minute: '2-digit' })}까지)`;
-  else why = inOfficeHours(settings, date) ? `업무 시간 ${cfg.officeHours.start}~${cfg.officeHours.end}` : '업무 시간 밖';
-  if (cfg.routing !== 'auto') why = `대표님 고정: ${OUTSOURCE_WORKER_LABELS[cfg.routing]} (못 하는 일만 분담표대로) · ${why}`;
+  // 한 곳에 몰기 설정이면 그 작업자, 아니면 종류별 우선순위대로 (업무 시간은 배정에 쓰지 않음)
+  const target = cfg.routing !== 'auto' ? cfg.routing : 'auto';
+  const away = cfg.awayUntil ? `PC 자리비움 (${new Date(cfg.awayUntil).toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul', hour: '2-digit', minute: '2-digit' })}까지 Aside 건너뜀)` : '';
+  let why = cfg.routing !== 'auto' ? `대표님 고정: ${OUTSOURCE_WORKER_LABELS[cfg.routing]} (못 하는 일만 분담표대로)` : '종류별 우선순위대로';
+  if (away) why += ` · ${away}`;
   const byKind = {};
   for (const kind of Object.keys(OUTSOURCE_KIND_LABELS)) {
     const chain = priorityChain(settings, { kind });
@@ -245,11 +244,10 @@ export function describeRouting(settings, date = new Date()) {
   }
   return {
     target,
-    label: OUTSOURCE_WORKER_LABELS[target],
+    label: target === 'auto' ? '우선순위대로' : OUTSOURCE_WORKER_LABELS[target],
     why,
     routing: cfg.routing,
     awayUntil: cfg.awayUntil,
-    officeHours: cfg.officeHours,
     roles: cfg.roles,
     priorities: cfg.priorities,
     waitMinutes: cfg.waitMinutes,
