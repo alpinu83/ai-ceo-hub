@@ -1,4 +1,5 @@
 // hub/missions.js: server.js에서 분리 (공유 로직)
+import { DEV_TEAM, dispatchDevTeamTask } from './dev-policy.js';
 import { kickShortsFactory, queueShortsJob } from './shorts.js';
 import { ASSIGNMENT_RULES, buildPlanningRoster, isStandingOrder, markCeoActivity, rebalanceAssignments, rememberFact, addLeadNote, isAgentExhausted, pickQuotaSubstitute } from '../lead-engine.js';
 import { appendLog, appendMessage, applyInferredMissionBindings, flushCloudBackup, loadDb, saveDb, uid } from '../store.js';
@@ -244,6 +245,12 @@ export async function autoStartLiveMissionTasks(missionId, { priorRunTaskIds = [
     appendLog(db, '총괄 팀장', `"${t.title}" 담당 ${ag.name} 오늘 사용 한도 소진 → ${sub.name}이(가) 대신 처리 (자정까지 ${ag.name} 제외)`, 'info');
     return true;
   });
+
+  // 개발팀(Aside·AGY)에게 배정된 작업은 작업 큐로 바로 보냄
+  for (const t of db.tasks) {
+    if (t.missionId === missionId && DEV_TEAM[t.assigneeId] && ['queued', 'awaiting_bridge'].includes(t.status)) dispatchDevTeamTask(db, t);
+  }
+  autoTargets = autoTargets.filter((t) => t.status === 'queued' || t.status === 'awaiting_bridge');
 
   // Ensure external bot tasks are cleanly marked as awaiting external inbox/MCP (never sitting in "실행 대기")
   const externalProviders = new Set(['pickle', 'manus', 'muse', 'vooy', 'instinct']);

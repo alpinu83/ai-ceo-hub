@@ -1,4 +1,5 @@
 // hub/outsourcing-bridge.js: server.js에서 분리 (공유 로직)
+import { createDesignApproval } from './dev-policy.js';
 import { OUTSOURCE_WORKER_LABELS, assignRequest, cancelRequest, createOutsourcingRequest, describeRolesLine, describeRouting, findRequest, getOutsourcingSettings, listRequests, releaseExpiredLeases, resolveTarget, resumeRequest, setOutsourcingHandlers, shortenForeignLeases, submitResult, wantsTwoStage } from '../outsourcing.js';
 import { appendLog, flushCloudBackup, loadDb, saveDb } from '../store.js';
 import { buildMissionDigest, escapeTelegramHtml, findOutputViolations, rememberFact } from '../lead-engine.js';
@@ -131,7 +132,7 @@ export async function approvalFromExternalPr(db, req, mission) {
   }
   const apr = createItPrApproval(db, mission || { id: req.missionId }, result, {
     taskIds: req.taskId ? [req.taskId] : [],
-    titlePrefix: `[외주 · ${workerTag}] `,
+    titlePrefix: `[개발팀 · ${workerTag}] `,
     summaryLead: `외주 요청 ${req.id}: ${req.title}`
   });
   apr.outsourceId = req.id;
@@ -158,6 +159,11 @@ export async function handleOutsourceSubmitted(id) {
       rememberFact(db, { kind: 'lesson', missionId: req.missionId, text: `[외부 자문 · ${by}] ${oneLineText(r.summary || r.document, 220)}`, source: 'outsourcing' });
       sendTelegramReport(db.settings, `외부 자문 도착 ${req.id}`, `${apr ? `${apr.title}\n` : ''}${oneLineText(r.summary || r.document, 700)}`, `outres:${req.id}`).catch(() => {});
       req.status = 'accepted';
+    } else if (req.codeWorkflow === 'design_first' && !req.designApprovalId) {
+      // 개발 지침 "설계 먼저": Aside 설계서 → 대표님 확인 결재 (승인되면 AGY 구현 + Aside 검수)
+      createDesignApproval(db, req, mission);
+      req.status = 'accepted';
+      if (mission) leadSay(db, mission, '개발 설계 확인 요청', `${req.id} "${req.title}" 설계서가 왔습니다. 결재함에서 확인해 주시면 AGY가 구현을 시작합니다.`);
     } else {
       const cfg = getOutsourcingSettings(db.settings);
       const isAgySubmit = by === 'antigravity' || (by === 'github' && req.claimedBy === 'antigravity');
