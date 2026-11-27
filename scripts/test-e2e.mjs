@@ -452,9 +452,10 @@ async function runTests() {
       await fetch(`${BASE}/api/missions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: '유튜브 쇼츠 테스트', domain: 'business', mode: 'project', directive: '정치 뉴스 쇼츠 채널 운영' }) })
     ).json();
     const ing = await (
-      await fetch(`${BASE}/api/shorts/hook/candidates`, { method: 'POST', headers: SH, body: JSON.stringify({ batch: 'ci', notify: false, items: [{ title: '국회 예산안 처리 논란', url: 'https://example.com/a', source: '예시일보', views: 120000, kind: 'youtube' }, { title: '국회 예산안 처리 논란', url: 'https://example.com/b' }] }) })
+      await fetch(`${BASE}/api/shorts/hook/candidates`, { method: 'POST', headers: SH, body: JSON.stringify({ batch: 'ci', notify: false, items: [{ title: '국회 예산안 처리 논란', url: 'https://example.com/a', source: '예시일보', coverage: 5, kind: 'news', publishedAt: new Date().toISOString() }, { title: '국회 예산안 처리 논란', url: 'https://example.com/b' }, { title: '유튜브 영상만 있는 이슈', url: 'https://www.youtube.com/watch?v=x', kind: 'youtube', views: 999 }] }) })
     ).json();
     assert.equal(ing.added, 1, 'duplicate titles are merged');
+    // 다른 채널 유튜브 영상만 있는 후보는 쓰지 않음 (기사 없으면 제외)
     const shList = await (await fetch(`${BASE}/api/shorts`)).json();
     assert.equal(shList.missionId, shortsMission.mission.id, 'shorts project is detected by title');
     const pick = await (await fetch(`${BASE}/api/shorts/candidates/${shList.candidates[0].id}/pick`, { method: 'POST' })).json();
