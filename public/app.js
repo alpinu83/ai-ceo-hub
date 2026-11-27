@@ -1666,6 +1666,7 @@ function outsourcingSettingsClient() {
     awayUntil: o.awayUntil && Date.parse(o.awayUntil) > Date.now() ? o.awayUntil : '',
     roles: { ...OUT_DEFAULT_ROLES, ...(o.roles || {}) },
     priorities: { ...OUT_DEFAULT_PRIORITIES, ...(o.priorities || {}) },
+    codeWorkflow: o.codeWorkflow === 'agy_then_aside' ? 'agy_then_aside' : 'single',
     waitMinutes: Number(o.waitMinutes) || 30,
     geminiWaitMinutes: o.geminiWaitMinutes ?? 180
   };
@@ -1734,11 +1735,14 @@ function outCardHtml(r) {
             <span class="badge badge-neutral mono">${esc(r.id)}</span>
             <span class="badge badge-neutral">${esc(OUT_KIND_LABELS[r.kind] || r.kind)}</span>
             <span class="badge ${cls}">${esc(label)}${r.claimedBy && r.status === 'claimed' ? ` · ${esc(r.claimedBy)}` : ''}</span>
+            ${r.reviewStage === 'aside_review' ? `<span class="badge badge-blue">2단계 검수·보완${Number(r.reviewRound) > 1 ? ` ${r.reviewRound}차` : ''}</span>` : ''}
+            ${r.reviewStage === 'agy_rework' ? `<span class="badge badge-amber">검수 반려 · AGY 재수정 ${Number(r.reviewRound) || 2}차</span>` : ''}
+            ${r.reviewRequestId ? `<span class="badge badge-neutral">→ Aside 검수 (${esc(r.reviewRequestId)})</span>` : ''}
             ${open || r.status === 'needs_ceo' ? `<span class="badge badge-blue">→ ${esc(OUT_WORKER_LABELS[target] || target)}${r.pinnedWorker ? ' (지정)' : ''}</span>` : ''}
             ${res?.by ? `<span class="badge badge-neutral">작업: ${esc(res.by)}</span>` : ''}
           </div>
           <h3 class="routine-title">${esc(r.title)}</h3>
-          <div class="routine-sub">${mission ? esc(mission.title) : '단독 요청'}${r.repo ? ` · ${esc(r.repo)}` : ''} · 요청 ${esc(formatTime(r.createdAt))}${res?.submittedAt ? ` · 완료 ${esc(formatTime(res.submittedAt))}` : ''}</div>
+          <div class="routine-sub">${mission ? esc(mission.title) : '단독 요청'}${r.repo ? ` · ${esc(r.repo)}` : ''}${r.sourcePrUrl ? ` · <a href="${esc(r.sourcePrUrl)}" target="_blank" rel="noreferrer">1차 PR ↗</a>` : ''} · 요청 ${esc(formatTime(r.createdAt))}${res?.submittedAt ? ` · 완료 ${esc(formatTime(res.submittedAt))}` : ''}</div>
         </div>
         <div class="routine-actions">
           ${
@@ -1866,12 +1870,20 @@ function renderOutsourcingSettings(force = false) {
       if (!e.target.closest('.out-route')) return;
       const d = document.getElementById('out-route-dirty');
       if (d) d.style.display = '';
+      if (e.target.matches('[data-out-prio="code"][data-out-prio-idx="0"]')) {
+        const twoStage = e.target.value === 'agy_then_aside';
+        const sec = root.querySelector('[data-out-prio="code"][data-out-prio-idx="1"]');
+        const note = document.getElementById('out-code-stage2-note');
+        if (sec) sec.style.display = twoStage ? 'none' : '';
+        if (note) note.style.display = twoStage ? '' : 'none';
+      }
     });
   }
   const cfg = outsourcingSettingsClient();
   const rt = lastOutRouting || { label: '-', why: '' };
   const daysVal = cfg.officeHours.days.length === 7 ? 'all' : cfg.officeHours.days.join(',') === '1,2,3,4,5' ? 'weekdays' : 'custom';
   const prio = cfg.priorities;
+  const codeTwoStage = cfg.codeWorkflow === 'agy_then_aside';
   const roleRows = Object.keys(OUT_DEFAULT_PRIORITIES)
     .map((kind) => {
       const capable = ['gemini', 'aside', 'antigravity'].filter((w) => OUT_WORKER_CAPS[w].includes(kind));
@@ -1879,10 +1891,17 @@ function renderOutsourcingSettings(force = false) {
       const cells = [0, 1, 2]
         .map((i) => {
           if (i >= capable.length) return '<td class="routine-sub" style="padding:4px;">-</td>';
-          const val = cur[i] || '';
+          const val = kind === 'code' && i === 0 && codeTwoStage ? 'agy_then_aside' : cur[i] || '';
+          if (kind === 'code' && i === 1) {
+            return `<td style="padding:4px;"><select data-out-prio="${kind}" data-out-prio-idx="${i}" style="${codeTwoStage ? 'display:none;' : ''}">
+                <option value="" ${!cur[i] ? 'selected' : ''}>없음</option>
+                ${capable.map((w) => `<option value="${w}" ${cur[i] === w ? 'selected' : ''}>${esc(OUT_WORKER_LABELS[w])}</option>`).join('')}
+              </select><span class="routine-sub" id="out-code-stage2-note" style="${codeTwoStage ? '' : 'display:none;'}">2단계: Aside 자동 검수·보완</span></td>`;
+          }
           return `<td style="padding:4px;"><select data-out-prio="${kind}" data-out-prio-idx="${i}">
               ${i > 0 ? `<option value="" ${!val ? 'selected' : ''}>없음</option>` : ''}
               ${capable.map((w) => `<option value="${w}" ${val === w ? 'selected' : ''}>${esc(OUT_WORKER_LABELS[w])}</option>`).join('')}
+              ${kind === 'code' && i === 0 ? `<option value="agy_then_aside" ${val === 'agy_then_aside' ? 'selected' : ''}>AGY 수정 + Aside 검수·보완</option>` : ''}
             </select></td>`;
         })
         .join('');
@@ -1897,7 +1916,7 @@ function renderOutsourcingSettings(force = false) {
   root.innerHTML = `
     <div class="card out-route">
       <div class="card-head"><h3 class="card-title">역할 분담 (우선순위)</h3></div>
-      <p class="routine-desc" style="margin-top:0;">일의 종류마다 맡길 순서를 정합니다. 1순위가 정해진 시간 안에 안 가져가면 2순위, 그래도 안 되면 3순위로 자동으로 넘어갑니다(Gemini 앱은 예약 주기 때문에 최소 60분). 잡고 끝내지 못한 작업자는 그 요청에서 건너뜁니다. 작업자가 못 하는 일(Gemini 앱의 로그인·코드 작업)은 목록에 나오지 않습니다.</p>
+      <p class="routine-desc" style="margin-top:0;">일의 종류마다 맡길 순서를 정합니다. 1순위가 정해진 시간 안에 안 가져가면 2순위, 그래도 안 되면 3순위로 자동으로 넘어갑니다(Gemini 앱은 예약 주기 때문에 최소 60분). 코드 수정에서 <strong>AGY 수정 + Aside 검수·보완</strong>을 고르면 Antigravity가 1차 수정·PR을 만든 직후 Aside가 자동으로 같은 PR을 검수·보완한 뒤 대표님 결재로 올립니다.</p>
       <div style="overflow-x:auto;"><table class="out-role-table" style="width:100%;border-collapse:collapse;font-size:13px;">
         <thead><tr><th style="text-align:left;padding:6px 4px;">일의 종류</th><th style="text-align:left;padding:6px 4px;">1순위</th><th style="text-align:left;padding:6px 4px;">2순위</th><th style="text-align:left;padding:6px 4px;">3순위</th><th style="text-align:left;padding:6px 4px;">현재</th></tr></thead>
         <tbody>${roleRows}</tbody>
@@ -3142,11 +3161,20 @@ function bindEvents() {
     }
     if (target.dataset.outRouteSave) {
       const priorities = {};
+      let codeWorkflow = 'single';
       document.querySelectorAll('[data-out-prio]').forEach((el) => {
         const k = el.dataset.outPrio;
+        const idx = Number(el.dataset.outPrioIdx);
+        if (k === 'code' && idx === 0 && el.value === 'agy_then_aside') {
+          codeWorkflow = 'agy_then_aside';
+          return;
+        }
         priorities[k] = priorities[k] || [];
-        priorities[k][Number(el.dataset.outPrioIdx)] = el.value;
+        priorities[k][idx] = el.value;
       });
+      if (codeWorkflow === 'agy_then_aside') {
+        priorities.code = ['antigravity', 'aside'];
+      }
       for (const k of Object.keys(priorities)) priorities[k] = priorities[k].filter(Boolean).filter((w, i, a) => a.indexOf(w) === i);
       try {
         const res = await api('/api/outsourcing/route', {
@@ -3154,6 +3182,7 @@ function bindEvents() {
           body: JSON.stringify({
             routing: document.getElementById('out-route-mode')?.value || 'auto',
             priorities,
+            codeWorkflow,
             waitMinutes: Number(document.getElementById('out-wait-min')?.value || 30)
           })
         });
@@ -3162,7 +3191,7 @@ function bindEvents() {
         renderAll();
         refreshIcons();
         renderOutsourcingSettings(true);
-        toast('역할 분담을 저장했습니다.');
+        toast(codeWorkflow === 'agy_then_aside' ? '역할 분담을 저장했습니다 (코드: AGY 수정 → Aside 검수·보완).' : '역할 분담을 저장했습니다.');
       } catch (err) {
         toast(err.message, true);
       }

@@ -71,7 +71,8 @@ export function requestConsultForReport(db, mission, reportText) {
 
 /** 외부 작업자가 연 PR을 결재 카드로: 원래 결재 카드가 있으면 거기에 붙이고, 없으면 새 카드 */
 export async function approvalFromExternalPr(db, req, mission) {
-  const m = String(req.result?.prUrl || '').match(/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)/);
+  const prUrl = String(req.result?.prUrl || (req.reviewStage === 'aside_review' ? req.sourcePrUrl : '') || '').trim();
+  const m = prUrl.match(/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)/);
   if (!m) throw new Error('PR 주소를 해석할 수 없습니다.');
   const repo = m[1];
   const num = Number(m[2]);
@@ -91,6 +92,8 @@ export async function approvalFromExternalPr(db, req, mission) {
   const files = await gh(`/pulls/${num}/files?per_page=60`);
   const blocked = files.filter((f) => /^(\.github\/|data\/db\.json$|\.env)/.test(f.filename));
   if (blocked.length) throw new Error(`보호된 파일 수정이 포함돼 자동 결재에 올리지 않았습니다: ${blocked.map((f) => f.filename).join(', ')}`);
+  const isTwoStageReviewed = req.reviewStage === 'aside_review';
+  const workerTag = isTwoStageReviewed ? 'AGY+Aside 검수' : req.result.by;
   const result = {
     repo,
     branch: pr.base?.ref || 'main',
@@ -104,7 +107,13 @@ export async function approvalFromExternalPr(db, req, mission) {
       .map((f) => `파일: ${f.filename} (+${f.additions}/-${f.deletions})\n${String(f.patch || '').slice(0, 1500)}`)
       .join('\n\n')
       .slice(0, 12000),
-    audit: { passed: true, riskLevel: 'medium', notes: `외부 작업자(${req.result.by})가 만든 PR입니다. 승인 시 CI 통과를 확인한 뒤 머지합니다.` },
+    audit: {
+      passed: true,
+      riskLevel: 'medium',
+      notes: isTwoStageReviewed
+        ? 'Antigravity 1차 수정 후 Aside 검수·보완을 거친 PR입니다. 승인 시 CI 통과를 확인한 뒤 머지합니다.'
+        : `외부 작업자(${req.result.by})가 만든 PR입니다. 승인 시 CI 통과를 확인한 뒤 머지합니다.`
+    },
     instruction: req.goal,
     teamContext: ''
   };
@@ -112,17 +121,17 @@ export async function approvalFromExternalPr(db, req, mission) {
   if (existing && existing.kind !== 'next_phase') {
     applyPrFieldsToApproval(existing, result, { outsourceId: req.id });
     setCodeStatus(existing, 'ready');
-    existing.proposedAction = `승인 시 외주 PR #${num}(${req.result.by})을 main에 머지하고 ${deployLabelFor(repo)}까지 진행합니다. (CI 실패 시 머지 보류)`;
-    sendApprovalNotifications(db.settings, existing, `외주 · ${req.result.by}`);
+    existing.proposedAction = `승인 시 외주 PR #${num}(${workerTag})을 main에 머지하고 ${deployLabelFor(repo)}까지 진행합니다. (CI 실패 시 머지 보류)`;
+    sendApprovalNotifications(db.settings, existing, `외주 · ${workerTag}`);
     return existing;
   }
   const apr = createItPrApproval(db, mission || { id: req.missionId }, result, {
     taskIds: req.taskId ? [req.taskId] : [],
-    titlePrefix: `[외주 · ${req.result.by}] `,
+    titlePrefix: `[외주 · ${workerTag}] `,
     summaryLead: `외주 요청 ${req.id}: ${req.title}`
   });
   apr.outsourceId = req.id;
-  sendApprovalNotifications(db.settings, apr, `외주 · ${req.result.by}`);
+  sendApprovalNotifications(db.settings, apr, `외주 · ${workerTag}`);
   return apr;
 }
 
@@ -146,48 +155,136 @@ export async function handleOutsourceSubmitted(id) {
       sendTelegramReport(db.settings, `외부 자문 도착 ${req.id}`, `${apr ? `${apr.title}\n` : ''}${oneLineText(r.summary || r.document, 700)}`, `outres:${req.id}`).catch(() => {});
       req.status = 'accepted';
     } else {
-      const task = req.taskId ? db.tasks.find((t) => t.id === req.taskId) : null;
-      let prNote = '';
-      if (r.prUrl) {
-        try {
-          const apr = await approvalFromExternalPr(db, req, mission);
-          prNote = ` PR을 결재 카드에 붙였습니다 ("${apr.title}").`;
-        } catch (err) {
-          prNote = ` 단, PR을 결재에 올리지 못했습니다: ${err.message}`;
-          appendLog(db, '외주 창구', `${req.id} PR 처리 실패: ${err.message}`, 'warning');
+      const cfg = getOutsourcingSettings(db.settings);
+      const isAgySubmit = by === 'antigravity' || (by === 'github' && req.claimedBy === 'antigravity');
+      const reworkPrUrl = r.prUrl || (req.reviewStage === 'agy_rework' ? req.sourcePrUrl : '');
+      const isInitialTwoStage =
+        req.kind === 'code' &&
+        !req.reviewStage &&
+        cfg.codeWorkflow === 'agy_then_aside' &&
+        cfg.routing === 'auto' &&
+        !req.pinnedWorker &&
+        isAgySubmit &&
+        Boolean(r.prUrl);
+      const isReworkToReview =
+        req.kind === 'code' &&
+        req.reviewStage === 'agy_rework' &&
+        isAgySubmit &&
+        Boolean(reworkPrUrl) &&
+        (Number(req.reviewRound) || 1) <= 3;
+      const shouldHandoffToAside = isInitialTwoStage || isReworkToReview;
+
+      if (shouldHandoffToAside) {
+        const targetPrUrl = reworkPrUrl || r.prUrl;
+        const roundNum = isReworkToReview ? Number(req.reviewRound) || 2 : 1;
+        const reviewGoal = [
+          `Antigravity가 ${roundNum}차로 수정한 PR을 검수하고, 문제가 없으면 승인(제출)하거나 필요한 보완을 진행해 주세요.`,
+          '',
+          `- 검수 대상 PR: ${targetPrUrl}`,
+          `- 원본 요청: ${req.sourceOutsourceId || req.id} · ${req.title}`,
+          '',
+          '### 검수·보완 체크리스트',
+          '1. 바뀐 파일과 자동 테스트(CI) 결과를 확인하고, 최근 PR 변경을 되돌린 줄이 없는지 확인',
+          '2. 없는 파일을 불러오거나 기존 외주 API 스키마·화면(`public/index.html` 캐시 버전 포함)을 깨뜨리지 않았는지 확인',
+          '3. 문제가 없으면 같은 PR 주소로 `submit` (대표님 결재 카드 생성). 작은 보완은 같은 PR 브랜치에 커밋 후 `submit`',
+          `4. 큰 수정이 필요하면 \`POST /api/outsourcing/{요청ID}/pass\` ({"worker":"aside","to":"antigravity","reason":"구체적인 수정 지시"})로 AGY에게 되돌려 재수정 요청`
+        ].join('\n');
+        const reviewContext = [
+          `### 원본 요청 목표 (${req.sourceOutsourceId || req.id})`,
+          String(req.goal || req.title).slice(0, 2000),
+          '',
+          `### Antigravity ${roundNum}차 수정 요약`,
+          String(r.summary || '(요약 없음)').slice(0, 1000),
+          '',
+          `### Antigravity ${roundNum}차 제출 문서`,
+          String(r.document || '').slice(0, 3200)
+        ].join('\n');
+
+        const baseTitle = req.title.replace(/^\[검수·보완(?:\s*\d+차)?\]\s*/, '');
+        const made = createOutsourcingRequest(db, {
+          kind: 'code',
+          worker: 'aside',
+          pinnedWorker: 'aside',
+          reviewStage: 'aside_review',
+          reviewRound: roundNum,
+          sourceOutsourceId: req.sourceOutsourceId || req.id,
+          sourcePrUrl: targetPrUrl,
+          title: `[검수·보완${roundNum > 1 ? ` ${roundNum}차` : ''}] ${baseTitle}`.slice(0, 120),
+          missionId: req.missionId,
+          taskId: req.taskId,
+          approvalId: req.approvalId,
+          repo: req.repo,
+          branch: req.branch || 'main',
+          siteUrl: req.siteUrl || '',
+          reason: `2단계 코드 협업(AGY 수정 → Aside 검수·보완 ${roundNum}차): Antigravity PR(${targetPrUrl})을 Aside가 검수·보완한 뒤 대표님 결재에 올립니다.`,
+          goal: reviewGoal,
+          deliverable: `PR(${targetPrUrl}) 검수 결과 및 보완 내역 요약 + 최종 PR 주소(수정 없으면 동일 PR 주소 제출, 반려 시 /pass로 AGY에 수정 지시)`,
+          context: reviewContext,
+          createdBy: 'system'
+        });
+        const reviewReq = made.request;
+        req.reviewStage = 'handed_to_aside';
+        req.reviewRequestId = reviewReq.id;
+        req.status = 'accepted';
+        const task = req.taskId ? db.tasks.find((t) => t.id === req.taskId) : null;
+        if (task) {
+          task.status = 'outsourced';
+          task.outsourceId = reviewReq.id;
+          task.updatedAt = nowIso;
         }
-      }
-      if (task) {
-        task.output = `> 외주 결과 · ${by}${r.prUrl ? ` · PR ${r.prUrl}` : ''}\n\n${r.summary ? `**요약** ${r.summary}\n\n` : ''}${r.document || ''}`.trim();
-        task.executionModeUsed = `external:${by}`;
-        task.updatedAt = nowIso;
-        delete task.autoRetryExhausted;
-        if (task.requiresApproval && !r.prUrl) {
-          task.status = 'awaiting_approval';
-          if (!db.approvals.some((a) => a.taskId === task.id && a.status === 'pending')) {
-            const ag = db.agents.find((a) => a.id === task.assigneeId) || db.agents[0];
-            const apr = createApprovalForTask(task, ag, mission || { id: task.missionId });
-            db.approvals.unshift(apr);
-            notifyAllApprovalChannels(db.settings, apr, `외주 · ${by}`);
-          }
-        } else {
-          // 외주 결과(상위 AI)는 검수 없이, 지침 위반 검사와 결과물 등록만
-          task.status = 'completed';
-          if (mission) {
-            const vio = findOutputViolations(mission, task.output);
-            if (vio.length) appendLog(db, '총괄 팀장', `외주 결과 "${task.title}"에 지침 위반 의심: ${vio.join(', ')} (대표님 확인 권장)`, 'warning');
-            registerDeliverable(db, mission, task, { name: `외주 · ${by}` });
+        if (made.created) notifyOutsourceCreated(db, reviewReq);
+        appendLog(db, '외주 창구', `${req.id} Antigravity 1차 수정 완료 (${r.prUrl}) → Aside 검수·보완(${reviewReq.id})으로 자동 인계`, 'info');
+        if (mission) {
+          leadSay(db, mission, '2단계 코드 검수 인계', `${req.id} "${req.title}" 1차 수정(Antigravity · ${r.prUrl})이 완료되어 Aside 검수·보완(${reviewReq.id})으로 자동 넘겼습니다.`);
+        }
+        sendTelegramReport(db.settings, `2단계 코드 검수 인계 ${req.id}`, `"${req.title}"\n1차 PR: ${r.prUrl}\n→ Aside 검수·보완 요청(${reviewReq.id})을 자동 생성했습니다. 검수 완료 후 결재 카드가 올라옵니다.`, `outreview:${req.id}`).catch(() => {});
+      } else {
+        if (req.reviewStage === 'aside_review' && !r.prUrl && req.sourcePrUrl) {
+          r.prUrl = req.sourcePrUrl;
+        }
+        const task = req.taskId ? db.tasks.find((t) => t.id === req.taskId) : null;
+        let prNote = '';
+        if (r.prUrl) {
+          try {
+            const apr = await approvalFromExternalPr(db, req, mission);
+            prNote = ` PR을 결재 카드에 붙였습니다 ("${apr.title}").`;
+          } catch (err) {
+            prNote = ` 단, PR을 결재에 올리지 못했습니다: ${err.message}`;
+            appendLog(db, '외주 창구', `${req.id} PR 처리 실패: ${err.message}`, 'warning');
           }
         }
+        if (task) {
+          task.output = `> 외주 결과 · ${by}${r.prUrl ? ` · PR ${r.prUrl}` : ''}\n\n${r.summary ? `**요약** ${r.summary}\n\n` : ''}${r.document || ''}`.trim();
+          task.executionModeUsed = `external:${by}`;
+          task.updatedAt = nowIso;
+          delete task.autoRetryExhausted;
+          if (task.requiresApproval && !r.prUrl) {
+            task.status = 'awaiting_approval';
+            if (!db.approvals.some((a) => a.taskId === task.id && a.status === 'pending')) {
+              const ag = db.agents.find((a) => a.id === task.assigneeId) || db.agents[0];
+              const apr = createApprovalForTask(task, ag, mission || { id: task.missionId });
+              db.approvals.unshift(apr);
+              notifyAllApprovalChannels(db.settings, apr, `외주 · ${by}`);
+            }
+          } else {
+            // 외주 결과(상위 AI)는 검수 없이, 지침 위반 검사와 결과물 등록만
+            task.status = 'completed';
+            if (mission) {
+              const vio = findOutputViolations(mission, task.output);
+              if (vio.length) appendLog(db, '총괄 팀장', `외주 결과 "${task.title}"에 지침 위반 의심: ${vio.join(', ')} (대표님 확인 권장)`, 'warning');
+              registerDeliverable(db, mission, task, { name: `외주 · ${by}` });
+            }
+          }
+        }
+        if (mission) {
+          leadSay(db, mission, '외주 결과 도착', `${req.id} "${req.title}" 결과가 ${by}에게서 도착했습니다.${prNote} ${oneLineText(r.summary || r.document, 180)}`);
+          updateMissionStatus(db, mission.id);
+        }
+        rememberFact(db, { kind: 'result', missionId: req.missionId, text: `[외주 결과 · ${by}] ${req.title}: ${oneLineText(r.summary || r.document, 180)}`, source: 'outsourcing' });
+        sendTelegramReport(db.settings, `외주 결과 도착 ${req.id}`, `${req.title}\n${oneLineText(r.summary || r.document, 600)}${prNote}`, `outres:${req.id}`).catch(() => {});
+        req.status = 'accepted';
+        if (task && !r.prUrl && mission) maybeScheduleCodeBundle(db, mission, task);
       }
-      if (mission) {
-        leadSay(db, mission, '외주 결과 도착', `${req.id} "${req.title}" 결과가 ${by}에게서 도착했습니다.${prNote} ${oneLineText(r.summary || r.document, 180)}`);
-        updateMissionStatus(db, mission.id);
-      }
-      rememberFact(db, { kind: 'result', missionId: req.missionId, text: `[외주 결과 · ${by}] ${req.title}: ${oneLineText(r.summary || r.document, 180)}`, source: 'outsourcing' });
-      sendTelegramReport(db.settings, `외주 결과 도착 ${req.id}`, `${req.title}\n${oneLineText(r.summary || r.document, 600)}${prNote}`, `outres:${req.id}`).catch(() => {});
-      req.status = 'accepted';
-      if (task && !r.prUrl && mission) maybeScheduleCodeBundle(db, mission, task);
     }
   } catch (err) {
     appendLog(db, '외주 창구', `${req.id} 결과 처리 오류: ${err.message}`, 'warning');
@@ -252,11 +349,18 @@ setTaskResultHandler(async (taskId, output, mode) => {
   return { status: task.status, review: task.review || null };
 });
 
-export function updateOutsourceRouting(db, { routing, awayHours, officeHours, leaseMinutes, roles, geminiWaitMinutes, priorities, waitMinutes } = {}) {
+export function updateOutsourceRouting(db, { routing, awayHours, officeHours, leaseMinutes, roles, geminiWaitMinutes, priorities, waitMinutes, codeWorkflow } = {}) {
   const os = { ...getOutsourcingSettings(db.settings) };
   if (['auto', 'aside', 'antigravity', 'gemini'].includes(routing)) os.routing = routing;
   if (roles && typeof roles === 'object') os.roles = { ...os.roles, ...roles };
   if (priorities && typeof priorities === 'object') os.priorities = { ...os.priorities, ...priorities };
+  if (['single', 'agy_then_aside'].includes(codeWorkflow)) {
+    os.codeWorkflow = codeWorkflow;
+    // 2단계 협업 모드면 1순위는 항상 Antigravity(미처리 시 Aside 폴백)로 맞춤
+    if (codeWorkflow === 'agy_then_aside') {
+      os.priorities = { ...os.priorities, code: ['antigravity', 'aside'] };
+    }
+  }
   if (waitMinutes !== undefined && Number.isFinite(Number(waitMinutes))) os.waitMinutes = Number(waitMinutes);
   if (geminiWaitMinutes !== undefined && Number.isFinite(Number(geminiWaitMinutes))) os.geminiWaitMinutes = Number(geminiWaitMinutes);
   if (awayHours !== undefined) {
@@ -368,7 +472,7 @@ export async function outsourcingWatch() {
     }
   }
   saveDb(db);
-  const withRepo = listRequests(db, { status: 'active' }).filter((r) => r.repo && r.kind !== 'consult');
+  const withRepo = listRequests(db, { status: 'active' }).filter((r) => r.repo && r.kind !== 'consult' && r.reviewStage !== 'aside_review' && r.reviewStage !== 'agy_rework');
   const byRepo = new Map();
   for (const r of withRepo) byRepo.set(r.repo, [...(byRepo.get(r.repo) || []), r]);
   for (const [repo, list] of byRepo) {

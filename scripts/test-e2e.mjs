@@ -561,6 +561,127 @@ async function runTests() {
     const outRow = (afterOut.outsourcing || []).find((r) => r.id === outId);
     assert.equal(outRow?.status, 'accepted', 'submitted outsourcing result should be accepted');
 
+    // 10. 2단계 코드 협업 (AGY 수정 + Aside 검수·보완 + 반려 재수정 루프)
+    const twoStageRoute = await (
+      await fetch(`${BASE}/api/outsourcing/route`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ routing: 'auto', codeWorkflow: 'agy_then_aside' })
+      })
+    ).json();
+    assert.equal(twoStageRoute.routing.codeWorkflow, 'agy_then_aside', 'codeWorkflow should save as agy_then_aside');
+    assert.equal(twoStageRoute.routing.byKind.code.worker, 'antigravity', 'stage 1 code worker should be antigravity');
+    assert.ok(twoStageRoute.routing.byKind.code.label.includes('Aside'), 'code label should show 2-stage Aside review');
+
+    const codeReqCreated = await (
+      await fetch(`${BASE}/api/outsourcing`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: '2단계 코드 협업 테스트', kind: 'code', goal: '테스트 기능 추가 후 PR을 열어 주세요.', worker: 'any' })
+      })
+    ).json();
+    const codeReqId = codeReqCreated.request.id;
+    const agCodeList = await (await fetch(`${BASE}/api/outsourcing?${tokQ}&worker=antigravity`)).json();
+    assert.ok(agCodeList.requests.some((r) => r.id === codeReqId), 'antigravity should see stage-1 code request');
+    const asideBeforeCode = await (await fetch(`${BASE}/api/outsourcing?${tokQ}&worker=aside`)).json();
+    assert.ok(!asideBeforeCode.requests.some((r) => r.id === codeReqId), 'aside must not see stage-1 code request before AGY submits');
+
+    const agClaim = await (
+      await fetch(`${BASE}/api/outsourcing/${codeReqId}/claim?${tokQ}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ worker: 'antigravity' })
+      })
+    ).json();
+    assert.ok(agClaim.packet.includes('1단계 코드 수정') && agClaim.packet.includes('4단계'), 'stage-1 packet must include 2-stage & 4-step rules');
+
+    const testPrUrl = 'https://github.com/alpinu83/ai-ceo-hub/pull/999';
+    const agSubmit = await (
+      await fetch(`${BASE}/api/outsourcing/${codeReqId}/submit?${tokQ}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          worker: 'antigravity',
+          summary: '1차 수정 완료 및 테스트 통과',
+          document: '변경 파일과 테스트 결과를 PR 본문에 남겼습니다. 1차 수정 완료 보고서입니다.',
+          prUrl: testPrUrl
+        })
+      })
+    ).json();
+    assert.equal(agSubmit.ok, true, 'AGY stage-1 submit should succeed');
+    assert.equal(agSubmit.request.status, 'accepted', 'stage-1 request should be accepted after handoff');
+    assert.equal(agSubmit.request.reviewStage, 'handed_to_aside', 'stage-1 should record handed_to_aside');
+    const reviewId = agSubmit.request.reviewRequestId;
+    assert.ok(/^OUT-/.test(reviewId || ''), 'stage-2 Aside review request must be auto-created');
+
+    const asideReviewList = await (await fetch(`${BASE}/api/outsourcing?${tokQ}&worker=aside`)).json();
+    const reviewItem = asideReviewList.requests.find((r) => r.id === reviewId);
+    assert.ok(reviewItem, 'Aside polling must immediately see stage-2 review request');
+    assert.equal(reviewItem.reviewStage, 'aside_review', 'stage-2 reviewStage must be aside_review');
+    assert.equal(reviewItem.sourcePrUrl, testPrUrl, 'stage-2 must carry sourcePrUrl');
+    assert.equal(reviewItem.sourceOutsourceId, codeReqId, 'stage-2 must link sourceOutsourceId');
+
+    // Aside가 수정 지시를 붙여 AGY에게 반려 (/pass)
+    const rejectRes = await (
+      await fetch(`${BASE}/api/outsourcing/${reviewId}/pass?${tokQ}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ worker: 'aside', to: 'antigravity', reason: '엣지 케이스 테스트 1건 보강해 주세요.' })
+      })
+    ).json();
+    assert.equal(rejectRes.ok, true, 'Aside /pass rejection should succeed');
+    assert.equal(rejectRes.request.reviewStage, 'agy_rework', 'rejected review should enter agy_rework');
+    assert.equal(rejectRes.request.reviewRound, 2, 'reviewRound should increment to 2');
+    assert.equal(rejectRes.target, 'antigravity', 'rework target should be antigravity');
+
+    // AGY가 재수정 후 다시 제출 → Aside 2차 검수로 자동 회귀
+    const agReworkSubmit = await (
+      await fetch(`${BASE}/api/outsourcing/${reviewId}/submit?${tokQ}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          worker: 'antigravity',
+          summary: 'Aside 지적 사항 반영 완료',
+          document: '엣지 케이스 테스트 보강 후 같은 PR 브랜치에 푸시하고 npm test 통과 확인했습니다.',
+          prUrl: testPrUrl
+        })
+      })
+    ).json();
+    assert.equal(agReworkSubmit.ok, true, 'AGY rework submit should succeed');
+    const reviewId2 = agReworkSubmit.request.reviewRequestId;
+    assert.ok(/^OUT-/.test(reviewId2 || '') && reviewId2 !== reviewId, '2nd-round Aside review request should be created');
+
+    const asideReviewList2 = await (await fetch(`${BASE}/api/outsourcing?${tokQ}&worker=aside`)).json();
+    const reviewItem2 = asideReviewList2.requests.find((r) => r.id === reviewId2);
+    assert.equal(reviewItem2?.reviewStage, 'aside_review', '2nd-round reviewStage should be aside_review');
+    assert.equal(reviewItem2?.reviewRound, 2, '2nd-round reviewRound should be 2');
+
+    // Aside 최종 통과 제출 (prUrl 생략 시 sourcePrUrl 폴백 확인, 추가 루프 생성 금지)
+    const asideFinalSubmit = await (
+      await fetch(`${BASE}/api/outsourcing/${reviewId2}/submit?${tokQ}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          worker: 'aside',
+          summary: '2차 검수 완료 — 문제없음',
+          document: '변경 파일, CI 테스트, 최근 PR 회귀 여부 모두 확인했고 이상 없어 최종 승인합니다.'
+        })
+      })
+    ).json();
+    assert.equal(asideFinalSubmit.ok, true, 'Aside final review submit should succeed');
+    assert.equal(asideFinalSubmit.request.status, 'accepted', 'Aside final review should be accepted');
+    assert.equal(asideFinalSubmit.request.reviewRequestId || '', '', 'Aside final submit must NOT loop again');
+
+    // 원복 확인
+    const backSingle = await (
+      await fetch(`${BASE}/api/outsourcing/route`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ routing: 'auto', codeWorkflow: 'single', priorities: { code: ['antigravity', 'aside'] } })
+      })
+    ).json();
+    assert.equal(backSingle.routing.codeWorkflow, 'single', 'codeWorkflow should switch back to single');
+
     // Clean reset after tests
     await fetch(`${BASE}/api/reset`, { method: 'POST' });
     console.log('✅ All AI CEO Hub E2E tests (REST + Continuous Project Loop + Team Lead Chat + Official MCP SDK + Async Pickle HTTPS Inbox + Heartbeat + Cascade Delete + Web Push + Telegram) passed!');
