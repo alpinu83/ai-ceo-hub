@@ -39,7 +39,9 @@ export function buildCeoInbox(db) {
   if (sm) {
     const sh = ensureShorts(db);
     const fresh = sh.candidates.filter((c) => c.status === 'new');
-    const inFlight = db.tasks.some((t) => t.missionId === sm.id && t.shorts && OPEN_TASK.includes(t.status));
+    const inFlightTask = db.tasks.some((t) => t.missionId === sm.id && t.shorts && OPEN_TASK.includes(t.status));
+    const inFlightJob = (sh.jobs || []).some((j) => j.missionId === sm.id && ['queued', 'rendering'].includes(j.status));
+    const inFlight = inFlightTask || inFlightJob;
     if (fresh.length && !inFlight) {
       items.push({
         key: `shorts:${sm.id}`,

@@ -72,6 +72,22 @@ export function registerShortsRoutes(app) {
     return c.json({ ok: true, taskId: res.task.id, state: sanitizeStateForClient(db) });
   });
 
+  // 대표님: 이번 뉴스 후보 그만 고르기 (남은 new 후보를 건너뛰고 다음 단계에 집중)
+  app.post('/api/shorts/candidates/dismiss', async (c) => {
+    const db = loadDb();
+    const sh = ensureShorts(db);
+    let dismissed = 0;
+    for (const cand of sh.candidates) {
+      if (cand.status === 'new') {
+        cand.status = 'skipped';
+        dismissed += 1;
+      }
+    }
+    saveDb(db);
+    await flushCloudBackup(db);
+    return c.json({ ok: true, dismissed, state: sanitizeStateForClient(db) });
+  });
+
   // 대표님: 제작 보류·실패 작업 다시 시도 (대본을 고쳤으면 다시 읽음)
   app.post('/api/shorts/jobs/:id/retry', async (c) => {
     const db = loadDb();

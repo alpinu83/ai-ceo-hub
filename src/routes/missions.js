@@ -115,6 +115,12 @@ export function registerMissionsRoutes(app) {
 
     const nextMs = milestones.find((x) => x.status === 'todo') || null;
     if (nextMs) nextMs.status = 'doing';
+    // 쇼츠 프로젝트 단계 전환 시 남아 있는 뉴스 후보(new)도 함께 정리해 '뉴스 고르기'가 계속 뜨지 않게 함
+    if (/쇼츠|shorts/i.test(mission.title || '') && Array.isArray(db.shorts?.candidates)) {
+      for (const cand of db.shorts.candidates) {
+        if (cand.status === 'new') cand.status = 'skipped';
+      }
+    }
     appendLog(
       db,
       'CEO',
