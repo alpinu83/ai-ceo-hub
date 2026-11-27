@@ -63,6 +63,11 @@ export const DEFAULT_PRIORITIES = {
 // (이전 버전 호환용)
 export const ROLE_CHOICES = ['time', 'gemini', 'aside', 'antigravity'];
 export const DEFAULT_ROLES = { consult: 'gemini', research: 'gemini', task: 'gemini', browser: 'aside', code: 'antigravity' };
+export const CODE_WORKFLOWS = ['single', 'agy_then_aside'];
+export const CODE_WORKFLOW_LABELS = {
+  single: '단독 처리 (우선순위대로)',
+  agy_then_aside: 'AGY 수정 → Aside 검수·보완'
+};
 
 /**
  * 난이도: deep = 판단·추론이 필요한 일 (Gemini Neon / Antigravity Carbon·Neon)
@@ -142,6 +147,8 @@ export function getOutsourcingSettings(settings) {
     roles: normalizeRoles(o.roles),
     // 종류별 담당 우선순위와, 다음 순위로 넘기기까지 기다리는 시간
     priorities: normalizePriorities(o.priorities),
+    // 코드 수정 협업 방식: single(우선순위 단독) | agy_then_aside(Antigravity 1차 수정 → Aside 검수·보완)
+    codeWorkflow: CODE_WORKFLOWS.includes(o.codeWorkflow) ? o.codeWorkflow : 'single',
     waitMinutes: [15, 30, 60, 120].includes(Number(o.waitMinutes)) ? Number(o.waitMinutes) : 30,
     // (이전 버전 호환)
     geminiWaitMinutes: [0, 60, 120, 180, 360, 720].includes(Number(o.geminiWaitMinutes)) ? Number(o.geminiWaitMinutes) : 180
@@ -235,12 +242,21 @@ export function describeRouting(settings, date = new Date()) {
   const target = cfg.routing !== 'auto' ? cfg.routing : 'auto';
   const away = cfg.awayUntil ? `PC 자리비움 (${new Date(cfg.awayUntil).toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul', hour: '2-digit', minute: '2-digit' })}까지 Aside 건너뜀)` : '';
   let why = cfg.routing !== 'auto' ? `대표님 고정: ${OUTSOURCE_WORKER_LABELS[cfg.routing]} (못 하는 일만 분담표대로)` : '종류별 우선순위대로';
+  if (cfg.routing === 'auto' && cfg.codeWorkflow === 'agy_then_aside') why += ' · 코드: AGY 수정→Aside 검수·보완';
   if (away) why += ` · ${away}`;
   const byKind = {};
   for (const kind of Object.keys(OUTSOURCE_KIND_LABELS)) {
     const chain = priorityChain(settings, { kind });
     const w = resolveTarget(settings, { kind }, date);
-    byKind[kind] = { worker: w, label: OUTSOURCE_WORKER_LABELS[w], chain, chainLabels: chain.map((x) => OUTSOURCE_WORKER_LABELS[x]), role: cfg.roles[kind] };
+    const twoStage = kind === 'code' && cfg.routing === 'auto' && cfg.codeWorkflow === 'agy_then_aside';
+    byKind[kind] = {
+      worker: w,
+      label: twoStage ? CODE_WORKFLOW_LABELS.agy_then_aside : OUTSOURCE_WORKER_LABELS[w],
+      chain,
+      chainLabels: chain.map((x) => OUTSOURCE_WORKER_LABELS[x]),
+      role: cfg.roles[kind],
+      ...(kind === 'code' ? { codeWorkflow: cfg.codeWorkflow } : {})
+    };
   }
   return {
     target,
@@ -250,6 +266,7 @@ export function describeRouting(settings, date = new Date()) {
     awayUntil: cfg.awayUntil,
     roles: cfg.roles,
     priorities: cfg.priorities,
+    codeWorkflow: cfg.codeWorkflow,
     waitMinutes: cfg.waitMinutes,
     byKind,
     geminiWaitMinutes: cfg.geminiWaitMinutes
@@ -260,7 +277,7 @@ export function describeRouting(settings, date = new Date()) {
 export function describeRolesLine(settings, date = new Date()) {
   const r = describeRouting(settings, date);
   return Object.entries(r.byKind)
-    .map(([k, v]) => `${OUTSOURCE_KIND_LABELS[k]} ${v.chainLabels.join('→')}`)
+    .map(([k, v]) => (k === 'code' && v.codeWorkflow === 'agy_then_aside' && r.routing === 'auto' ? `${OUTSOURCE_KIND_LABELS[k]} ${CODE_WORKFLOW_LABELS.agy_then_aside}` : `${OUTSOURCE_KIND_LABELS[k]} ${v.chainLabels.join('→')}`))
     .join(' · ');
 }
 
@@ -334,6 +351,11 @@ export function createOutsourcingRequest(db, spec = {}) {
     branch: spec.branch || 'main',
     siteUrl: spec.siteUrl || '',
     worker: OUTSOURCE_WORKER_LABELS[spec.worker] ? spec.worker : 'any',
+    pinnedWorker: spec.pinnedWorker && OUTSOURCE_WORKER_LABELS[spec.pinnedWorker] && spec.pinnedWorker !== 'any' ? spec.pinnedWorker : '',
+    reviewStage: spec.reviewStage || '',
+    reviewRound: Number(spec.reviewRound) || (spec.reviewStage ? 1 : 0),
+    sourceOutsourceId: spec.sourceOutsourceId || '',
+    sourcePrUrl: spec.sourcePrUrl || '',
     effort: inferEffort({ kind, title: spec.title, goal: spec.goal, effort: spec.effort }),
     queuedAt: new Date().toISOString(),
     skipWorkers: [],
@@ -388,6 +410,11 @@ export function summarizeRequest(r) {
     status: r.status,
     preferredWorker: r.worker,
     pinnedWorker: r.pinnedWorker || '',
+    reviewStage: r.reviewStage || '',
+    reviewRound: Number(r.reviewRound) || 0,
+    sourceOutsourceId: r.sourceOutsourceId || '',
+    sourcePrUrl: r.sourcePrUrl || '',
+    reviewRequestId: r.reviewRequestId || '',
     ceoAction: r.ceoAction || null,
     claimedBy: r.claimedBy,
     leaseUntil: r.leaseUntil,
@@ -547,15 +574,21 @@ export function passRequest(id, { worker = '', to = 'auto', reason = '' } = {}) 
   if (dest === from) dest = from === 'antigravity' ? 'aside' : 'antigravity';
   if (!WORKER_CAPS[dest]?.includes(req.kind)) dest = 'antigravity';
   const nowIso = new Date().toISOString();
+  const isReviewReject = req.reviewStage === 'aside_review' && dest === 'antigravity';
+  if (isReviewReject) {
+    req.reviewStage = 'agy_rework';
+    req.reviewRound = (Number(req.reviewRound) || 1) + 1;
+  }
   req.pinnedWorker = dest;
   req.status = 'open';
   req.claimedBy = '';
   req.leaseUntil = null;
-  req.context = `${req.context || ''}\n\n[${OUTSOURCE_WORKER_LABELS[from] || from || '작업자'}가 넘김 ${nowIso.slice(5, 16)}] ${String(reason || '').slice(0, 600)}`.slice(0, 8000);
+  const tag = isReviewReject ? 'Aside 검수 반려 · 수정 지시' : `${OUTSOURCE_WORKER_LABELS[from] || from || '작업자'}가 넘김`;
+  req.context = `${req.context || ''}\n\n[${tag} ${nowIso.slice(5, 16)}] ${String(reason || '').slice(0, 1500)}`.slice(0, 8000);
   req.updatedAt = nowIso;
   req.queuedAt = nowIso;
-  req.history.push({ at: nowIso, event: `passed:${dest}`, by: from || 'worker' });
-  appendLog(db, '외주 창구', `${req.id} — ${OUTSOURCE_WORKER_LABELS[from] || from}가 ${OUTSOURCE_WORKER_LABELS[dest]}에 넘겼습니다: ${String(reason || '').slice(0, 120)}`, 'info');
+  req.history.push({ at: nowIso, event: isReviewReject ? `review_rework:${req.reviewRound}` : `passed:${dest}`, by: from || 'worker' });
+  appendLog(db, '외주 창구', `${req.id} — ${isReviewReject ? `Aside 검수 반려 → Antigravity 재수정(${req.reviewRound}차)` : `${OUTSOURCE_WORKER_LABELS[from] || from}가 ${OUTSOURCE_WORKER_LABELS[dest]}에 넘겼습니다`}: ${String(reason || '').slice(0, 140)}`, 'info');
   saveDb(db);
   return req;
 }
@@ -618,15 +651,24 @@ export function buildPacket(db, req, baseUrl = publicBaseUrl(), { forChat = fals
   const mission = db.missions.find((m) => m.id === req.missionId);
   const company = buildCompanyContext(db, req.missionId || '', { compact: true });
   const isCode = req.kind === 'code' || Boolean(req.repo);
+  const target = resolveTarget(db.settings, req);
+  const cfg = getOutsourcingSettings(db.settings);
+  const isAsideReview = req.reviewStage === 'aside_review';
+  const isAgyRework = req.reviewStage === 'agy_rework';
+  const isTwoStageFirst = isCode && !isAsideReview && !isAgyRework && cfg.routing === 'auto' && !req.pinnedWorker && cfg.codeWorkflow === 'agy_then_aside' && target === 'antigravity';
   const lines = [
     `# 외주 요청서 ${req.id}`,
     '',
     `- 회사: ${db.settings.companyName || 'CEO Office'} (대표: ${db.settings.ceoName || '대표님'})`,
     `- 종류: ${OUTSOURCE_KIND_LABELS[req.kind]} · 난이도: ${EFFORT_LABELS[inferEffort(req)]}`,
-    `- 지금 배정: ${OUTSOURCE_WORKER_LABELS[resolveTarget(db.settings, req)]}${req.pinnedWorker ? ' (대표님 지정)' : ''}`,
+    `- 지금 배정: ${OUTSOURCE_WORKER_LABELS[target]}${req.pinnedWorker ? ' (지정)' : ''}`,
+    isAsideReview ? `- 협업 단계: 2단계 검수·보완${Number(req.reviewRound) > 1 ? ` (${req.reviewRound}차)` : ''} (원본 요청 ${req.sourceOutsourceId || '-'} · 검수 대상 PR ${req.sourcePrUrl || '-'})` : '',
+    isAgyRework ? `- 협업 단계: Aside 검수 반려 → AGY 재수정 (${Number(req.reviewRound) || 2}차 · 기존 PR ${req.sourcePrUrl || '-'} 브랜치에 보완 커밋)` : '',
+    isTwoStageFirst ? `- 협업 단계: 1단계 코드 수정 (제출 후 Aside가 PR 검수·보완 → 대표님 결재)` : '',
     `- 제목: ${req.title}`,
     mission ? `- 프로젝트: ${mission.title}${mission.mode === 'project' ? ` (Phase ${Number(mission.phase) || 1})` : ''}` : '',
     req.repo ? `- 저장소: https://github.com/${req.repo} (기준 브랜치 ${req.branch || 'main'})` : '',
+    req.sourcePrUrl ? `- 관련 PR: ${req.sourcePrUrl}` : '',
     req.siteUrl || mission?.siteUrl ? `- 라이브 사이트: ${req.siteUrl || mission?.siteUrl}` : '',
     '',
     '## 왜 외주인가',
@@ -639,10 +681,27 @@ export function buildPacket(db, req, baseUrl = publicBaseUrl(), { forChat = fals
     req.deliverable ||
       (req.kind === 'consult'
         ? '1) 총평(한 줄) 2) 사실과 다르거나 근거 없는 주장 3) 빠진 리스크 4) 바로 실행할 개선안 3가지 5) 이 제안을 승인해도 되는지 의견(승인/수정 후 승인/반려)'
-        : isCode
-          ? `저장소에 브랜치 \`out/${req.id}\`로 작업하고 제목에 [${req.id}]를 넣은 PR을 연 뒤, PR 주소와 변경 요약을 제출`
-          : '바로 쓸 수 있는 결과 문서(마크다운). 실제로 확인한 사실과 추정을 구분해서 적을 것'),
+        : isAsideReview
+          ? `PR(${req.sourcePrUrl || '요청서 참고'}) 검수 후 통과/직접 보완이면 최종 PR 주소와 요약을 submit, 큰 수정이 필요하면 /pass로 구체적인 수정 지시를 붙여 antigravity에 반려`
+          : isAgyRework
+            ? `맥락의 [Aside 검수 반려 · 수정 지시]를 모두 반영해 기존 PR(${req.sourcePrUrl || '요청서 참고'}) 브랜치에 커밋·테스트 통과 후 같은 PR 주소로 재제출`
+            : isCode
+              ? `저장소에 브랜치 \`out/${req.id}\`로 작업하고 제목에 [${req.id}]를 넣은 PR을 연 뒤, PR 주소와 변경 요약을 제출`
+              : '바로 쓸 수 있는 결과 문서(마크다운). 실제로 확인한 사실과 추정을 구분해서 적을 것'),
     '',
+    isCode && !isAsideReview
+      ? [
+          '## 코드 수정 필수 검증 루프 (4단계)',
+          '1. 저장소 루트의 `AGENTS.md`(있으면)와 `docs/ARCHITECTURE.md`, 수정 대상 파일·호출부를 먼저 읽고 `git fetch origin`으로 최신 `origin/main`을 반영한다.',
+          '2. 요청 범위만 최소·명확하게 수정하고, 최근 머지된 PR을 되돌리거나 외주 API 스키마를 깨뜨리지 않는다.',
+          '3. 저장소의 테스트·빌드 명령(예: `npm test`, `npm run build && npm run verify`)을 직접 실행해 100% 통과할 때까지 고친다.',
+          '4. PR 올리기 직전 `git fetch origin && git merge origin/main` 후 `git diff origin/main...HEAD`를 자가 검수(엣지 케이스, `public/index.html` 캐시 버전, 토큰 노출 여부)하고 PR 본문에 변경 파일·테스트 결과를 적어 제출한다.',
+          isTwoStageFirst || isAgyRework ? '- 이 요청은 제출 직후 Aside가 같은 PR을 검수·보완한다. PR 본문에 변경 의도·테스트 결과·확인 포인트를 명확히 남길 것.' : '',
+          ''
+        ]
+          .filter(Boolean)
+          .join('\n')
+      : '',
     req.lastCeoAction ? `## 대표님이 처리해 준 것\n${req.lastCeoAction.action}${req.lastCeoAction.detail ? ` — ${req.lastCeoAction.detail}` : ''}` : '',
     req.context ? `## 맥락 (무료 팀 작업 내용 등)\n${req.context}` : '',
     company ? `\n## 회사 지침·기억 (반드시 지킬 것)\n${company}` : '',
@@ -650,15 +709,15 @@ export function buildPacket(db, req, baseUrl = publicBaseUrl(), { forChat = fals
     '## 지켜야 할 것',
     '- 결제, 광고비 집행, 외부 사람에게 메일·메시지 발송은 하지 말 것 (필요하면 초안만)',
     '- 비밀키·토큰을 코드나 결과 문서에 쓰지 말 것',
-    isCode ? `- main 브랜치에 직접 푸시 금지. PR만 열 것 (대표님 결재 후 자동 머지·배포됨). data/db.json·.env·.github/ 수정 금지` : '',
+    isCode ? `- main 브랜치에 직접 푸시 금지(main 보호 설정 적용). PR만 열 것 (대표님 결재 후 자동 머지·배포됨). data/db.json·.env·.github/ 수정 금지` : '',
     '- 실제로 확인하지 않은 수치·결과를 확인한 것처럼 쓰지 말 것',
     '',
     '## 대표님 손이 필요하면 (멈추고 알리기)',
     `로그인, 2단계 인증, CAPTCHA, 결제·발송 승인처럼 대표님만 할 수 있는 순간에는 억지로 진행하지 말고 MCP request_ceo_action 또는 POST ${baseUrl}/api/outsourcing/${req.id}/need-ceo 본문 {"worker":"...","action":"무엇이 필요한지 한 줄","detail":"어디서 무엇을 하면 되는지"} 로 알리세요. 대표님이 처리하고 재개하면 다시 대기열에 올라옵니다.`,
-    `잡은 요청은 ${getOutsourcingSettings(db.settings).leaseMinutes}분 안에 제출하거나 같은 이름으로 다시 claim해서 연장하세요. 시간이 지나면 다른 작업자가 가져갈 수 있습니다.`,
+    `잡은 요청은 ${cfg.leaseMinutes}분 안에 제출하거나 같은 이름으로 다시 claim해서 연장하세요. 시간이 지나면 다른 작업자가 가져갈 수 있습니다.`,
     '',
-    modelPlanLines(resolveTarget(db.settings, req), req),
-    resolveTarget(db.settings, req) === 'gemini'
+    modelPlanLines(target, req),
+    target === 'gemini'
       ? [
           '## Gemini 앱 작업 규칙',
           '- 웹 검색·Deep Research로 근거를 확인하고, 수치·주장마다 출처 링크를 붙일 것',
@@ -669,7 +728,7 @@ export function buildPacket(db, req, baseUrl = publicBaseUrl(), { forChat = fals
       : '',
     '## 진행·제출 방법 (편한 것 하나)',
     `1. MCP (Antigravity·Gemini 앱): \`claim_outsourcing_request\` → 작업 → \`submit_outsourcing_result\` (request_id: ${req.id}). 내가 못 하는 일이면 \`pass_outsourcing_request\`로 넘기기`,
-    `2. HTTPS: \`POST ${baseUrl}/api/outsourcing/${req.id}/claim\` → \`POST ${baseUrl}/api/outsourcing/${req.id}/submit\` 본문 {"worker":"antigravity|aside|gemini","summary":"...","document":"마크다운","prUrl":"(코드면 PR 주소)"} · 인증: 헤더 x-ceo-key 또는 ?token=MCP토큰`,
+    `2. HTTPS: \`POST ${baseUrl}/api/outsourcing/${req.id}/claim\` → \`POST ${baseUrl}/api/outsourcing/${req.id}/submit\` 본문 {"worker":"antigravity|aside|gemini","summary":"...","document":"마크다운","prUrl":"(코드면 PR 주소)"} · 반려/넘기기: \`POST ${baseUrl}/api/outsourcing/${req.id}/pass\` 본문 {"worker":"aside","to":"antigravity","reason":"수정 지시"} · 인증: 헤더 x-ceo-key 또는 ?token=MCP토큰`,
     `3. 웹: ${baseUrl} → 외부 협업 → ${req.id} → 결과 붙여넣기`
   ];
   if (forChat) {

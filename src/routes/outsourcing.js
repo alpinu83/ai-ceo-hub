@@ -1,5 +1,5 @@
 // routes/outsourcing.js: server.js에서 분리 (HTTP 라우트)
-import { assignRequest, buildPacket, cancelRequest, claimRequest, createOutsourcingRequest, describeRouting, findRequest, listRequests, publicBaseUrl, requestCeoAction, resolveTarget, resumeRequest, setRequestEffort, submitResult, summarizeRequest } from '../outsourcing.js';
+import { assignRequest, buildPacket, cancelRequest, claimRequest, createOutsourcingRequest, describeRouting, findRequest, listRequests, passRequest, publicBaseUrl, requestCeoAction, resolveTarget, resumeRequest, setRequestEffort, submitResult, summarizeRequest } from '../outsourcing.js';
 import { buildMissionDigest } from '../lead-engine.js';
 import { flushCloudBackup, loadDb, sanitizeStateForClient, saveDb } from '../store.js';
 import fs from 'node:fs';
@@ -210,6 +210,22 @@ export function registerOutsourcingRoutes(app) {
         prUrl: body.prUrl || body.pr_url || ''
       });
       return c.json({ ok: true, request: summarizeRequest(req), state: isCeoRequest(c) ? sanitizeStateForClient(loadDb()) : undefined });
+    } catch (err) {
+      return c.json({ ok: false, error: err.message }, 400);
+    }
+  });
+
+  app.post('/api/outsourcing/:id/pass', async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const db = loadDb();
+    if (!outsourceAuthOk(c, db, body)) return c.json({ error: '인증 필요' }, 401);
+    try {
+      const req = passRequest(c.req.param('id'), {
+        worker: body.worker || '',
+        to: body.to || 'auto',
+        reason: body.reason || ''
+      });
+      return c.json({ ok: true, request: summarizeRequest(req), target: resolveTarget(loadDb().settings, req) });
     } catch (err) {
       return c.json({ ok: false, error: err.message }, 400);
     }

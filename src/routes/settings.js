@@ -95,7 +95,7 @@ export function registerSettingsRoutes(app) {
       }
       if (['off', 'proposals', 'proposals_and_reports'].includes(body.outsourcing.consultMode)) os.consultMode = body.outsourcing.consultMode;
       s.outsourcing = { ...(s.outsourcing || {}), ...os };
-      updateOutsourceRouting(db, { routing: body.outsourcing.routing, officeHours: body.outsourcing.officeHours, leaseMinutes: body.outsourcing.leaseMinutes, awayHours: body.outsourcing.awayHours, roles: body.outsourcing.roles, geminiWaitMinutes: body.outsourcing.geminiWaitMinutes, priorities: body.outsourcing.priorities, waitMinutes: body.outsourcing.waitMinutes });
+      updateOutsourceRouting(db, { routing: body.outsourcing.routing, officeHours: body.outsourcing.officeHours, leaseMinutes: body.outsourcing.leaseMinutes, awayHours: body.outsourcing.awayHours, roles: body.outsourcing.roles, geminiWaitMinutes: body.outsourcing.geminiWaitMinutes, priorities: body.outsourcing.priorities, waitMinutes: body.outsourcing.waitMinutes, codeWorkflow: body.outsourcing.codeWorkflow });
     }
     if (body.leadEngine && typeof body.leadEngine === 'object') {
       const le = getLeadSettings(s);
