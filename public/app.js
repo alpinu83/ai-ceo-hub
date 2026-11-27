@@ -232,7 +232,7 @@ const STATUS_META = {
   running: { label: '자동 작업 중', cls: 'badge-blue' },
   awaiting_bridge: { label: '외부 봇 위임됨', cls: 'badge-blue' },
   review_pending: { label: '팀장 검수 대기', cls: 'badge-amber' },
-  outsourced: { label: '외주 진행 중', cls: 'badge-blue' },
+  outsourced: { label: '개발팀 진행 중', cls: 'badge-blue' },
   awaiting_approval: { label: 'CEO 결재 대기', cls: 'badge-amber' },
   completed: { label: '완료', cls: 'badge-green' },
   rejected: { label: '반려', cls: 'badge-red' },
@@ -600,6 +600,17 @@ function displayAgentName(id, ctx = null) {
   return ag?.name || id || '팀원';
 }
 
+function cleanInhouseCopy(text = '') {
+  return String(text || '')
+    .replace(/^외주\s*요청\s*OUT-[A-Z0-9-]+:\s*/gim, '')
+    .replace(/\[OUT-[A-Z0-9-]+\]\s*/gi, '')
+    .replace(/\(외주\s*OUT-[A-Z0-9-]+\)/gi, '')
+    .replace(/외부\s*작업자\(\s*aside\s*\)(가|이)?/gi, '개발팀(Aside)이')
+    .replace(/외부\s*작업자\(\s*(?:antigravity|agy)\s*\)(가|이)?/gi, '개발팀(AGY)이')
+    .replace(/외부\s*작업자\(([^)]+)\)(가|이)?/gi, '개발팀($1)이')
+    .replace(/외주\s*PR\s*#/g, '개발팀 PR #');
+}
+
 async function copyText(text, label = '복사되었습니다.') {
   try {
     await navigator.clipboard.writeText(text);
@@ -750,14 +761,14 @@ function renderSidebarTree() {
 }
 
 /** 대표님 할 일: 모든 프로젝트에서 대표님 때문에 멈춘 일 (서버 src/hub/ceo-inbox.js와 같은 규칙) */
-const INBOX_LABEL = { approval: ['badge-amber', '결재'], gate: ['badge-red', '관문 결정'], shorts_pick: ['badge-blue', '뉴스 고르기'], blocked: ['badge-red', '확인 필요'], outsource: ['badge-amber', '외주 조치'] };
+const INBOX_LABEL = { approval: ['badge-amber', '결재'], gate: ['badge-red', '관문 결정'], shorts_pick: ['badge-blue', '뉴스 고르기'], blocked: ['badge-red', '확인 필요'], outsource: ['badge-amber', '개발팀 요청'] };
 function buildCeoInboxClient() {
   const items = [];
   const mt = (id) => state.missions.find((m) => m.id === id)?.title || '';
   const hrs = (iso) => (iso ? Math.max(0, (Date.now() - Date.parse(iso)) / 3600000) : 0);
   for (const a of state.approvals || []) {
     if (a.status !== 'pending') continue;
-    items.push({ kind: a.kind === 'stage_gate' ? 'gate' : 'approval', approvalId: a.id, missionId: a.missionId, missionTitle: mt(a.missionId), title: a.title, detail: a.kind === 'stage_gate' ? '이 결정이 나야 다음 단계로 넘어갑니다' : '', since: a.createdAt, open: `data-open-approval="${esc(a.id)}"`, btn: '결재하기' });
+    items.push({ kind: a.kind === 'stage_gate' ? 'gate' : 'approval', approvalId: a.id, missionId: a.missionId, missionTitle: mt(a.missionId), title: cleanInhouseCopy(a.title), detail: a.kind === 'stage_gate' ? '이 결정이 나야 다음 단계로 넘어갑니다' : '', since: a.createdAt, open: `data-open-approval="${esc(a.id)}"`, btn: '결재하기' });
   }
   const sm = state.missions.find((m) => m.mode === 'project' && /쇼츠|shorts/i.test(m.title) && m.status !== 'completed');
   const sh = state.shorts || {};
@@ -779,14 +790,14 @@ function buildCeoInboxClient() {
   }
   for (const o of state.outsourcing || []) {
     if (o.status !== 'needs_ceo') continue;
-    items.push({ kind: 'outsource', missionId: o.missionId, missionTitle: mt(o.missionId), title: `${o.id} ${o.title}`, detail: o.ceoAction?.action || '대표님 확인 필요', since: o.ceoAction?.at || o.updatedAt, open: 'data-jump-view="outsourcing"', btn: '외부 협업에서 보기', btnGhost: true, outsource: o });
+    items.push({ kind: 'outsource', missionId: o.missionId, missionTitle: mt(o.missionId), title: o.title, detail: o.ceoAction?.action || '대표님 확인 필요', since: o.ceoAction?.at || o.updatedAt, open: 'data-jump-view="outsourcing"', btn: '협업 큐에서 보기', btnGhost: true, outsource: o });
   }
   for (const it of items) it.ageHours = hrs(it.since);
   return items.sort((x, y) => y.ageHours - x.ageHours);
 }
 /** 대표님 할 일 · 보류된 작업: 작업별로 피드백 주고 다시 맡기기 / 이대로 완료 / 작업 접기 (POST /api/tasks/ceo-decision) */
 function renderInboxBlockedTasks(it) {
-  const agents = (state.agents || []).filter((a) => a.active);
+  const agents = (state.agents || []).filter((a) => a.active && a.tier !== 'lead');
   const assigneeSelect = (key) =>
     `<select class="assignee-select" data-inbox-assignee="${esc(key)}" aria-label="다시 맡길 담당"><option value="">담당 그대로</option>${agents.map((a) => `<option value="${esc(a.id)}">${esc(a.name)}에게</option>`).join('')}</select>`;
   const actions = (ids, key, hasOutput) => `<div class="home-item-actions" style="align-items:center;">
@@ -1587,7 +1598,7 @@ function renderApprovalsView() {
             <span class="badge badge-blue" style="max-width:75%;overflow:hidden;text-overflow:ellipsis;">${esc(msnLabel)}</span>
             <span class="mono">${isCodeApprovalClient(a) ? `<span class="badge ${(CODE_STATUS_LABELS[a.codeChange?.status] || ['badge-green'])[0]}">${esc((CODE_STATUS_LABELS[a.codeChange?.status] || ['', '실코드'])[1])}</span>` : a.estimatedCostKRW > 0 ? formatKRW(a.estimatedCostKRW) : '무료'}</span>
           </div>
-          <div class="queue-item-title">${esc(a.title)}</div>
+          <div class="queue-item-title">${esc(cleanInhouseCopy(a.title))}</div>
           <div class="queue-item-meta">
             <span>상신: ${esc(displayAgentName(a.agentId, a))}</span>
             <span>${esc(formatTime(a.createdAt))}</span>
@@ -1630,7 +1641,7 @@ function renderApprovalsView() {
               : `<span>${esc(apr.category)}</span>`
           }
         </div>
-        <h2 class="memo-title">${esc(apr.title)}</h2>
+        <h2 class="memo-title">${esc(cleanInhouseCopy(apr.title))}</h2>
       </div>
       <span class="memo-stamp ${st.cls}">${esc(st.text)}</span>
     </div>
@@ -1652,7 +1663,7 @@ function renderApprovalsView() {
 
     <div class="memo-section">
       <h4>상신 배경 및 요약</h4>
-      <p style="margin:0;font-size:14px;white-space:pre-line;line-height:1.6;">${esc(apr.summary)}</p>
+      <p style="margin:0;font-size:14px;white-space:pre-line;line-height:1.6;">${esc(cleanInhouseCopy(apr.summary))}</p>
     </div>
 
     ${(() => {
@@ -1680,7 +1691,7 @@ function renderApprovalsView() {
 
     <div class="memo-section">
       <h4>팀장 권고 · 승인 시 실행될 작업</h4>
-      <div class="prompt-box">${esc(apr.proposedAction)}</div>
+      <div class="prompt-box">${esc(cleanInhouseCopy(apr.proposedAction))}</div>
     </div>
 
     ${renderCodeChangeStatus(apr)}
@@ -2064,9 +2075,9 @@ function renderOutsourcingView() {
 
   root.innerHTML = `
     <div class="out-topbar">
-      <div class="routine-sub">외주 분담: <strong>${esc(rt.why || '-')}</strong></div>
+      <div class="routine-sub">개발·협업 분담: <strong>${esc(rt.why || '-')}</strong></div>
       <div class="out-away">
-        <button type="button" class="btn btn-ghost btn-sm" data-out-new-toggle="1">+ 외주 요청</button>
+        <button type="button" class="btn btn-ghost btn-sm" data-out-new-toggle="1">+ 개발·협업 요청</button>
         <button type="button" class="btn btn-ghost btn-sm" data-out-open-settings="1">협업 설정</button>
       </div>
     </div>
@@ -2076,24 +2087,24 @@ function renderOutsourcingView() {
             <div class="form-row-two">
               <label class="field"><span class="field-label">제목 *</span><input type="text" id="out-new-title" maxlength="120" placeholder="예: 연말정산 계산기 페이지 새로 만들기" /></label>
               <label class="field"><span class="field-label">종류</span>
-                <select id="out-new-kind"><option value="task">실무 작업</option><option value="code">코드 수정</option><option value="research">심층 리서치</option><option value="browser">브라우저·계정 작업</option><option value="consult">외부 자문</option></select></label>
+                <select id="out-new-kind"><option value="task">실무 작업</option><option value="code">코드 수정</option><option value="research">심층 리서치</option><option value="browser">브라우저·계정 작업</option></select></label>
             </div>
             <label class="field" style="margin-top:12px;"><span class="field-label">해야 할 일 *</span><textarea id="out-new-goal" rows="4" placeholder="무엇을, 어떤 기준으로 끝내면 되는지 적어 주세요."></textarea></label>
             <div class="form-row-two" style="margin-top:12px;">
               <label class="field"><span class="field-label">관련 프로젝트</span><select id="out-new-mission"><option value="">없음</option>${missions.map((m) => `<option value="${esc(m.id)}">${esc(m.title)}</option>`).join('')}</select></label>
-              <label class="field"><span class="field-label">맡길 곳</span><select id="out-new-worker"><option value="any">자동 (역할 분담표대로)</option><option value="antigravity">Antigravity</option><option value="aside">Aside</option><option value="gemini">Gemini 앱 (자문·리서치·문서만)</option><option value="agy_aside">AGY 수정 + Aside 검수 (코드)</option></select></label>
+              <label class="field"><span class="field-label">맡길 곳</span><select id="out-new-worker"><option value="any">자동 (역할 분담표대로)</option><option value="antigravity">AGY (개발팀)</option><option value="aside">Aside (개발팀)</option><option value="gemini">Gemini 앱 (당직·리서치·문서)</option><option value="agy_aside">AGY 수정 + Aside 검수 (코드)</option></select></label>
             </div>
             <div class="routine-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-out-new-toggle="1">닫기</button><button type="button" class="btn btn-primary btn-sm" data-out-create="1">요청 올리기</button></div>
           </div>`
         : ''
     }
     <div class="hub-tab-bar out-tabs" role="tablist">
-      <button type="button" class="hub-tab ${outListTab === 'active' ? 'active' : ''}" data-out-tab="active">협업 중 ${active.length}${needsCeo.length ? ` · 대표님 필요 ${needsCeo.length}` : ''}</button>
+      <button type="button" class="hub-tab ${outListTab === 'active' ? 'active' : ''}" data-out-tab="active">진행 중 ${active.length}${needsCeo.length ? ` · 대표님 필요 ${needsCeo.length}` : ''}</button>
       <button type="button" class="hub-tab ${outListTab === 'done' ? 'active' : ''}" data-out-tab="done">완료 ${done.length}</button>
     </div>
     <div class="routine-list">${
       shown.slice(0, 50).map(outCardHtml).join('') ||
-      `<div class="empty-state">${outListTab === 'done' ? '완료된 외주가 아직 없습니다.' : '지금 협업 중인 외주가 없습니다.'}</div>`
+      `<div class="empty-state">${outListTab === 'done' ? '완료된 개발·협업 작업이 아직 없습니다.' : '지금 진행 중인 개발·협업 작업이 없습니다.'}</div>`
     }</div>`;
 }
 
@@ -2268,18 +2279,15 @@ function renderConsultSection(apr) {
   if (apr?.consult) {
     const c = apr.consult;
     return `<div class="memo-section">
-        <h4>외부 자문 · ${esc(c.by || '')} <span class="mono" style="color:var(--ink-muted);font-weight:400;">${esc(c.requestId || '')}</span></h4>
+        <h4>추가 검토 의견 · ${esc(c.by || '')}</h4>
         ${c.summary ? `<p style="margin:0 0 8px;font-size:13.5px;"><strong>요약</strong> ${esc(c.summary)}</p>` : ''}
-        <details><summary style="cursor:pointer;font-size:12.5px;color:var(--ink-secondary);">자문 전문 보기</summary><div class="markdown-body">${renderMarkdown(c.document || '')}</div></details>
+        <details><summary style="cursor:pointer;font-size:12.5px;color:var(--ink-secondary);">검토 전문 보기</summary><div class="markdown-body">${renderMarkdown(c.document || '')}</div></details>
       </div>`;
   }
   const reqId = apr?.consultRequestId;
   const req = reqId ? (state.outsourcing || []).find((r) => r.id === reqId) : null;
   if (req && ['open', 'claimed'].includes(req.status)) {
-    return `<div class="memo-section"><h4>외부 자문</h4><p class="routine-desc" style="margin:0;">${esc(req.id)} 요청 중 (${req.status === 'claimed' ? `${esc(req.claimedBy)} 작업 중` : '대기'}). 자문을 기다리지 않고 결재해도 됩니다.</p></div>`;
-  }
-  if (apr?.status === 'pending') {
-    return `<div class="memo-section"><button type="button" class="btn btn-ghost btn-sm" data-consult-approval="${esc(apr.id)}">상위 AI에 외부 자문 요청</button></div>`;
+    return `<div class="memo-section"><h4>추가 검토</h4><p class="routine-desc" style="margin:0;">검토 요청 중 (${req.status === 'claimed' ? `${esc(req.claimedBy)} 작업 중` : '대기'}). 기다리지 않고 결재해도 됩니다.</p></div>`;
   }
   return '';
 }

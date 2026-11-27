@@ -37,16 +37,16 @@ export function notifyOutsourceCreated(db, req) {
     leadSay(
       db,
       mission,
-      req.kind === 'consult' ? '외부 자문 요청' : '외주 요청',
+      req.kind === 'consult' ? '추가 검토 요청' : '개발팀 작업 배정',
       req.kind === 'consult'
-        ? `결재 전에 상위 AI의 외부 자문을 요청했습니다: ${req.id} (결재는 그대로 진행 가능, 자문이 오면 카드에 붙습니다).`
-        : `무료 팀으로는 어려운 일이라 외부 AI에 맡겼습니다: ${req.id} "${req.title}" (배정: ${workerLabel}). 사유: ${req.reason}`
+        ? `결재 전 추가 검토를 요청했습니다 (결재는 그대로 진행 가능, 의견이 오면 카드에 붙습니다).`
+        : `개발팀(${workerLabel})에 작업을 배정했습니다: "${req.title}". 사유: ${req.reason}`
     );
   }
   sendTelegramReport(
     db.settings,
-    `${req.kind === 'consult' ? '외부 자문 요청' : '외주 요청'} ${req.id}`,
-    `${OUTSOURCE_KIND_LABELS[req.kind]} · ${req.title}\n배정: ${workerLabel}\n사유: ${req.reason}\n다른 쪽에 맡기려면: /out ${req.id} antigravity (또는 aside, gemini)`,
+    `${req.kind === 'consult' ? '추가 검토 요청' : '개발팀 작업 배정'}`,
+    `${OUTSOURCE_KIND_LABELS[req.kind]} · ${req.title}\n담당: ${workerLabel}\n사유: ${req.reason}`,
     `out:${req.id}`
   ).catch(() => {});
 }
