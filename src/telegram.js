@@ -369,6 +369,7 @@ export async function testTelegramBot(settings, onAutoRegisterChatId = null) {
       ``,
       `사용 가능 명령어:`,
       `• <code>/status</code> — 현재 미션 · 결재 대기 현황`,
+      `• <code>/todo</code> — 대표님이 하실 일 (모든 프로젝트에서 대표님 때문에 멈춘 일)`,
       `• <code>/approvals</code> — 대기 중인 결재 카드 다시 받기`,
       `• <code>/doc</code> — 결재 대기 안건의 성과품(시안·계획서) 파일 받기`,
       `• <code>/order 지시내용</code> — 텔레그램에서 바로 새 업무 지시`
@@ -405,6 +406,12 @@ export async function handleTelegramUpdate(update, callbacks) {
       await tgCall(tg.botToken, 'answerCallbackQuery', { callback_query_id: cq.id, text: '성과품 파일을 준비합니다' }).catch(() => {});
       const r = await deliverApprovalDeliverable(tg.botToken, cq.message?.chat?.id || tg.chatId, parts[1], callbacks);
       return { handled: true, deliverable: parts[1], ok: r.ok };
+    }
+    // 대표님 할 일 버튼: 결재 카드·쇼츠 후보 다시 받기
+    if (parts[0] === 'todo' && parts.length === 3 && typeof callbacks.onTodoCallback === 'function') {
+      const r = await callbacks.onTodoCallback(parts[1], parts[2]);
+      await tgCall(tg.botToken, 'answerCallbackQuery', { callback_query_id: cq.id, text: String(r?.text || '처리됨').slice(0, 180) }).catch(() => {});
+      return { handled: true, todo: parts[1] };
     }
     // 쇼츠: 뉴스 후보 선택 → 대본 작업
     if (parts[0] === 'sh' && parts.length === 3 && typeof callbacks.onShortsCallback === 'function') {
@@ -477,6 +484,12 @@ export async function handleTelegramUpdate(update, callbacks) {
       const summary = await callbacks.onStatus();
       await sendTelegramText(tg.botToken, chatId, summary).catch(() => {});
       return { handled: true, command: '/status' };
+    }
+
+    // 대표님 할 일: 모든 프로젝트에서 대표님 때문에 멈춘 일
+    if (/^\/(todo|할일)(@\S+)?$/i.test(text) && typeof callbacks.onTodo === 'function') {
+      await callbacks.onTodo();
+      return { handled: true, command: '/todo' };
     }
 
     if (text === '/approvals') {
