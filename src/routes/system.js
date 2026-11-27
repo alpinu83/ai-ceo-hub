@@ -1,4 +1,5 @@
 // routes/system.js: server.js에서 분리 (HTTP 라우트)
+import { buildCeoInbox, sendInboxTelegram } from '../hub/ceo-inbox.js';
 import { MCP_TOOL_CATALOG } from '../mcp.js';
 import { createDefaultState, flushCloudBackup, getCloudPersistenceStatus, loadDb, sanitizeStateForClient, saveDb } from '../store.js';
 import { describeRouting } from '../outsourcing.js';
@@ -105,6 +106,13 @@ export function registerSystemRoutes(app) {
   });
 
   // State & Open-Source Stack Info
+  // 대표님 할 일 (모든 프로젝트)
+  app.get('/api/ceo-inbox', (c) => c.json(buildCeoInbox(loadDb())));
+  app.post('/api/ceo-inbox/telegram', async (c) => {
+    const r = await sendInboxTelegram(loadDb());
+    return c.json(r);
+  });
+
   app.get('/api/state', (c) => {
     const db = loadDb();
     if (ensureRoutines(db)) saveDb(db);
