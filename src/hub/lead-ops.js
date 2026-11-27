@@ -1,4 +1,5 @@
 // hub/lead-ops.js: server.js에서 분리 (공유 로직)
+import { registerDeliverable } from './task-results.js';
 import { ensureShorts, findShortsMission } from './shorts.js';
 import { ASSIGNMENT_RULES, buildCompletionReport, buildMissionDigest, buildPlanningRoster, collectFollowUps, ensureLeadDefaults, findScopeViolations, getLeadSettings, getMissionGoal, isForbiddenCodeTask, markCeoActivity, missionLeadState, rebalanceAssignments, rememberFact } from '../lead-engine.js';
 import { appendLog, appendMessage, flushCloudBackup, loadDb, saveDb, uid } from '../store.js';
@@ -522,6 +523,34 @@ export async function opsCycle(missionId, { depth = 0 } = {}) {
     db = loadDb();
     m = db.missions.find((x) => x.id === missionId);
     const msNow = m.plan.milestones.find((x) => x.id === ms.id);
+    // 팀장 취합본: 팀원(봇·개발팀) 결과물을 하나로 정리한 문서를 결과물로 등록
+    if (work.synthesis && work.synthesis.trim().length >= 200) {
+      const title = `[팀장 취합] ${msNow.title} (${Number(msNow.rounds || 0) + 1}차)`;
+      if (!db.tasks.some((t) => t.missionId === missionId && t.title === title)) {
+        const nowIso = new Date().toISOString();
+        const synth = {
+          id: uid('tsk'),
+          missionId,
+          phase: Number(m.phase) || 1,
+          milestoneId: msNow.id,
+          title,
+          description: '팀원 결과물을 팀장이 취합·정리한 문서',
+          assigneeId: m.leadAgentId || 'agent_gemini_neon',
+          domain: m.domain,
+          status: 'completed',
+          requiresApproval: false,
+          estimatedCostKRW: 0,
+          dispatchPrompt: '',
+          output: work.synthesis.trim(),
+          executionModeUsed: `lead:${work.planner || ''}`,
+          source: 'lead_synthesis',
+          createdAt: nowIso,
+          updatedAt: nowIso
+        };
+        db.tasks.unshift(synth);
+        registerDeliverable(db, m, synth, { name: '총괄 팀장 (취합)' });
+      }
+    }
     if (work.milestoneDone) {
       if (msNow.gate) {
         createStageGate(db, m, msNow, { reason: '마일스톤 결과가 나와 대표님 결정이 필요합니다.', report: work.report });
