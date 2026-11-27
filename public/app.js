@@ -838,6 +838,7 @@ function renderActiveMission(mission) {
       <div class="mission-directive-quote"><strong>지시:</strong> ${esc(mission.directive)}</div>
       ${missionGoalHtml(mission)}
       ${missionPlanHtml(mission)}
+      ${shortsPanelHtml(mission)}
 
       <div class="progress-row">
         <span class="mono">진척도 ${pct}% (${completed}/${tasks.length} 완료)</span>
@@ -1502,6 +1503,30 @@ function milestoneLabel(task) {
 
 /** 작전 계획(운영 사이클): 단계 · 마일스톤 상태 · 결과물 */
 const MS_STATUS = { todo: ['badge-neutral', '대기'], doing: ['badge-blue', '진행 중'], gate: ['badge-amber', '관문 결재 대기'], blocked: ['badge-red', '보류'], done: ['badge-green', '완료'] };
+/** 유튜브 쇼츠 프로젝트: 뉴스 후보 선택 · 제작 현황 */
+const SHORTS_JOB_LABEL = { queued: ['badge-blue', '제작 대기'], rendering: ['badge-blue', '제작 중'], uploaded: ['badge-green', '비공개 업로드 완료'], needs_fix: ['badge-amber', '대본 형식 오류'], failed: ['badge-red', '제작 실패'] };
+function shortsPanelHtml(mission) {
+  if (mission.mode !== 'project' || !/쇼츠|shorts/i.test(mission.title)) return '';
+  const sh = state.shorts || {};
+  const cands = (sh.candidates || []).filter((c) => c.status === 'new').slice(0, 10);
+  const jobs = (sh.jobs || []).filter((j) => j.missionId === mission.id).slice(0, 8);
+  const views = (v) => (v ? (v >= 10000 ? `${(v / 10000).toFixed(1)}만회` : `${v}회`) : '');
+  const candRows = cands
+    .map((c) => `<li style="margin:6px 0;display:flex;gap:8px;align-items:flex-start;"><button type="button" class="btn btn-primary btn-sm" data-shorts-pick="${esc(c.id)}">선택</button><div><strong>${esc(c.title)}</strong><div class="routine-sub">${c.views ? `조회 ${views(c.views)} · ` : c.coverage ? `보도 ${c.coverage}건 · ` : ''}${esc(c.source || '')}${c.url ? ` · <a href="${esc(c.url)}" target="_blank" rel="noreferrer">원문</a>` : ''}</div></div></li>`)
+    .join('');
+  const jobRows = jobs
+    .map((j) => {
+      const [cls, label] = SHORTS_JOB_LABEL[j.status] || ['badge-neutral', j.status];
+      return `<li style="margin:4px 0;"><span class="badge ${cls}">${label}</span> ${esc(j.script?.title || '(대본 확인 필요)')}${j.video?.url ? ` · <a href="${esc(j.video.url)}" target="_blank" rel="noreferrer">영상 보기</a>` : ''}${j.error ? ` <span class="routine-sub">(${esc(j.error)})</span>` : ''}${['needs_fix', 'failed'].includes(j.status) ? ` <button type="button" class="btn-inline-edit" data-shorts-retry="${esc(j.id)}">다시 시도</button>` : ''}</li>`;
+    })
+    .join('');
+  return `<details class="mission-directive-quote" open>
+      <summary style="cursor:pointer;"><strong>쇼츠 제작</strong> <span class="routine-sub">뉴스 후보를 고르면 팀이 대본을 써서 결재로 올리고, 승인하면 자동 제작기가 구국열사 채널에 비공개로 올립니다${sh.lastCollectedAt ? ` · 후보 수집 ${esc(formatTime(sh.lastCollectedAt))}` : ''}</span></summary>
+      ${candRows ? `<div style="margin-top:8px;"><strong>후보 뉴스</strong><ul style="list-style:none;padding:0;margin:4px 0 0;">${candRows}</ul></div>` : '<div class="routine-sub" style="margin-top:6px;">아직 후보가 없습니다. 매일 아침 7시·저녁 6시에 조회수 높은 정치 뉴스를 모아 옵니다.</div>'}
+      ${jobRows ? `<div style="margin-top:10px;"><strong>제작 현황</strong><ul style="list-style:none;padding:0;margin:4px 0 0;">${jobRows}</ul></div>` : ''}
+    </details>`;
+}
+
 function missionPlanHtml(mission) {
   if (mission.mode !== 'project') return '';
   const plan = mission.plan;
@@ -3337,6 +3362,31 @@ function bindEvents() {
         state = res.state;
         renderAll();
         toast(`재계획을 지시했습니다. 대기 작업 ${res.dropped}건을 정리하고 팀장이 곧 새 계획을 올립니다.`);
+      } catch (err) {
+        toast(err.message, true);
+      }
+      return;
+    }
+
+    if (target.dataset?.shortsPick) {
+      target.disabled = true;
+      try {
+        const res = await api(`/api/shorts/candidates/${target.dataset.shortsPick}/pick`, { method: 'POST' });
+        state = res.state;
+        renderAll();
+        toast('선택했습니다. 팀이 대본을 써서 결재로 올립니다.');
+      } catch (err) {
+        toast(err.message, true);
+        target.disabled = false;
+      }
+      return;
+    }
+    if (target.dataset?.shortsRetry) {
+      try {
+        const res = await api(`/api/shorts/jobs/${target.dataset.shortsRetry}/retry`, { method: 'POST' });
+        state = res.state;
+        renderAll();
+        toast('제작을 다시 요청했습니다.');
       } catch (err) {
         toast(err.message, true);
       }

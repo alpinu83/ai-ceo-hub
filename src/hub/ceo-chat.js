@@ -1,4 +1,5 @@
 // hub/ceo-chat.js: server.js에서 분리 (공유 로직)
+import { handleShortsCallback } from './shorts.js';
 import { ASSIGNMENT_RULES, buildPlanningRoster, ensureLeadDefaults, escapeTelegramHtml, findScopeViolations, isForbiddenCodeTask, isStandingOrder, markCeoActivity, rebalanceAssignments, rememberFact, addLeadNote } from '../lead-engine.js';
 import { appendLog, appendMessage, flushCloudBackup, loadDb, saveDb, uid } from '../store.js';
 import { buildDispatchPrompt, classifyChatDirective, generateTeamChatReplies } from '../orchestrator.js';
@@ -57,6 +58,7 @@ export function getTelegramCallbacks() {
     onNotifyCommand: async (cmd, arg) => handleNotifyCommand(cmd, arg),
     onOutsourceCommand: async (cmd, arg) => handleOutsourceTelegramCommand(cmd, arg),
     onOutsourceCallback: async (action, id) => handleOutsourceTelegramCallback(action, id),
+    onShortsCallback: async (action, id) => handleShortsCallback(action, id),
     onDeliverable: async (aprId) => buildApprovalDeliverable(loadDb(), aprId),
     onListPending: async () => {
       const db = loadDb();

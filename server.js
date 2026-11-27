@@ -24,6 +24,7 @@ import { registerMissionsRoutes } from './src/routes/missions.js';
 import { registerRoutinesRoutes } from './src/routes/routines.js';
 import { registerOutsourcingRoutes } from './src/routes/outsourcing.js';
 import { registerSettingsRoutes } from './src/routes/settings.js';
+import { registerShortsRoutes } from './src/routes/shorts.js';
 
 // Every AI call (team work, team-lead chat, reports, planning) receives the CEO's global directives + company memory
 setCompanyContextProvider((missionId, opts) => buildCompanyContext(loadDb(), missionId, opts));
@@ -51,6 +52,7 @@ registerMissionsRoutes(app);
 registerRoutinesRoutes(app);
 registerOutsourcingRoutes(app);
 registerSettingsRoutes(app);
+registerShortsRoutes(app);
 
 // Static Frontend Assets
 app.get('*', (c) => {
