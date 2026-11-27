@@ -140,11 +140,14 @@ export function refreshLeadJobs(db) {
     }
     if (j.status !== 'open') continue;
     const age = now - Date.parse(j.queuedAt || j.createdAt);
-    if (j.worker === 'gemini_app' && agy) {
+    if (j.worker === 'gemini_app' && agy && !j.agyGaveUp) {
       j.worker = 'agy_lead';
       j.queuedAt = new Date().toISOString();
       changed = true;
-    } else if (j.worker === 'agy_lead' && !agy && age > AGY_GIVEUP_MS) {
+    } else if (j.worker === 'agy_lead' && age > AGY_GIVEUP_MS) {
+      // AGY가 꺼졌거나, 근무 중이어도 15분 안에 끝내지 못하면(실행 실패 반복 등) 당직 팀장에게 넘김
+      // agyGaveUp: AGY 감시기가 계속 접속해도 다시 AGY 몫으로 되돌리지 않음 (무한 대기 방지)
+      if (agy) j.agyGaveUp = true;
       j.worker = 'gemini_app';
       j.queuedAt = new Date().toISOString();
       changed = true;
@@ -230,7 +233,7 @@ export function summarizeLeadJob(j) {
 /** 이 작업자가 지금 처리할 일: AGY 팀장은 모든 대기 일, Gemini 앱은 당직 몫만 */
 export function listLeadJobs(db, worker = '') {
   refreshLeadJobs(db);
-  return jobs(db).filter((j) => j.status === 'open' && (!worker || worker === 'agy_lead' || j.worker === worker));
+  return jobs(db).filter((j) => j.status === 'open' && (!worker || (worker === 'agy_lead' && !j.agyGaveUp) || j.worker === worker));
 }
 
 export function buildLeadPacket(j) {

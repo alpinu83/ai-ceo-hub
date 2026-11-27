@@ -9,7 +9,7 @@
   - `src/outsourcing.js` · `src/hub/outsourcing-bridge.js` · `src/routes/outsourcing.js`: 외부 협업(Antigravity · Aside · Gemini 앱) 라우팅·2단계 코드 검수(`codeWorkflow: 'agy_then_aside'`)
   - `src/mcp.js`: 공식 `@modelcontextprotocol/sdk` Streamable HTTP MCP 서버 (`/api/mcp`)
   - `public/index.html` · `public/app.js` · `public/styles.css`: 프론트엔드 SPA (Render + GitHub Pages 공용)
-  - `scripts/windows/`: Windows 로컬 Antigravity 감시기 (`ceo-hub-agy-watcher.ps1`, `install-agy-watcher.ps1`)
+  - `scripts/windows/`: Windows 로컬 Antigravity 감시기 — 코딩 외주 (`ceo-hub-agy-watcher.ps1`, `install-agy-watcher.ps1`), 주간 팀장 업무함 (`ceo-hub-agy-lead-watcher.ps1`, `install-agy-lead-watcher.ps1`)
   - `scripts/test-e2e.mjs`: 통합 E2E 테스트 (`npm test`)
 
 ## 2. 절대 깨뜨리지 말아야 할 규칙 (Hard Invariants)
