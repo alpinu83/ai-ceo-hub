@@ -773,7 +773,9 @@ function buildCeoInboxClient() {
   const sm = state.missions.find((m) => m.mode === 'project' && /쇼츠|shorts/i.test(m.title) && m.status !== 'completed');
   const sh = state.shorts || {};
   const fresh = (sh.candidates || []).filter((c) => c.status === 'new');
-  const inFlight = sm && (state.tasks || []).some((t) => t.missionId === sm.id && t.shorts && ['queued', 'running', 'awaiting_bridge', 'review_pending', 'awaiting_approval', 'outsourced'].includes(t.status));
+  const inFlightTask = sm && (state.tasks || []).some((t) => t.missionId === sm.id && t.shorts && ['queued', 'running', 'awaiting_bridge', 'review_pending', 'awaiting_approval', 'outsourced'].includes(t.status));
+  const inFlightJob = sm && (sh.jobs || []).some((j) => j.missionId === sm.id && ['queued', 'rendering'].includes(j.status));
+  const inFlight = Boolean(inFlightTask || inFlightJob);
   if (sm && fresh.length && !inFlight) items.push({ kind: 'shorts_pick', missionId: sm.id, missionTitle: sm.title, title: `쇼츠로 만들 뉴스 1개 고르기 (후보 ${fresh.length}건)`, detail: fresh[0].title, since: sh.lastCollectedAt || fresh[0].createdAt, open: `data-open-mission-board="${esc(sm.id)}"`, btn: '고르러 가기' });
   const blockedBy = new Map();
   for (const t of state.tasks || []) {
@@ -874,7 +876,7 @@ function renderCeoInbox() {
             <div class="home-item-title">${esc(it.title)}</div>
             ${it.detail ? `<div class="routine-sub">${esc(String(it.detail).slice(0, 140))}</div>` : ''}
             ${it.kind === 'blocked' && it.tasks?.length ? renderInboxBlockedTasks(it) : ''}
-            <div class="home-item-actions">${it.kind === 'outsource' && it.outsource ? renderInboxOutsourceActions(it.outsource) : ''}${it.kind === 'approval' && it.approvalId ? `<button type="button" class="btn btn-ghost btn-sm" data-quick-approve="${esc(it.approvalId)}">승인</button>` : ''}<button type="button" class="btn ${it.btnGhost ? 'btn-ghost' : 'btn-primary'} btn-sm" ${it.open}>${it.btn}</button></div>
+            <div class="home-item-actions">${it.kind === 'outsource' && it.outsource ? renderInboxOutsourceActions(it.outsource) : ''}${it.kind === 'approval' && it.approvalId ? `<button type="button" class="btn btn-ghost btn-sm" data-quick-approve="${esc(it.approvalId)}">승인</button>` : ''}${it.kind === 'shorts_pick' ? '<button type="button" class="btn btn-ghost btn-sm" data-shorts-dismiss="1">이번 후보 건너뛰기</button>' : ''}<button type="button" class="btn ${it.btnGhost ? 'btn-ghost' : 'btn-primary'} btn-sm" ${it.open}>${it.btn}</button></div>
           </div>`;
         })
         .join('')}${items.length > 10 ? `<div class="routine-sub">… 외 ${items.length - 10}건</div>` : ''}</div>
@@ -1846,6 +1848,10 @@ function shortsPanelHtml(mission) {
   const sh = state.shorts || {};
   const cands = (sh.candidates || []).filter((c) => c.status === 'new').slice(0, 10);
   const jobs = (sh.jobs || []).filter((j) => j.missionId === mission.id).slice(0, 8);
+  const inFlight =
+    (state.tasks || []).some((t) => t.missionId === mission.id && t.shorts && ['queued', 'running', 'awaiting_bridge', 'review_pending', 'awaiting_approval', 'outsourced'].includes(t.status)) ||
+    jobs.some((j) => ['queued', 'rendering'].includes(j.status));
+  const stage1Done = Boolean((mission.plan?.milestones || [])[0]?.status === 'done');
   const views = (v) => (v ? (v >= 10000 ? `${(v / 10000).toFixed(1)}만회` : `${v}회`) : '');
   const candRows = cands
     .map((c) => `<li style="margin:6px 0;display:flex;gap:8px;align-items:flex-start;"><button type="button" class="btn btn-primary btn-sm" data-shorts-pick="${esc(c.id)}">선택</button><div><strong>${esc(c.title)}</strong><div class="routine-sub">${esc(c.source || '')}${c.url ? ` · <a href="${esc(c.url)}" target="_blank" rel="noreferrer">기사 원문</a>` : ''}${c.publishedAt ? ` · ${esc(formatTime(c.publishedAt))}` : ''}${c.coverage ? ` · 보도 ${c.coverage}곳` : ''}${c.trends?.volume ? ` · 검색 관심 ${views(c.trends.volume).replace('회', '')}+` : ''}${c.signal?.youtubeViews ? ` · 화제 👁 ${views(c.signal.youtubeViews)}(관련 유튜브, 영상은 안 씀)` : ''}</div></div></li>`)
@@ -1856,9 +1862,14 @@ function shortsPanelHtml(mission) {
       return `<li style="margin:4px 0;"><span class="badge ${cls}">${label}</span> ${esc(j.script?.title || '(대본 확인 필요)')}${j.video?.url ? ` · <a href="${esc(j.video.url)}" target="_blank" rel="noreferrer">영상 보기</a>` : ''}${j.error ? ` <span class="routine-sub">(${esc(j.error)})</span>` : ''}${['needs_fix', 'failed'].includes(j.status) ? ` <button type="button" class="btn-inline-edit" data-shorts-retry="${esc(j.id)}">다시 시도</button>` : ''}</li>`;
     })
     .join('');
+  const candSection = candRows
+    ? inFlight || stage1Done
+      ? `<details style="margin-top:8px;"><summary style="cursor:pointer;font-size:13px;"><strong>남은 후보 기사 (${cands.length}건)</strong> <span class="routine-sub">· 대본/제작 진행 중이라 접어두었습니다</span> <button type="button" class="btn-inline-edit" data-shorts-dismiss="1">후보 닫기</button></summary><ul style="list-style:none;padding:0;margin:6px 0 0;">${candRows}</ul></details>`
+      : `<div style="margin-top:8px;"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;"><strong>후보 기사</strong> <span class="routine-sub">(최근 1~2일 국내 정치 · 보도량·검색 관심·화제도 순)</span> <button type="button" class="btn-inline-edit" data-shorts-dismiss="1">후보 닫기 (그만 고르기)</button></div><ul style="list-style:none;padding:0;margin:4px 0 0;">${candRows}</ul></div>`
+    : '<div class="routine-sub" style="margin-top:6px;">현재 대기 중인 뉴스 후보가 없습니다. (다음 정기 수집: 매일 오전 7시·오후 6시)</div>';
   return `<details class="mission-directive-quote" open>
       <summary style="cursor:pointer;"><strong>쇼츠 제작</strong> <span class="routine-sub">뉴스 후보를 고르면 팀이 대본을 써서 결재로 올리고, 승인하면 자동 제작기가 구국열사 채널에 비공개로 올립니다${sh.lastCollectedAt ? ` · 후보 수집 ${esc(formatTime(sh.lastCollectedAt))}` : ''}</span></summary>
-      ${candRows ? `<div style="margin-top:8px;"><strong>후보 기사</strong> <span class="routine-sub">(최근 1~2일 국내 정치 · 보도량·검색 관심·화제도 순 · 다른 채널 영상은 쓰지 않음)</span><ul style="list-style:none;padding:0;margin:4px 0 0;">${candRows}</ul></div>` : '<div class="routine-sub" style="margin-top:6px;">아직 후보가 없습니다. 매일 아침 7시·저녁 6시에 최근 1~2일 국내 정치 기사 중 관심 높은 것을 모아 옵니다.</div>'}
+      ${candSection}
       ${jobRows ? `<div style="margin-top:10px;"><strong>제작 현황</strong><ul style="list-style:none;padding:0;margin:4px 0 0;">${jobRows}</ul></div>` : ''}
     </details>`;
 }
@@ -3958,6 +3969,19 @@ function bindEvents() {
         state = res.state;
         renderAll();
         toast('선택했습니다. 팀이 대본을 써서 결재로 올립니다.');
+      } catch (err) {
+        toast(err.message, true);
+        target.disabled = false;
+      }
+      return;
+    }
+    if (target.dataset?.shortsDismiss) {
+      target.disabled = true;
+      try {
+        const res = await api('/api/shorts/candidates/dismiss', { method: 'POST', body: '{}' });
+        state = res.state;
+        renderAll();
+        toast(`남은 뉴스 후보 ${res.dismissed || 0}건을 닫았습니다.`);
       } catch (err) {
         toast(err.message, true);
         target.disabled = false;
