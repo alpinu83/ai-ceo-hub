@@ -2291,3 +2291,17 @@ button.simple-row.clickable:hover { background: var(--bg-subtle); }
   overflow: auto;
   font-size: 11.5px;
 }
+
+/* ===== 결재함 총괄 팀장 재가공 보고서 패널 ===== */
+.lead-brief-panel {
+  padding: 14px 16px;
+  border-radius: var(--radius-lg);
+  background: #f0f9f7;
+  border: 1px solid rgba(13, 110, 102, 0.28);
+  border-left: 3px solid var(--accent-primary);
+}
+html[data-theme="studio"] .lead-brief-panel {
+  background: rgba(44, 194, 178, 0.1);
+  border-color: rgba(44, 194, 178, 0.34);
+  border-left: 3px solid var(--accent-primary);
+}

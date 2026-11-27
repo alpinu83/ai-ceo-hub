@@ -68,11 +68,11 @@ export function leadReviewOn(settings) {
 export function registerDeliverable(db, mission, task, agent) {
   if (!mission) return;
   mission.deliverables = Array.isArray(mission.deliverables) ? mission.deliverables : [];
-  const firstLine = String(task.output || '')
+  const firstLine = String(task.review?.executiveSummary || task.output || '')
     .split('\n')
     .find((l) => l.trim() && !/^[#|>]/.test(l.trim()) && !/^\*\*?\[?(팀장|대표님)/.test(l.trim()))
     ?.replace(/^[-*]\s*/, '')
-    .slice(0, 160);
+    .slice(0, 180);
   const entry = {
     id: task.id,
     taskId: task.id,
@@ -143,7 +143,7 @@ export async function processTaskResult(db, task, agent, mission, res, { skipRev
   const triage = mission ? leadTriageResult(db, task, agent, mission, task.output, osFlag) : { handled: false };
   if (triage.handled) return triage;
 
-  // 2) 팀장 검수 (완료 기준)
+  // 2) 팀장 검수 (완료 기준 + 양질의 보고서 재가공)
   if (!skipReview && mission && leadReviewOn(db.settings)) {
     const rv = await leadReviewDeliverable({ task, output: task.output, mission, agents: db.agents, settings: db.settings }).catch(() => ({ verdict: 'accept', skipped: true }));
     if (rv.verdict === 'pending') {
@@ -154,7 +154,20 @@ export async function processTaskResult(db, task, agent, mission, res, { skipRev
       return { handled: true, pending: true };
     }
     const rounds = Number(task.reviewRounds || 0);
-    task.review = { verdict: rv.verdict, score: rv.score ?? null, missing: rv.missing || [], feedback: rv.feedback || '', reviewer: rv.reviewer || '', skipped: Boolean(rv.skipped), round: rounds + 1, at: new Date().toISOString() };
+    task.review = {
+      verdict: rv.verdict,
+      score: rv.score ?? null,
+      missing: rv.missing || [],
+      feedback: rv.feedback || '',
+      executiveSummary: rv.executiveSummary || '',
+      refinedReport: rv.refinedReport || '',
+      recommendedAction: rv.recommendedAction || '',
+      reviewer: rv.reviewer || '',
+      skipped: Boolean(rv.skipped),
+      round: rounds + 1,
+      at: new Date().toISOString()
+    };
+    if (rv.refinedReport) task.leadBrief = rv.refinedReport;
     task.acceptance = rv.acceptance || task.acceptance;
     // 검수 AI가 "없는 파일"이라고 잘못 판정해 쌓인 교훈·피드백은 지움 (실제 저장소에 있는 파일)
     if (rv.existingFiles?.length) {
@@ -169,9 +182,10 @@ export async function processTaskResult(db, task, agent, mission, res, { skipRev
       for (const miss of (rv.missing || []).slice(0, 2)) addReviewLesson(mission, miss);
       task.previousOutput = task.output.slice(0, 1500);
       task.output = '';
-      task.status = 'queued';
+      task.status = agent?.connectionMode === 'bridge' ? 'awaiting_bridge' : 'queued';
+      if (agent && mission) task.dispatchPrompt = buildDispatchPrompt(agent, task, mission);
       leadSay(db, mission, '팀장 검수', `"${task.title}" ${rounds + 1}차 검수: 보완이 필요해 ${agent?.name || '담당자'}에게 다시 맡겼습니다. (${(rv.missing || [])[0] || rv.feedback.slice(0, 60)})`);
-      return { handled: true, requeued: true };
+      return { handled: true, requeued: task.status === 'queued' };
     }
     if (rv.verdict === 'escalate') {
       return escalateTask(db, task, agent, mission, rv.feedback || (rv.missing || []).join(', ') || '팀장 검수에서 상위 처리 판단');
@@ -202,13 +216,21 @@ export async function processTaskResult(db, task, agent, mission, res, { skipRev
   const overThreshold = (Number(task.estimatedCostKRW) || 0) > 0 && (Number(task.estimatedCostKRW) || 0) >= (db.settings.approvalThresholdKRW || 30000);
   if (task.requiresApproval || overThreshold) {
     task.status = 'awaiting_approval';
-    if (!db.approvals.find((a) => a.taskId === task.id && a.status === 'pending')) {
+    let approvalId = null;
+    const existing = db.approvals.find((a) => a.taskId === task.id && a.status === 'pending');
+    if (!existing) {
       const apr = createApprovalForTask(task, agent, mission);
       db.approvals.unshift(apr);
+      approvalId = apr.id;
       const leadAg = db.agents.find((a) => a.id === (mission?.leadAgentId || 'agent_gemini_neon'));
       notifyAllApprovalChannels(db.settings, apr, leadAg?.name || '총괄 팀장');
+    } else {
+      approvalId = existing.id;
     }
-    appendLog(db, '총괄 팀장', `"${task.title}" 검수 완료 → CEO 결재 상신.`, 'approval');
+    delete task.pendingApprovalTitle;
+    delete task.pendingApprovalReason;
+    appendLog(db, '총괄 팀장', `"${task.title}" 검수·재가공 완료 → CEO 결재 상신.`, 'approval');
+    return { handled: true, approvalId };
   } else {
     task.status = 'completed';
     registerDeliverable(db, mission, task, agent);

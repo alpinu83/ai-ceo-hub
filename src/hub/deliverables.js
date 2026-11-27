@@ -235,6 +235,22 @@ export function buildApprovalDeliverable(db, aprId) {
   if (Array.isArray(apr.proposedSteps) && apr.proposedSteps.length) plan.push(`**진행 단계:**\n${asText(apr.proposedSteps)}`);
   if (plan.length) sections.push({ heading: '계획서', body: plan.join('\n\n') });
 
+  // 1-2) 총괄 팀장 재가공 보고서 (대표님 보고용으로 팀장이 정리·보강한 본문)
+  const leadBriefText = String(
+    apr.leadBrief ||
+      taskIds
+        .map((id) => (db.tasks || []).find((x) => x.id === id)?.leadBrief)
+        .find((b) => String(b || '').trim()) ||
+      ''
+  ).trim();
+  if (leadBriefText) {
+    sections.push({
+      heading: '🧭 총괄 팀장 재가공 보고서',
+      meta: [apr.workerName ? `실무: ${apr.workerName}` : '', apr.leadScore != null ? `팀장 검수 ${apr.leadScore}/10` : ''].filter(Boolean).join(' · '),
+      body: clip(formatDeliverableOutput(leadBriefText))
+    });
+  }
+
   // 2) 시안·결과물: 연결된 업무의 실제 산출물
   for (const id of taskIds) {
     const t = (db.tasks || []).find((x) => x.id === id);

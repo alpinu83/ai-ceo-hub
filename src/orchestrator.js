@@ -1284,24 +1284,36 @@ ${rows}
 
 export function createApprovalForTask(task, agent, mission, reason, proposedAction) {
   const leadId = mission?.leadAgentId || 'agent_gemini_neon';
-  const checklist = extractChecklistItems(task?.output || '', 10);
+  const checklist = extractChecklistItems(`${task?.leadBrief || ''}\n${task?.output || ''}`, 10);
+  const leadSummary = String(task?.review?.executiveSummary || '').trim();
+  const leadBrief = String(task?.leadBrief || task?.review?.refinedReport || '').trim();
+  const leadRec = String(task?.review?.recommendedAction || '').trim();
+  const fallbackReason = String(reason || task?.pendingApprovalReason || '').trim();
+  const customTitle = String(task?.pendingApprovalTitle || '').trim();
   return {
     id: uid('apr'),
-    missionId: mission.id,
+    missionId: mission?.id || task?.missionId || '',
     taskId: task.id,
     taskIds: task?.id ? [task.id] : [],
     agentId: leadId,
-    title: `${task.title} — CEO 실행 승인 요청`,
+    workerName: agent?.name || '',
+    ...(task?.review?.score != null ? { leadScore: task.review.score } : {}),
+    ...(task?.review?.reviewer ? { leadReviewer: task.review.reviewer } : {}),
+    ...(leadBrief ? { leadBrief } : {}),
+    title: customTitle || `${task.title} — CEO 실행 승인 요청`,
     category: task.estimatedCostKRW > 0 ? '예약 · 결제' : '대외 실행 · 최종 승인',
     riskLevel: task.estimatedCostKRW >= 100000 ? 'high' : task.estimatedCostKRW > 0 ? 'medium' : 'low',
     estimatedCostKRW: task.estimatedCostKRW || 0,
     depositKRW: 0,
     ...(checklist.length ? { checklist } : {}),
     summary:
-      reason ||
-      `[실무: ${agent.name} → 총괄 팀장 검토 후 상신] "${task.title}" 사전 준비를 마치고 실제 실행(예약/결제/발송/배포) 전 CEO 결재를 요청합니다.`,
+      leadSummary ||
+      fallbackReason ||
+      `[실무: ${agent?.name || '팀원'} → 총괄 팀장 검토 후 상신] "${task.title}" 사전 준비를 마치고 실제 실행(예약/결제/발송/배포) 전 CEO 결재를 요청합니다.`,
     proposedAction:
-      proposedAction || `승인 시 "${task.title}" 작업이 확정 상태로 전환되며, 팀장 최종 임원 보고서에 반영됩니다.`,
+      leadRec ||
+      proposedAction ||
+      `승인 시 "${task.title}" 작업이 확정 상태로 전환되며, 팀장 최종 임원 보고서에 반영됩니다.`,
     status: 'pending',
     ceoNote: '',
     createdAt: new Date().toISOString(),
@@ -1310,14 +1322,17 @@ export function createApprovalForTask(task, agent, mission, reason, proposedActi
 }
 
 const LeadReviewSchema = z.object({
-  verdict: z.enum(['accept', 'revise', 'escalate']).describe('accept: 완료 기준을 모두 충족해 바로 쓸 수 있음 / revise: 고치면 충족 가능 / escalate: 이 팀원·도구로는 불가(실제 웹 조사·로그인·실행 필요 등)'),
-  score: z.number().describe('0~10'),
+  verdict: z.enum(['accept', 'revise', 'escalate']).describe('accept: 완료 기준을 모두 충족하고 품질이 충분해 대표님 보고 가능 / revise: 품질 미흡·핵심 누락·초안 수준이라 보완 필요 / escalate: 이 팀원·도구로는 불가(실제 웹 조사·로그인·실행 필요 등)'),
+  score: z.number().describe('0~10 (품질·근거·실행력 종합 점수)'),
   missing: z.array(z.string()).max(6).describe('충족하지 못한 완료 기준이나 빠진 것 (구체적으로)'),
-  feedback: z.string().describe('revise/escalate일 때 다음 작업자가 바로 고칠 수 있는 구체적 지시 (무엇을, 어떻게). accept면 빈 문자열 가능')
+  feedback: z.string().describe('revise/escalate일 때 다음 작업자가 바로 고칠 수 있는 구체적 지시 (무엇을, 어떻게). accept면 간단한 검토 메모 또는 빈 문자열'),
+  executiveSummary: z.string().optional().describe('accept일 때 필수: 대표님이 10초 안에 핵심을 파악하고 결정할 수 있도록 팀장이 직접 재가공한 임원 보고 요약(핵심 결론·근거 수치·주의점 포함 3~5문장. 봇 원문 복붙·형식적 문구 금지)'),
+  refinedReport: z.string().optional().describe('accept일 때 필수: 팀원 원문을 대표님 보고용 양질의 마크다운 보고서(## 핵심 결론 / ## 정리된 본문·안건 / ## 리스크 및 검토 의견 / ## 팀장 권고)로 재가공한 본문. 쇼츠 대본처럼 JSON 코드 블록이 포함된 경우 사람이 읽기 좋게 대본을 정리하고 JSON 원문은 건드리지 말 것'),
+  recommendedAction: z.string().optional().describe('accept일 때 권장: 대표님께 권고하는 결정(승인/조건부 승인/수정 요청)과 그 이유 1~2문장')
 });
 
 /**
- * 팀장 검수: 팀원 결과물을 업무의 완료 기준과 업무 브리핑으로 판정
+ * 팀장 검수: 팀원 결과물을 업무의 완료 기준과 업무 브리핑으로 판정 + 대표님 보고용 양질 재가공
  * AI 엔진을 쓸 수 없으면 판정을 건너뜀(skipped) — 업무를 멈추지 않기 위해
  */
 // 결과물·피드백에 나온 파일 경로 (저장소 실제 확인용)
@@ -1334,13 +1349,19 @@ export async function leadReviewDeliverable({ task, output, mission, agents, set
   const chain = buildLeadModelChain(leadAgent, settings, agents);
   const acceptance = deriveAcceptance(task);
   if (!chain.length && !hasLeadDeskWorker()) return { verdict: 'accept', skipped: true, reason: 'AI 엔진 없음', acceptance };
-  const system = `당신은 총괄 팀장(${leadAgent?.name || '팀장'})입니다. 팀원이 낸 결과물을 "완료 기준"과 "업무 브리핑"으로 엄격하게 검수하세요.
-판정 원칙:
-- accept: 완료 기준을 모두 충족하고, 대표님이나 다음 작업자가 바로 쓸 수 있을 때만.
-- revise: 빠진 부분을 같은 팀원이 고칠 수 있을 때. feedback에 무엇을 어떻게 고칠지 구체적으로.
+  const system = `당신은 총괄 팀장(${leadAgent?.name || '팀장'})입니다.
+당신의 의무는 단순히 "규정 위반만 없으면 통과시키는 전달자"가 아니라, ① 엄격한 품질 검증 후 ② 대표님이 바로 의사결정할 수 있는 **양질의 임원 보고서로 재가공**해 올리는 것입니다.
+
+판정 및 재가공 원칙:
+- accept: 완료 기준을 모두 충족하고, 사실 근거·구체성·실행력이 충분할 때만.
+- revise: 규정 위반이 없더라도 내용이 빈약하거나, 두서없는 메모·날것 JSON·복붙 초안 수준이거나, 핵심 수치·근거가 빠졌으면 반드시 revise로 돌려보내세요. feedback에 무엇을 어떻게 보완할지 구체적으로 지시하세요.
 - escalate: 이 팀원과 무료 도구로는 불가능할 때(실제 웹 조사, 로그인, 현실 행동 필요 등). feedback에 무엇이 필요한지.
 - 계획·목차·"정보를 주세요"·"~하겠습니다"만 있는 결과는 accept 금지.
 - 근거 없는 수치를 사실처럼 쓴 경우, 브리핑의 금지 사항을 어긴 경우 accept 금지.
+- **임원 보고 재가공 의무(accept 시 필수)**:
+  1) executiveSummary: 대표님이 10초 안에 핵심 결론·주요 수치·주의점을 파악할 수 있는 3~5문장 요약(단순 "사전 준비를 마치고 승인 요청합니다" 같은 형식적 문구 절대 금지).
+  2) refinedReport: 팀원 원문을 그대로 복붙하지 말고, 대표님이 원문을 뒤지지 않아도 바로 판단할 수 있게 **## 핵심 결론 / ## 정리된 내용 / ## 리스크·확인 포인트 / ## 팀장 검토 의견** 구조의 양질의 한국어 마크다운 보고서로 재가공하세요. (쇼츠 대본이라면 장면별 자막·핵심 포인트·논조·사실/의견 구분을 사람이 읽기 좋게 정리)
+  3) recommendedAction: 승인/조건부 승인/수정 요청 중 팀장 권고안과 근거 1~2문장.
 - 판정 범위는 이 작업의 [요구사항]과 [완료 기준]뿐입니다. 프로젝트 전체 목표나 다른 작업의 일(예: 분석 작업에 코드 수정·PR·배포·색인 요청)을 이 결과물에 요구하지 마세요. 필요한 후속 일은 feedback에 "후속 작업 제안"으로만 적고 판정에는 반영하지 마세요.
 - 팀원은 PR 생성·머지·배포·계정 로그인을 직접 할 수 없습니다(IT팀 코드 반영 절차와 외주가 담당). 그런 실행을 하지 않았다는 이유로 revise 금지.
 ${mission ? `\n${buildMissionBrief(mission)}` : ''}`;
@@ -1364,6 +1385,7 @@ ${mission ? `\n${buildMissionBrief(mission)}` : ''}`;
   }
   const priorNotes = (Array.isArray(task.leadNotes) ? task.leadNotes.slice(0, 3) : []).filter((n) => !isFalseMissingClaim(n.text, snapshot?.fileSet));
   const prompt = `[업무] ${task.title}
+[CEO 결재 상신 여부] ${task.requiresApproval ? '예 — 통과 시 대표님 결재함에 바로 올라갑니다. executiveSummary·refinedReport·recommendedAction을 대표님 보고 품질로 반드시 작성하세요.' : '아니오 — 통과 시 완료 보고로 기록됩니다. executiveSummary와 refinedReport로 핵심을 깔끔히 정리하세요.'}
 [요구사항] ${baseTaskDescription(task).slice(0, 1500)}
 [완료 기준]
 ${acceptance.map((x, i) => `${i + 1}. ${x}`).join('\n')}
@@ -1373,8 +1395,8 @@ ${
     : ''
 }
 ${repoFacts ? `\n${repoFacts}\n` : ''}
-[팀원 결과물 (앞부분)]
-${String(output || '').slice(0, 4500)}`;
+[팀원 결과물]
+${String(output || '').slice(0, 8000)}`;
   try {
     const { object, label } = await generateObjectChain(chain, {
       schema: LeadReviewSchema,
@@ -1395,6 +1417,9 @@ ${String(output || '').slice(0, 4500)}`;
       score: Math.max(0, Math.min(10, Number(object.score) || 0)),
       missing,
       feedback,
+      executiveSummary: String(object.executiveSummary || '').trim().slice(0, 1200),
+      refinedReport: String(object.refinedReport || '').trim().slice(0, 8000),
+      recommendedAction: String(object.recommendedAction || '').trim().slice(0, 600),
       reviewer: label,
       acceptance,
       corrected: dropped || 0,

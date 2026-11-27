@@ -805,6 +805,94 @@ async function runTests() {
     const cueInboxText = await (await fetch(`${BASE}/api/agent-inbox/cue?${tokQ}&format=text`)).text();
     assert.ok(cueInboxText.includes('최근 CEO 결재 피드백') && cueInboxText.includes('근거 수치를 앞세우고'), 'Cue text inbox must include rejection feedback');
 
+    // 14. 봇이 결재 필요 업무를 제출하면 팀장 업무함(검수·재가공)을 반드시 거치고, 팀장의 임원 보고서(executiveSummary·refinedReport·recommendedAction)가 결재 카드와 성과품 문서에 반영되는지 검증
+    const leadMission = await (
+      await fetch(`${BASE}/api/missions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: '팀장 재가공 결재 검증',
+          directive: 'Cue가 경쟁 앱 동향을 조사해 승인 요청을 올리면 팀장이 재가공해 보고하는지 확인',
+          domain: 'business'
+        })
+      })
+    ).json();
+    // Cue에게 배정된 승인 필요 업무 1건 확보
+    const cueTask = leadMission.tasks[0];
+    await fetch(`${BASE}/api/tasks/${encodeURIComponent(cueTask.id)}/reassign`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ assigneeId: 'agent_cue' })
+    });
+    // AGY 팀장 근무 상태 갱신 후 Cue가 결재 요청 제출 → 바로 결재함으로 직행하지 않고 review_pending으로 팀장 검토 대기
+    await fetch(`${BASE}/api/lead-jobs?worker=agy_lead&${tokQ}`);
+    const cueSubmitForLead = await (
+      await fetch(`${BASE}/api/agent-inbox/cue/reply?${tokQ}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          taskId: cueTask.id,
+          message: '경쟁 앱 3곳 가격·기능 초안 조사 완료했습니다.',
+          deliverable: '초안 메모: A앱 월 9,900원, B앱 무료+광고, C앱 월 4,900원. 국내 검색 수요 상승 중.',
+          requestApproval: true
+        })
+      })
+    ).json();
+    assert.equal(cueSubmitForLead.ok, true, 'Cue task submission should succeed');
+    assert.equal(cueSubmitForLead.taskStatus, 'review_pending', 'Approval-required bot task must go through Team Lead review_pending first');
+    assert.equal(cueSubmitForLead.approvalId, null, 'Approval card must NOT bypass Team Lead before review');
+
+    // 팀장 업무함에서 검수 건을 잡아 양질의 재가공 보고서로 submit
+    const jobsList = await (await fetch(`${BASE}/api/lead-jobs?worker=agy_lead&${tokQ}`)).json();
+    const reviewJob = (jobsList.jobs || []).find((j) => j.purpose === 'review' && String(j.title || '').includes(cueTask.title));
+    assert.ok(reviewJob, 'Team Lead desk must contain a review job for the Cue task');
+    const claimReview = await (
+      await fetch(`${BASE}/api/lead-jobs/${encodeURIComponent(reviewJob.id)}/claim?${tokQ}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ worker: 'agy_lead' })
+      })
+    ).json();
+    assert.equal(claimReview.ok, true, 'Team Lead claim should succeed');
+    assert.ok(claimReview.packet.includes('executiveSummary') && claimReview.packet.includes('refinedReport'), 'Lead packet must request executiveSummary and refinedReport');
+
+    const submitReview = await (
+      await fetch(`${BASE}/api/lead-jobs/${encodeURIComponent(reviewJob.id)}/submit?${tokQ}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          worker: 'agy_lead',
+          result: {
+            verdict: 'accept',
+            score: 9,
+            missing: [],
+            feedback: '',
+            executiveSummary: '경쟁 앱 3곳 분석 결과, 무료+광고 또는 월 4,900원대 구간이 가장 진입 장벽이 낮습니다. 국내 검색 수요 상승이 확인되어 MVP 착수 승인을 권고합니다.',
+            refinedReport: '## 핵심 결론\n- 3개 경쟁사 가격대(무료~9,900원) 비교 결과 월 4,900원 프리미엄 모델이 최적입니다.\n\n## 팀장 검토 의견\n- 실무 초안의 핵심 가격 수치를 검증해 의사결정용으로 정리했습니다.',
+            recommendedAction: '승인 권고: 월 4,900원 모델 기준으로 MVP 기획 단계 진입'
+          }
+        })
+      })
+    ).json();
+    assert.equal(submitReview.ok, true, 'Team Lead review submit should succeed');
+
+    // submitLeadJob의 비동기 200ms 핸들러(resumeReviewTask)가 결재 카드를 생성할 때까지 짧게 대기
+    let refinedApr = null;
+    for (let i = 0; i < 15; i += 1) {
+      await new Promise((r) => setTimeout(r, 150));
+      const afterLeadState = await (await fetch(`${BASE}/api/state`)).json();
+      refinedApr = afterLeadState.approvals.find((a) => a.taskId === cueTask.id && a.status === 'pending') || null;
+      if (refinedApr) break;
+    }
+    assert.ok(refinedApr, 'Approval card must be created after Team Lead accepts');
+    assert.ok(refinedApr.summary.includes('월 4,900원대 구간'), 'Approval summary must use Team Lead executiveSummary');
+    assert.ok((refinedApr.leadBrief || '').includes('## 핵심 결론'), 'Approval must include Team Lead refinedReport as leadBrief');
+    assert.ok(refinedApr.proposedAction.includes('승인 권고'), 'Approval proposedAction must use Team Lead recommendedAction');
+    assert.equal(refinedApr.leadScore, 9, 'Approval must record Team Lead review score');
+
+    const refinedDoc = await (await fetch(`${BASE}/api/approvals/${encodeURIComponent(refinedApr.id)}/deliverable?format=json`)).json();
+    assert.ok(refinedDoc.markdown.includes('총괄 팀장 재가공 보고서') && refinedDoc.markdown.includes('## 핵심 결론'), 'Deliverable markdown must include Team Lead refined report');
+
     // Clean reset after tests
     await fetch(`${BASE}/api/reset`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: 'RESET-ALL-DATA' }) });
     console.log('✅ All AI CEO Hub E2E tests (REST + Continuous Project Loop + Team Lead Chat + Official MCP SDK + Async Pickle HTTPS Inbox + Heartbeat + Cascade Delete + Web Push + Telegram) passed!');
