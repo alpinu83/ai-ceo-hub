@@ -1,4 +1,5 @@
 // hub/missions.js: server.js에서 분리 (공유 로직)
+import { kickShortsFactory, queueShortsJob } from './shorts.js';
 import { ASSIGNMENT_RULES, buildPlanningRoster, isStandingOrder, markCeoActivity, rebalanceAssignments, rememberFact, addLeadNote, isAgentExhausted, pickQuotaSubstitute } from '../lead-engine.js';
 import { appendLog, appendMessage, applyInferredMissionBindings, flushCloudBackup, loadDb, saveDb, uid } from '../store.js';
 import { assessFeasibility, getOutsourcingSettings } from '../outsourcing.js';
@@ -413,6 +414,11 @@ export function applyApprovalDecisionInDb(aprId, decision, ceoNote = '') {
     if (decision === 'approved') {
       task.status = 'completed';
       task.output = `${task.output || ''}\n\n---\n**CEO 최종 승인 완료** (${new Date().toLocaleString('ko-KR')})${apr.ceoNote ? `\n- CEO 메모: ${apr.ceoNote}` : ''}`.trim();
+      // 쇼츠 대본 승인 → 자동 제작기 대기열 (비공개 업로드까지 자동)
+      if (task.shorts) {
+        const job = queueShortsJob(db, task);
+        if (job?.status === 'queued') kickShortsFactory(db.settings).catch(() => {});
+      }
     } else if (decision === 'revision_requested') {
       task.status = agent?.connectionMode === 'bridge' ? 'awaiting_bridge' : 'queued';
       if (apr.ceoNote) {
