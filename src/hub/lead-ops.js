@@ -1,7 +1,7 @@
 // hub/lead-ops.js: server.js에서 분리 (공유 로직)
 import { registerDeliverable } from './task-results.js';
 import { ensureShorts, findShortsMission } from './shorts.js';
-import { ASSIGNMENT_RULES, buildCompletionReport, buildMissionDigest, buildPlanningRoster, collectFollowUps, ensureLeadDefaults, findScopeViolations, getLeadSettings, getMissionGoal, isForbiddenCodeTask, markCeoActivity, missionLeadState, rebalanceAssignments, rememberFact } from '../lead-engine.js';
+import { pickTwinBot, ASSIGNMENT_RULES, buildCompletionReport, buildMissionDigest, buildPlanningRoster, collectFollowUps, ensureLeadDefaults, findScopeViolations, getLeadSettings, getMissionGoal, isForbiddenCodeTask, markCeoActivity, missionLeadState, rebalanceAssignments, rememberFact } from '../lead-engine.js';
 import { appendLog, appendMessage, flushCloudBackup, loadDb, saveDb, uid } from '../store.js';
 import { buildDispatchPrompt, draftMissionPlan, planLeadFollowUp, planMilestoneWork, missionRepoSnapshot } from '../orchestrator.js';
 import { getAiProviderHealth } from '../ai-guard.js';
@@ -236,6 +236,28 @@ export function createLeadTasks(db, mission, specs = [], source = 'lead_followup
     if (spec.isCodeChange && repoLinked && !agentMap.agent_it_dev?.active) routeCodeTask(db, task, spec);
     else if (DEV_TEAM[task.assigneeId]) dispatchDevTeamTask(db, task);
     created.push({ task, agent: ag });
+    // 같은 일을 다른 봇도 동시에 (리서치 교차 조사 · 문서/카피 대안안) → 팀장이 비교·취합
+    const twin = !spec.isCodeChange && !spec.noTwin ? pickTwinBot(db, task) : null;
+    if (twin) {
+      const twinTitle = `${task.title} · ${twin.mode} (${twin.agent.name})`.slice(0, 140);
+      if (!existing.has(twinTitle)) {
+        const copy = {
+          ...task,
+          id: uid('tsk'),
+          title: twinTitle,
+          description: `${spec.description || spec.title}\n[${twin.mode}] 같은 주제를 ${ag.name}도 동시에 진행 중입니다. 서로 보지 말고 독립적으로, 근거·출처를 분명히 적어 주세요. 팀장이 두 결과를 비교해 취합합니다.\n[총괄 팀장 후속 배정]`,
+          assigneeId: twin.agent.id,
+          status: twin.agent.connectionMode === 'bridge' ? 'awaiting_bridge' : 'queued',
+          twinOf: task.id
+        };
+        delete copy.outsourceId;
+        delete copy.agyRequestId;
+        copy.dispatchPrompt = buildDispatchPrompt(twin.agent, copy, mission);
+        db.tasks.unshift(copy);
+        existing.add(twinTitle);
+        created.push({ task: copy, agent: twin.agent });
+      }
+    }
   }
   if (created.length) mission.status = 'in_progress';
   return created;
@@ -449,7 +471,7 @@ export function shortsCandidatesNote(db, m) {
 const digestWithTools = async (db, m) => [buildMissionDigest(db, m.id), connectedToolsNote(db.settings, m), shortsCandidatesNote(db, m), await repoStructureNote(m, db.settings)].filter(Boolean).join('\n\n');
 
 /** 운영 사이클 1회: 계획 수립(없으면) → 현재 마일스톤 처리 */
-export async function opsCycle(missionId, { depth = 0 } = {}) {
+export async function opsCycle(missionId, { depth = 0, fillIdle = null, fillSlot = null } = {}) {
   if (opsCycleRunning.has(missionId) || depth > 3) return null;
   opsCycleRunning.add(missionId);
   try {
@@ -498,7 +520,7 @@ export async function opsCycle(missionId, { depth = 0 } = {}) {
     }
     if (ms.status === 'gate' || ms.status === 'blocked') return null; // 대표님 결정 대기
     const openTasks = db.tasks.filter((t) => t.missionId === missionId && t.milestoneId === ms.id && ['queued', 'running', 'awaiting_bridge', 'awaiting_approval', 'outsourced', 'review_pending'].includes(t.status));
-    if (openTasks.length) return null; // 진행 중
+    if (openTasks.length && !fillIdle?.length) return null; // 진행 중 (놀고 있는 봇 채우기는 예외)
 
     // 3) 판정 + 다음 작업
     saveDb(db);
@@ -511,7 +533,14 @@ export async function opsCycle(missionId, { depth = 0 } = {}) {
         agents: db.agents,
         settings: db.settings,
         teamLoad: `${buildPlanningRoster(db)}\n\n${ASSIGNMENT_RULES}\n${devPolicyRules(db.settings)}`,
-        deliverablesText: deliverablesTextFor(m)
+        deliverablesText: deliverablesTextFor(m),
+        ...(fillIdle?.length
+          ? {
+              extraNote: `[추가 배정 요청] 지금 놀고 있는 팀원: ${fillIdle.map((id) => `"${id}" ${db.agents.find((a) => a.id === id)?.name || ''}`).join(', ')}. 이 마일스톤 완료에 도움이 되는 일을 이 팀원들에게만 각자 성격에 맞게 1~2건씩 배정하세요. 이미 진행 중인 일과 겹치지 않게 하고, milestoneDone은 false로 두세요.`,
+              keySuffix: `fill:${fillSlot ?? Math.floor(Date.now() / 7200000)}`,
+              refsExtra: { fillIdle, fillSlot: fillSlot ?? Math.floor(Date.now() / 7200000) }
+            }
+          : {})
       });
     } catch (err) {
       if (isLeadPending(err)) return { pending: true };
@@ -523,6 +552,22 @@ export async function opsCycle(missionId, { depth = 0 } = {}) {
     db = loadDb();
     m = db.missions.find((x) => x.id === missionId);
     const msNow = m.plan.milestones.find((x) => x.id === ms.id);
+    if (fillIdle?.length) {
+      // 놀고 있는 봇 채우기: 마일스톤 판정·라운드는 건드리지 않고 해당 팀원 작업만 추가
+      const extra = createLeadTasks(
+        db,
+        m,
+        work.tasks.filter((t) => fillIdle.includes(t.assigneeId)).map((t) => ({ ...t, milestoneId: msNow.id, noTwin: true })),
+        'idle_fill'
+      );
+      if (extra.length) {
+        leadSay(db, m, '놀고 있는 팀원 추가 배정', [`**[${msNow.title}] 추가 배정**`, ...extra.map(({ task, agent }) => `- ${task.title} (@${agent.name})`)].join('\n'));
+        saveDb(db);
+        await flushCloudBackup(db);
+        autoStartLiveMissionTasks(missionId).catch(() => {});
+      }
+      return { filled: extra.length };
+    }
     // 팀장 취합본: 팀원(봇·개발팀) 결과물을 하나로 정리한 문서를 결과물로 등록
     if (work.synthesis && work.synthesis.trim().length >= 200) {
       const title = `[팀장 취합] ${msNow.title} (${Number(msNow.rounds || 0) + 1}차)`;
