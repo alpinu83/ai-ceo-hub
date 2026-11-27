@@ -4109,7 +4109,10 @@ function bindEvents() {
 
     if (target.dataset.deleteTask) {
       const taskId = target.dataset.deleteTask;
-      if (!confirm('이 종료된 업무를 삭제할까요?')) return;
+      const tObj = state.tasks.find((x) => x.id === taskId);
+      const tLabel = tObj?.title ? `"${tObj.title}"` : '이 종료된 업무';
+      if (!window.confirm(`${tLabel}을(를) 삭제할까요?`)) return;
+      if (!window.confirm(`[최종 확인] ${tLabel}을(를) 정말 삭제할까요?\n삭제하면 되돌릴 수 없습니다.`)) return;
       try {
         const res = await api(`/api/tasks/${taskId}`, { method: 'DELETE' });
         state = res.state;
@@ -4123,7 +4126,10 @@ function bindEvents() {
 
     if (target.id === 'btn-clear-completed-tasks') {
       const missionId = target.dataset.missionId;
-      if (!confirm('이 프로젝트/업무의 종료된 업무를 모두 삭제할까요?')) return;
+      const mObj = state.missions.find((x) => x.id === missionId);
+      const mLabel = mObj?.title ? `"${mObj.title}"` : '이 프로젝트/업무';
+      if (!window.confirm(`${mLabel}의 종료된 업무를 모두 삭제할까요?`)) return;
+      if (!window.confirm(`[최종 확인] ${mLabel}의 종료된 업무와 결과물을 정말 모두 삭제할까요?\n삭제하면 되돌릴 수 없습니다.`)) return;
       target.disabled = true;
       try {
         const res = await api(`/api/missions/${missionId}/completed-tasks`, { method: 'DELETE' });
@@ -4258,7 +4264,11 @@ function bindEvents() {
 
     if (target.id === 'btn-delete-mission') {
       const missionId = target.dataset.missionId;
-      if (!confirm('이 미션과 관련 회의실 대화를 모두 삭제할까요?')) return;
+      const mObj = state.missions.find((x) => x.id === missionId);
+      const kindLabel = mObj?.mode === 'project' ? '프로젝트' : '업무';
+      const titleLabel = mObj?.title ? `"${mObj.title}"` : `이 ${kindLabel}`;
+      if (!window.confirm(`[${kindLabel}] ${titleLabel}과(와) 연결된 세부 업무·결재·회의실 대화를 모두 삭제할까요?`)) return;
+      if (!window.confirm(`[최종 확인] ${titleLabel}을(를) 정말 삭제할까요?\n삭제하면 되돌릴 수 없습니다.`)) return;
       try {
         const res = await api(`/api/missions/${missionId}`, { method: 'DELETE' });
         state = res.state;
@@ -4267,7 +4277,7 @@ function bindEvents() {
           officeMissionFilter = state.missions[0]?.id || 'all';
         }
         renderAll();
-        toast('미션과 관련 대화를 삭제했습니다.');
+        toast(`${kindLabel}와 관련 대화를 삭제했습니다.`);
       } catch (err) {
         toast(err.message, true);
       }
