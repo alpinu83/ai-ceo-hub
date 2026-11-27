@@ -283,13 +283,120 @@ function formatRelativeTime(iso) {
   return `${Math.floor(hr / 24)}일 전`;
 }
 
-function renderMarkdown(md = '') {
-  // Strip raw HTML tags before parsing with Marked for safety while keeping full GFM tables & checklists
-  const cleaned = String(md).replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  if (window.marked && typeof window.marked.parse === 'function') {
-    return window.marked.parse(cleaned, { gfm: true, breaks: true });
+function tryParseJsonLoose(raw = '') {
+  const txt = String(raw || '').trim();
+  if (!txt || (txt[0] !== '{' && txt[0] !== '[')) return null;
+  try {
+    return JSON.parse(txt);
+  } catch {
+    try {
+      return JSON.parse(txt.replace(/,\s*([}\]])/g, '$1'));
+    } catch {
+      return null;
+    }
   }
-  return `<pre style="white-space:pre-wrap;margin:0">${cleaned}</pre>`;
+}
+
+function renderShortsScriptCardHtml(obj) {
+  const scenes = (Array.isArray(obj.scenes) ? obj.scenes : []).filter((s) => s && String(s.text || '').trim());
+  const sources = (Array.isArray(obj.sources) ? obj.sources : []).map((u) => String(u || '').trim()).filter(Boolean);
+  const hashtags = (Array.isArray(obj.hashtags) ? obj.hashtags : []).map((h) => String(h || '').trim()).filter(Boolean);
+  const safeHref = (u) => (/^https?:\/\//i.test(u) ? u : '');
+  const prettyJson = JSON.stringify(obj, null, 2);
+
+  return `<div class="shorts-script-card">
+    <div class="shorts-script-head">
+      <div class="shorts-script-title">🎬 ${esc(obj.title || '쇼츠 대본')}</div>
+      <span class="shorts-script-count">${scenes.length}장면</span>
+    </div>
+    <ol class="shorts-scene-list">
+      ${scenes
+        .map(
+          (s, i) => `<li class="shorts-scene-item">
+            <span class="shorts-scene-num">${i + 1}</span>
+            <div class="shorts-scene-body">
+              <div class="shorts-scene-text">${esc(s.text)}</div>
+              ${s.keywords ? `<div class="shorts-scene-kw">배경 키워드: ${esc(s.keywords)}</div>` : ''}
+            </div>
+          </li>`
+        )
+        .join('')}
+    </ol>
+    ${
+      sources.length
+        ? `<div class="shorts-meta-block">
+            <div class="shorts-meta-label">출처 기사</div>
+            <ul class="shorts-sources">
+              ${sources
+                .map((u) => {
+                  const href = safeHref(u);
+                  return href
+                    ? `<li><a href="${esc(href)}" target="_blank" rel="noreferrer">${esc(u)}</a></li>`
+                    : `<li>${esc(u)}</li>`;
+                })
+                .join('')}
+            </ul>
+          </div>`
+        : ''
+    }
+    ${
+      hashtags.length
+        ? `<div class="shorts-hashtags">${hashtags.map((h) => `<span class="shorts-hashtag">${esc(h)}</span>`).join('')}</div>`
+        : ''
+    }
+    <details class="shorts-raw-json">
+      <summary>자동 제작용 원본 JSON 보기</summary>
+      <pre><code>${esc(prettyJson)}</code></pre>
+    </details>
+  </div>`;
+}
+
+function renderMarkdown(md = '') {
+  const cards = [];
+  let source = String(md || '');
+
+  const makeCardToken = (obj) => {
+    const idx = cards.length;
+    cards.push(renderShortsScriptCardHtml(obj));
+    return `\n\n@@SHORTS_CARD_${idx}@@\n\n`;
+  };
+
+  // 1) Fenced JSON blocks: render Shorts scripts as readable cards & pretty-print minified single-line JSON
+  source = source.replace(/```(?:json)?\s*\r?\n?([\s\S]*?)```/gi, (match, inner) => {
+    const obj = tryParseJsonLoose(inner);
+    if (obj && typeof obj === 'object' && !Array.isArray(obj) && typeof obj.title === 'string' && Array.isArray(obj.scenes) && obj.scenes.some((s) => s && String(s.text || '').trim())) {
+      return makeCardToken(obj);
+    }
+    if (obj && !String(inner || '').trim().includes('\n') && String(inner || '').length > 100) {
+      return `\`\`\`json\n${JSON.stringify(obj, null, 2)}\n\`\`\``;
+    }
+    return match;
+  });
+
+  // 2) Fallback: standalone bare Shorts script JSON without code fences
+  if (cards.length === 0) {
+    const bareStart = source.lastIndexOf('{"title"');
+    const bareEnd = source.lastIndexOf('}');
+    if (bareStart >= 0 && bareEnd > bareStart) {
+      const candidate = source.slice(bareStart, bareEnd + 1);
+      const obj = tryParseJsonLoose(candidate);
+      if (obj && typeof obj.title === 'string' && Array.isArray(obj.scenes) && obj.scenes.some((s) => s && String(s.text || '').trim())) {
+        source = `${source.slice(0, bareStart)}${makeCardToken(obj)}${source.slice(bareEnd + 1)}`;
+      }
+    }
+  }
+
+  // Strip raw HTML tags before parsing with Marked for safety while keeping full GFM tables & checklists
+  const cleaned = source.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  let html =
+    window.marked && typeof window.marked.parse === 'function'
+      ? window.marked.parse(cleaned, { gfm: true, breaks: true })
+      : `<pre style="white-space:pre-wrap;margin:0">${cleaned}</pre>`;
+
+  if (cards.length > 0) {
+    html = html.replace(/(?:<p>)?@@SHORTS_CARD_(\d+)@@(?:<\/p>)?/g, (_, n) => cards[Number(n)] || '');
+  }
+  return html;
 }
 
 function refreshIcons() {

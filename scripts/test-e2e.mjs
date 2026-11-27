@@ -755,6 +755,56 @@ async function runTests() {
     ).json();
     assert.equal(backSingle.routing.codeWorkflow, 'single', 'codeWorkflow should switch back to single');
 
+    // 13. 쇼츠 JSON 본문 자동 가독화 + 결재 반려·수정 지시 피드백이 외부 봇 수신함(HTTPS/text)과 MCP에 전달되는지 검증
+    const cueReply = await (
+      await fetch(`${BASE}/api/agent-inbox/cue/reply?${tokQ}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: '쇼츠 대본 초안 제출합니다.',
+          deliverable:
+            '채널명: 구국열사\n\n```json\n{"title":"수능 AI 커닝, 10년 제재 확정 아냐","scenes":[{"text":"첫 장면 테스트 문장입니다.","keywords":"seoul classroom"},{"text":"둘째 장면 테스트 문장입니다.","keywords":"korea parliament"}],"sources":["https://example.com/news1"],"hashtags":["#수능","#교육"]}\n```',
+          requestApproval: true,
+          approvalTitle: 'Cue 쇼츠 대본 승인 테스트'
+        })
+      })
+    ).json();
+    assert.equal(cueReply.ok, true, 'Cue reply should succeed');
+    assert.ok(cueReply.approvalId, 'Cue reply with requestApproval should create approval');
+
+    // 13a. formatDeliverableOutput가 단일 라인 JSON을 읽기 좋은 마크다운 본문으로 펼쳐주는지 확인
+    const { formatDeliverableOutput } = await import('../src/hub/deliverables.js');
+    const prettyDoc = formatDeliverableOutput(
+      '채널명: 구국열사\n\n```json\n{"title":"수능 AI 커닝, 10년 제재 확정 아냐","scenes":[{"text":"첫 장면 테스트 문장입니다.","keywords":"seoul classroom"}],"sources":["https://example.com/news1"],"hashtags":["#수능"]}\n```'
+    );
+    assert.ok(prettyDoc.includes('### 🎬 쇼츠 대본: 수능 AI 커닝, 10년 제재 확정 아냐 (1장면)'), 'Shorts JSON should expand into readable heading');
+    assert.ok(prettyDoc.includes('1. 첫 장면 테스트 문장입니다.'), 'Shorts scenes should be listed clearly');
+    assert.ok(prettyDoc.includes('**해시태그**: #수능'), 'Shorts hashtags should be included');
+
+    // 13b. 대표님 반려 사유가 Cue 수신함(JSON + text) 및 회의실 메시지로 전달되는지 확인
+    const rejectReason = '첫 장면 근거 수치를 앞세우고 톤을 더 단호하게 보완해 주세요.';
+    const decideRej = await (
+      await fetch(`${BASE}/api/approvals/${encodeURIComponent(cueReply.approvalId)}/decide`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ decision: 'rejected', ceoNote: rejectReason })
+      })
+    ).json();
+    assert.equal(decideRej.approval?.status, 'rejected', 'Approval rejection should succeed');
+
+    const cueInboxJson = await (await fetch(`${BASE}/api/agent-inbox/cue?${tokQ}`)).json();
+    assert.ok(
+      (cueInboxJson.recentFeedback || []).some((f) => f.approvalId === cueReply.approvalId && f.decision === 'rejected' && f.reason.includes('근거 수치를 앞세우고')),
+      'Cue JSON inbox must include rejection feedback and reason'
+    );
+    assert.ok(
+      (cueInboxJson.recentMeetingRoom || []).some((m) => String(m.text || '').includes('근거 수치를 앞세우고')),
+      'Cue recentMeetingRoom must include CEO rejection feedback message'
+    );
+
+    const cueInboxText = await (await fetch(`${BASE}/api/agent-inbox/cue?${tokQ}&format=text`)).text();
+    assert.ok(cueInboxText.includes('최근 CEO 결재 피드백') && cueInboxText.includes('근거 수치를 앞세우고'), 'Cue text inbox must include rejection feedback');
+
     // Clean reset after tests
     await fetch(`${BASE}/api/reset`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: 'RESET-ALL-DATA' }) });
     console.log('✅ All AI CEO Hub E2E tests (REST + Continuous Project Loop + Team Lead Chat + Official MCP SDK + Async Pickle HTTPS Inbox + Heartbeat + Cascade Delete + Web Push + Telegram) passed!');
