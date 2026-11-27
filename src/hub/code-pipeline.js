@@ -22,6 +22,60 @@ export const CODE_STATUS_PENDING = new Set(['waiting_team', 'preparing']);
 
 export const CODE_STATUS_DONE = new Set(['merging', 'merged', 'deployed', 'deploy_failed', 'deploy_unknown']);
 
+/** IT 유지보수팀(무료 API 코딩 팀)이 남아 있는지. 없으면 코드 작업은 전부 AGY 수정 → Aside 검수 외주 */
+export function itTeamAvailable(db) {
+  return (db.agents || []).some((a) => a.team === 'it' && a.active && !a.retired);
+}
+
+/** 코드 작업을 AGY(1차 수정·PR) → Aside(검수·보완) 외주로 넘김 */
+export function outsourceCodeToAgy(db, { mission, title, goal, approvalId = '', taskId = '', reason = '' }) {
+  const repoCfg = mission ? getMissionRepoCfg(db.settings, mission) : null;
+  const task = taskId ? db.tasks.find((t) => t.id === taskId) : null;
+  const { request, created } = createOutsourcingRequest(db, {
+    kind: 'code',
+    worker: 'antigravity',
+    pinnedWorker: 'antigravity',
+    codeWorkflow: 'agy_then_aside',
+    title: String(title || '코드 수정').slice(0, 120),
+    goal: String(goal || title || '').slice(0, 6000),
+    missionId: mission?.id || '',
+    approvalId,
+    taskId,
+    repo: repoCfg?.repo || mission?.githubRepo || getGithubRepoConfig(db.settings).repo || '',
+    branch: repoCfg?.branch || mission?.githubBranch || 'main',
+    siteUrl: mission?.siteUrl || '',
+    reason: reason || 'IT 유지보수팀 폐지: 코드 수정은 AGY가 하고 Aside가 검수·보완',
+    context: mission ? buildOutsourceContext(db, mission, task) : '',
+    createdBy: 'system'
+  });
+  if (created) {
+    notifyOutsourceCreated(db, request);
+    appendLog(db, '총괄 팀장', `코드 작업 "${request.title}"을 AGY 수정 → Aside 검수로 넘겼습니다 (${request.id}).`, 'info');
+  }
+  return request;
+}
+
+/** 코드 반영을 기다리는 결재 카드를 AGY 외주로 (PR이 오면 같은 결재 카드에 붙음) */
+function routeWaitingCodeToAgy(missionId) {
+  const db = loadDb();
+  const mission = db.missions.find((m) => m.id === missionId);
+  let n = 0;
+  for (const a of db.approvals) {
+    if (a.missionId !== missionId || a.prNumber || a.agyRequestId || !['pending', 'approved'].includes(a.status) || !CODE_STATUS_PENDING.has(a.codeChange?.status)) continue;
+    const req = outsourceCodeToAgy(db, {
+      mission,
+      title: String(a.title || '').replace(/^\[[^\]]*\]\s*/, ''),
+      goal: `결재 안건의 코드 변경을 저장소에 반영해 주세요.\n\n${String(a.summary || '').slice(0, 2500)}\n\n${String(a.proposedAction || '').slice(0, 1200)}${a.ceoNote ? `\n\n[대표님 메모] ${a.ceoNote}` : ''}`,
+      approvalId: a.status === 'pending' ? a.id : ''
+    });
+    a.agyRequestId = req.id;
+    setCodeStatus(a, a.status === 'pending' ? 'waiting_team' : 'none', { note: `AGY 수정 → Aside 검수 외주로 진행 (${req.id})` });
+    n += 1;
+  }
+  if (n) saveDb(db);
+  return n;
+}
+
 export const codeBundleLocks = new Map();
 
 export const codeBundleTimers = new Map();
@@ -238,6 +292,7 @@ export function scheduleCodeBundle(missionId, delayMs = 4000) {
 }
 
 export function runCodeBundle(missionId, opts = {}) {
+  if (!itTeamAvailable(loadDb())) return Promise.resolve({ outsourced: routeWaitingCodeToAgy(missionId) });
   if (codeBundleLocks.has(missionId)) return codeBundleLocks.get(missionId);
   const job = runCodeBundleInner(missionId, opts).finally(() => codeBundleLocks.delete(missionId));
   codeBundleLocks.set(missionId, job);
@@ -259,6 +314,14 @@ export function maybeScheduleCodeBundle(db, mission, task) {
     if (!mission || !task || task.status !== 'completed') return;
     if (!getMissionRepoCfg(db.settings, mission)) return;
     const agent = db.agents.find((a) => a.id === task.assigneeId);
+    if (!itTeamAvailable(db)) {
+      // IT팀 없음: 명시적인 코드 업무(it_ops)만 AGY로. 일반 결과물의 후속 코드는 팀장이 다음 계획에서 코드 작업으로 배정
+      if (task.domain === 'it_ops' && !task.agyRequestId) {
+        const req = outsourceCodeToAgy(db, { mission, title: `[코드 반영] ${task.title}`, goal: `아래 팀 결과물에 담긴 코드·사이트 변경을 저장소에 반영해 주세요.\n\n${String(task.output || '').slice(0, 4000)}`, taskId: task.id });
+        task.agyRequestId = req.id;
+      }
+      return;
+    }
     if (isCodeTask(task, agent)) scheduleCodeBundle(mission.id, 8000);
   } catch {
     // non-fatal
@@ -566,6 +629,17 @@ export async function applyApprovedCodeChange(aprId) {
   if (!apr || apr.status !== 'approved') return null;
   if (CODE_STATUS_DONE.has(apr.codeChange?.status)) return null;
 
+  if (!apr.prNumber && !itTeamAvailable(db)) {
+    const n = routeWaitingCodeToAgy(apr.missionId);
+    if (!n && !apr.agyRequestId) {
+      const mission = db.missions.find((m) => m.id === apr.missionId);
+      const req = outsourceCodeToAgy(db, { mission, title: String(apr.title || '').replace(/^\[[^\]]*\]\s*/, ''), goal: `승인된 결재 안건의 코드 변경을 저장소에 반영해 주세요.\n\n${String(apr.summary || '').slice(0, 2500)}` });
+      apr.agyRequestId = req.id;
+      setCodeStatus(apr, 'none', { note: `AGY 수정 → Aside 검수 외주로 진행 (${req.id})` });
+      saveDb(db);
+    }
+    return { ok: true, outsourced: true };
+  }
   if (!apr.prNumber) {
     setCodeStatus(apr, 'preparing');
     appendLog(db, 'IT 유지보수팀', `"${apr.title}" 승인 → 실제 코드 변경안을 작성해 바로 반영합니다.`, 'info');
@@ -898,6 +972,12 @@ export async function triggerItPrForMission(missionId, customInstruction = '') {
   const targetRepo = mission.githubRepo || getGithubRepoConfig(db.settings).repo;
   const targetBranch = mission.githubBranch || 'main';
   const effectiveInstruction = String(customInstruction || '').trim() || mission.directive || mission.title;
+  if (!itTeamAvailable(db)) {
+    const req = outsourceCodeToAgy(db, { mission, title: `[코드 수정] ${String(effectiveInstruction).replace(/\s+/g, ' ').slice(0, 60)}`, goal: effectiveInstruction });
+    saveDb(db);
+    await flushCloudBackup(db);
+    return { ok: true, outsourced: req.id, db };
+  }
 
   appendLog(db, 'IT 유지보수팀', `"${mission.title}" → [${targetRepo}] 실제 소스코드 분석 및 PR 작성 시작…`, 'info');
   saveDb(db);
