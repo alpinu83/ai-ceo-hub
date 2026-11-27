@@ -104,6 +104,7 @@ async function runTests() {
       'submit_outsourcing_result',
       'request_ceo_action',
       'pass_outsourcing_request',
+      'request_aside_review',
       'list_lead_jobs',
       'claim_lead_job',
       'submit_lead_job'
@@ -1146,7 +1147,49 @@ async function runTests() {
         'Vooy text inbox must clearly mark revision needed instead of review waiting'
       );
 
-      // 18. 총괄 팀장 자율 시스템·운영 회고(system_audit) → 교훈 자동 학습 → 개선 제안 결재 카드 → 1클릭 승인 시 개발팀(AGY→Aside) 자동 배정 검증
+      // 18. MCP request_aside_review: AGY가 열려 있는 PR을 Aside 검수 큐(aside_review)로 직접 넘기고 중복 방지·잘못된 URL 차단 검증
+      const mcpReviewCall = async (args) =>
+        (
+          await fetch(`${BASE}/api/mcp?${tokQ}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 88, method: 'tools/call', params: { name: 'request_aside_review', arguments: args } })
+          })
+        ).json();
+
+      const badReviewRes = await mcpReviewCall({ pr_url: 'https://example.com/not-a-pr', title: '잘못된 PR', summary: '테스트' });
+      assert.equal(badReviewRes.result?.isError, true, 'request_aside_review must reject non-GitHub PR URLs');
+
+      const goodReviewRes = await mcpReviewCall({
+        pr_url: 'https://github.com/alpinu83/ai-ceo-hub/pull/888',
+        title: '테스트 Aside 검수 PR',
+        summary: 'npm test 통과, 엣지케이스 확인 부탁드립니다.',
+        focus_points: ['순환 참조 여부 확인', '하위 호환성 확인']
+      });
+      assert.ok(!goodReviewRes.result?.isError, 'request_aside_review should succeed for valid PR URL');
+      const goodPayload = JSON.parse(goodReviewRes.result.content[0].text);
+      assert.equal(goodPayload.ok, true);
+      assert.equal(goodPayload.created, true);
+      assert.equal(goodPayload.review_stage, 'aside_review');
+      assert.ok(/^OUT-/.test(goodPayload.request_id || ''), 'request_aside_review must return OUT- request_id');
+
+      const asideQueueRes = await (await fetch(`${BASE}/api/outsourcing?${tokQ}&worker=aside`)).json();
+      const queuedReview = (asideQueueRes.requests || []).find((r) => r.id === goodPayload.request_id);
+      assert.ok(queuedReview, 'Aside polling must immediately see request_aside_review item');
+      assert.equal(queuedReview.reviewStage, 'aside_review');
+      assert.equal(queuedReview.sourcePrUrl, 'https://github.com/alpinu83/ai-ceo-hub/pull/888');
+
+      // 같은 PR 중복 요청 시 새로 생성하지 않고 기존 요청 반환
+      const dupReviewRes = await mcpReviewCall({
+        pr_url: 'https://github.com/alpinu83/ai-ceo-hub/pull/888',
+        title: '테스트 Aside 검수 PR',
+        summary: '중복 호출 테스트'
+      });
+      const dupPayload = JSON.parse(dupReviewRes.result.content[0].text);
+      assert.equal(dupPayload.alreadyQueued, true, 'Duplicate request_aside_review for same PR must deduplicate');
+      assert.equal(dupPayload.request_id, goodPayload.request_id, 'Duplicate call must return existing request_id');
+
+      // 19. 총괄 팀장 자율 시스템·운영 회고(system_audit) → 교훈 자동 학습 → 개선 제안 결재 카드 → 1클릭 승인 시 개발팀(AGY→Aside) 자동 배정 검증
       await fetch(`${BASE}/api/lead-jobs?worker=agy_lead&${tokQ}`);
       const auditTrigger = await (
         await fetch(`${BASE}/api/ops/system-audit`, {
@@ -1237,7 +1280,7 @@ async function runTests() {
         'System audit lessonsToRemember must be saved into company memory'
       );
 
-      // 18b. 코드 개선 제안 1클릭 승인 → 사내 개발팀(AGY 구현 → Aside 검수) 자동 배정 확인
+      // 19b. 코드 개선 제안 1클릭 승인 → 사내 개발팀(AGY 구현 → Aside 검수) 자동 배정 확인
       const approveCodeProp = await (
         await fetch(`${BASE}/api/approvals/${encodeURIComponent(codePropApr.id)}/decide`, {
           method: 'POST',
@@ -1253,7 +1296,7 @@ async function runTests() {
       assert.equal(dispatchedReq?.codeWorkflow, 'agy_then_aside', 'Dispatched improvement request must use 2-stage agy_then_aside review');
       assert.ok((dispatchedReq?.goal || '').includes('쿨다운 12시간'), 'CEO note must be included in dispatched dev goal');
 
-      // 18c. 운영 규칙 개선 제안 1클릭 승인 → 회사 고정 지침(pinned directive) 반영 확인
+      // 19c. 운영 규칙 개선 제안 1클릭 승인 → 회사 고정 지침(pinned directive) 반영 확인
       const approveRuleProp = await (
         await fetch(`${BASE}/api/approvals/${encodeURIComponent(rulePropApr.id)}/decide`, {
           method: 'POST',
