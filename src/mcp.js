@@ -2,14 +2,15 @@ import { timingSafeEqual } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
-import { loadDb, saveDb, appendLog, recordAgentHeartbeat, uid } from './store.js';
+import { loadDb, saveDb, flushCloudBackup, appendLog, recordAgentHeartbeat, uid } from './store.js';
 import { notifyWebhook } from './orchestrator.js';
-import { sendTelegramApprovalCard } from './telegram.js';
+import { sendTelegramApprovalCard, sendTelegramReport } from './telegram.js';
 import { sendWebPushNotification } from './push.js';
 import { buildCompanyContext } from './lead-engine.js';
 import { buildAgentRecentFeedback, enrichApprovalDeliverables, taskFeedbackSummary } from './hub/deliverables.js';
 import { LEAD_WORKERS, buildLeadPacket, claimLeadJob, leadDeskStatus, listLeadJobs, submitLeadJob, summarizeLeadJob, touchLeadWorker } from './lead-desk.js';
-import { listRequests, summarizeRequest, claimRequest, findRequest, buildPacket, submitResult, requestCeoAction, resolveTarget, describeRouting, passRequest } from './outsourcing.js';
+import { createOutsourcingRequest, listRequests, summarizeRequest, claimRequest, findRequest, buildPacket, submitResult, requestCeoAction, resolveTarget, describeRouting, passRequest } from './outsourcing.js';
+import { getGithubRepoConfig } from './it-devops.js';
 
 export const MCP_TOOL_CATALOG = [
   {
@@ -34,6 +35,7 @@ export const MCP_TOOL_CATALOG = [
   { name: 'submit_outsourcing_result', description: '외주 결과 문서·PR 제출' },
   { name: 'request_ceo_action', description: '로그인 등 대표님 개입이 필요할 때 멈추고 알림' },
   { name: 'pass_outsourcing_request', description: '내가 못 하는 외주를 다른 작업자에게 넘기기' },
+  { name: 'request_aside_review', description: '대표님 지시 시 열려 있는 GitHub PR을 사내 개발팀 Aside 검수 큐로 바로 넘기기' },
   { name: 'list_lead_jobs', description: '팀장 업무함: 대기 중인 팀장 판단(검수·작전 계획) 목록' },
   { name: 'claim_lead_job', description: '팀장 판단 요청을 잡고 판단 자료·답안 형식 받기' },
   { name: 'submit_lead_job', description: '팀장 판단 결과(JSON) 제출' }
@@ -498,6 +500,136 @@ export function createCeoMcpServer() {
       } catch (err) {
         return { isError: true, content: [{ type: 'text', text: err.message }] };
       }
+    }
+  );
+
+  server.tool(
+    'request_aside_review',
+    '대표님이 지시한 열려 있는 GitHub PR을 사내 개발팀 Aside 검수 큐(aside_review)로 바로 넘깁니다. Aside가 검수 통과시키면 대표님 결재함으로 올라가고, 보완이 필요하면 AGY로 자동 반려됩니다.',
+    {
+      pr_url: z.string().describe('검수할 열려 있는 GitHub PR 주소 (예: https://github.com/alpinu83/ai-ceo-hub/pull/80)'),
+      title: z.string().describe('PR 작업 제목'),
+      summary: z.string().describe('변경 핵심 요약 및 테스트/CI 결과'),
+      focus_points: z.array(z.string()).optional().describe('Aside에게 중점 검수를 요청할 체크포인트 목록')
+    },
+    async ({ pr_url, title, summary, focus_points = [] }) => {
+      const cleanUrl = String(pr_url || '').trim();
+      const match = cleanUrl.match(/^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)(?:\/.*)?$/i);
+      if (!match) {
+        return { isError: true, content: [{ type: 'text', text: `올바른 GitHub PR 주소가 아닙니다: ${cleanUrl}` }] };
+      }
+      const repo = match[1];
+      const prNum = Number(match[2]);
+      const canonicalPrUrl = `https://github.com/${repo}/pull/${prNum}`;
+      const db = loadDb();
+      const cfg = getGithubRepoConfig(db.settings, { repo });
+      if (Array.isArray(cfg.allowedRepos) && cfg.allowedRepos.length > 0 && !cfg.allowedRepos.includes(repo)) {
+        return { isError: true, content: [{ type: 'text', text: `허용 목록에 없는 저장소입니다: ${repo}` }] };
+      }
+
+      const existing = (db.outsourcing || []).find(
+        (r) =>
+          r.reviewStage === 'aside_review' &&
+          ['open', 'claimed'].includes(r.status) &&
+          String(r.sourcePrUrl || '').trim() === canonicalPrUrl
+      );
+      if (existing) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(
+                {
+                  ok: true,
+                  created: false,
+                  alreadyQueued: true,
+                  request_id: existing.id,
+                  pr_url: canonicalPrUrl,
+                  target: 'aside',
+                  status: existing.status,
+                  note: `이미 Aside 검수 큐에 등록되어 있습니다 (${existing.id}).`
+                },
+                null,
+                2
+              )
+            }
+          ]
+        };
+      }
+
+      const cleanTitle = String(title || `PR #${prNum} 검수 요청`).trim().slice(0, 100);
+      const cleanSummary = String(summary || '').trim().slice(0, 2500);
+      const points = (Array.isArray(focus_points) ? focus_points : [])
+        .map((x) => String(x || '').trim().slice(0, 240))
+        .filter(Boolean)
+        .slice(0, 8);
+      const mission =
+        (db.missions || []).find((m) => String(m.githubRepo || '').toLowerCase() === repo.toLowerCase()) ||
+        (db.missions || []).find((m) => m.mode === 'project' && !m.isRoutineHub) ||
+        null;
+
+      const reviewGoal = [
+        `Antigravity가 작성한 PR #${prNum}을 검수하고, 문제가 없으면 승인(제출)하거나 보완 사항을 지적해 주세요.`,
+        '',
+        `- 검수 대상 PR: ${canonicalPrUrl}`,
+        `- 저장소: ${repo}`,
+        '',
+        '### 검수·보완 체크리스트',
+        '1. `gh pr diff` 및 변경 파일·CI 결과를 확인하고 기존 기능 회귀나 누락이 없는지 확인',
+        '2. 기존 API 스키마·워처·하위 호환성·보안(허용 저장소·인증·보호 파일)을 깨뜨리지 않았는지 확인',
+        '3. 문제가 없으면 같은 PR 주소로 `submit` (대표님 결재 카드 생성). 작은 보완은 같은 PR 브랜치에 커밋 후 `submit`',
+        '4. 큰 수정이 필요하면 `/pass` (worker: "aside", to: "antigravity", reason: "구체적 수정 지시")로 AGY에게 반려',
+        ...(points.length ? ['', '### AGY 중점 확인 요청', ...points.map((pt, idx) => `${idx + 1}. ${pt}`)] : [])
+      ].join('\n');
+
+      const made = createOutsourcingRequest(db, {
+        kind: 'code',
+        worker: 'aside',
+        pinnedWorker: 'aside',
+        reviewStage: 'aside_review',
+        reviewRound: 1,
+        sourcePrUrl: canonicalPrUrl,
+        missionId: mission?.id || '',
+        repo,
+        branch: 'main',
+        title: `[검수·보완] ${cleanTitle}`.slice(0, 120),
+        reason: `대표님 지시 PR 검수 요청: ${canonicalPrUrl} → Aside 검수 후 대표님 결재 상신`,
+        goal: reviewGoal,
+        deliverable: `PR(${canonicalPrUrl}) 검수 결과 및 보완 내역 요약 + 최종 PR 주소 (수정 없으면 동일 PR 주소 제출, 수정 필요 시 /pass로 AGY 반려)`,
+        context: `### AGY 변경 요약 및 검증 결과\n${cleanSummary || '(요약 없음)'}`,
+        createdBy: 'antigravity'
+      });
+      const req = made.request;
+      appendLog(db, '개발팀 (Aside 검수 요청)', `PR #${prNum} (${repo}) → Aside 검수 큐 등록 (${req.id}): "${cleanTitle}"`, 'info');
+      saveDb(db);
+      await flushCloudBackup(db);
+      sendTelegramReport(
+        db.settings,
+        `Aside 코드 검수 요청 ${req.id}`,
+        `"${cleanTitle}"\nPR: ${canonicalPrUrl}\n→ Aside 검수 큐에 자동 등록했습니다. 검수가 끝나면 결재함으로 올라옵니다.`,
+        `asidereview:${req.id}`
+      ).catch(() => {});
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              {
+                ok: true,
+                created: made.created,
+                request_id: req.id,
+                pr_url: canonicalPrUrl,
+                target: 'aside',
+                review_stage: 'aside_review',
+                note: `Aside 검수 큐에 등록했습니다 (${req.id}). Aside 워처가 자동으로 가져가 검수한 뒤 통과 시 결재함에 올리고, 수정 필요 시 AGY로 반려합니다.`
+              },
+              null,
+              2
+            )
+          }
+        ]
+      };
     }
   );
 
