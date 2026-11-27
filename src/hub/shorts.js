@@ -5,6 +5,8 @@ import { sendTelegramText } from '../telegram.js';
 import { buildDispatchPrompt } from '../orchestrator.js';
 import { getGithubRepoConfig } from '../it-devops.js';
 import { autoStartLiveMissionTasks, leadSay } from './missions.js';
+import { botConnected, isAgentExhausted } from '../lead-engine.js';
+import { DEV_TEAM, dispatchDevTeamTask } from './dev-policy.js';
 
 export const SHORTS_FACTORY_REPO = 'alpinu83/shorts-factory';
 const MAX_CANDIDATES = 60;
@@ -140,13 +142,19 @@ export async function notifyCandidates(db, cands = []) {
   }
 }
 
+/** 대본 담당: 접속 중인 봇(Cue·피클·Muse) 중 할 일이 적은 쪽 → 한도 남은 API 팀원 → 개발팀 Aside */
 function pickWriter(db) {
+  const open = (id) => (db.tasks || []).filter((t) => t.assigneeId === id && !['completed', 'rejected'].includes(t.status)).length;
+  const bots = ['agent_cue', 'agent_pickle', 'agent_muse'].filter((id) => botConnected(db, id, 6)).sort((a, b) => open(a) - open(b));
+  if (bots.length) return db.agents.find((a) => a.id === bots[0]);
   const prefer = ['agent_gemma', 'agent_groq', 'agent_deepseek', 'agent_qwen'];
   for (const id of prefer) {
     const a = db.agents.find((x) => x.id === id && x.active);
-    if (a) return a;
+    if (a && !isAgentExhausted(a, db.settings)) return a;
   }
-  return db.agents.find((a) => a.active && ['groq', 'openrouter', 'gemini'].includes(a.provider) && a.tier !== 'lead') || null;
+  const api = db.agents.find((a) => a.active && ['groq', 'openrouter', 'gemini'].includes(a.provider) && !isAgentExhausted(a, db.settings));
+  if (api) return api;
+  return db.agents.find((a) => a.id === 'agent_aside' && a.active) || null;
 }
 
 export const SCRIPT_FORMAT = [
@@ -184,7 +192,7 @@ export function pickCandidate(db, candId) {
       SCRIPT_FORMAT
     ].join('\n'),
     assigneeId: writer.id,
-    status: 'queued',
+    status: writer.connectionMode === 'api' ? 'queued' : 'awaiting_bridge',
     requiresApproval: true,
     estimatedCostKRW: 0,
     acceptance: [
@@ -198,6 +206,7 @@ export function pickCandidate(db, candId) {
   };
   task.dispatchPrompt = buildDispatchPrompt(writer, task, mission);
   db.tasks.unshift(task);
+  if (DEV_TEAM[writer.id]) dispatchDevTeamTask(db, task);
   cand.status = 'picked';
   cand.taskId = task.id;
   cand.pickedAt = now;
