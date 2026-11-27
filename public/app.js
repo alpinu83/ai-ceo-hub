@@ -534,7 +534,9 @@ function renderAll() {
 
 function renderChrome() {
   const s = state.settings;
-  const activeAgents = state.agents.filter((a) => a.active);
+  const leadDeskOn = s?.leadDesk?.enabled !== false;
+  const activeWorkers = state.agents.filter((a) => a.active && (!leadDeskOn || a.tier !== 'lead'));
+  const activeCount = leadDeskOn ? activeWorkers.length + 1 : activeWorkers.length;
   const pendingCount = state.approvals.filter((a) => a.status === 'pending').length;
   const totalTasks = state.tasks.length;
   const doneTasks = state.tasks.filter((t) => t.status === 'completed').length;
@@ -557,7 +559,7 @@ function renderChrome() {
   // Executive 3-Cell KPI Strip (대표님 To Do · Missions · Active AI) — 결재 대기는 To Do List에 포함
   document.getElementById('kpi-approvals-val').textContent = `${buildCeoInboxClient().length}건`;
   document.getElementById('kpi-agents-val').textContent = `${state.missions.length}건 · ${taskPct}%`;
-  document.getElementById('kpi-budget-val').textContent = `${activeAgents.length}명`;
+  document.getElementById('kpi-budget-val').textContent = `${activeCount}명`;
 
   const meta = VIEW_META[currentView] || VIEW_META.command;
   document.getElementById('page-title').textContent = meta.title;
@@ -1016,9 +1018,11 @@ function renderOfficeView() {
       ? allMessages
       : allMessages.filter((m) => m.missionId === officeMissionFilter);
 
+  const leadDeskOn = state.settings?.leadDesk?.enabled !== false;
+  const workers = state.agents.filter((a) => a.tier !== 'lead' && a.active);
   const partCount = document.getElementById('office-participant-count');
   if (partCount) {
-    partCount.textContent = String(state.agents.filter((a) => a.active).length);
+    partCount.textContent = String(leadDeskOn ? workers.length + 1 : state.agents.filter((a) => a.active).length);
   }
 
   const renderDesk = (ag) => {
@@ -1050,10 +1054,26 @@ function renderOfficeView() {
     </button>`;
   };
 
-  // 휴직 팀원은 회의실에 표시하지 않음
-  const leads = state.agents.filter((a) => a.tier === 'lead' && a.active);
-  const workers = state.agents.filter((a) => a.tier !== 'lead' && a.active);
-  leadWrap.innerHTML = leads.map(renderDesk).join('');
+  if (leadDeskOn) {
+    const agyAt = state?.agentConnections?.['lead:agy_lead']?.lastSeenAt;
+    const agyOn = agyAt && Date.now() - Date.parse(agyAt) < 3 * 60 * 1000;
+    const isLeadSpeaking = activeSpeakerId === 'agent_gemini_neon';
+    leadWrap.innerHTML = `<button type="button" class="desk-card${isLeadSpeaking ? ' speaking' : ''}" data-mention-desk="총괄 팀장">
+      <div class="desk-head">
+        <div class="desk-person">
+          <span class="agent-avatar sm" style="background:${agyOn ? '#0E6245' : '#2563EB'}">${agyOn ? 'AG' : '팀장'}</span>
+          <div style="min-width:0;">
+            <div class="desk-name">${agyOn ? '총괄 팀장 · AGY (Hydrogen)' : '총괄 팀장 · Gemini 앱'}</div>
+          </div>
+        </div>
+        <span class="desk-status">${isLeadSpeaking ? '발언 중' : agyOn ? '주간 근무' : '야간 당직'}</span>
+      </div>
+    </button>`;
+  } else {
+    // 팀장 업무함이 꺼져 있을 때만 기존 API 팀장 카드 표시
+    const leads = state.agents.filter((a) => a.tier === 'lead' && a.active);
+    leadWrap.innerHTML = leads.map(renderDesk).join('');
+  }
   workerWrap.innerHTML = workers.map(renderDesk).join('');
 
   // Render filtered channel feed
@@ -2207,31 +2227,36 @@ function renderRosterView() {
   const all = state.agents.filter((a) => !a.retired);
   const onLeave = all.filter((a) => !a.active);
   const working = all.filter((a) => a.active);
+  const leadDeskOn = state.settings?.leadDesk?.enabled !== false;
   const apiLead = working.find((a) => a.tier === 'lead');
   const members = working.filter((a) => a.tier !== 'lead');
   const modeDot = (m) => (m === 'api' || m === 'litellm' ? 'dot-green' : m === 'mcp' ? 'dot-blue' : 'dot-amber');
 
-  // 팀장 = 팀장 업무함 (주간 AGY 팀장 감시기 · 야간 Gemini 앱 당직 · 비상 Gemini API)
+  // 팀장 = 팀장 업무함 (주간 AGY 팀장 감시기 · 야간 Gemini 앱 당직 · 비상 Gemini API 대기)
   const seen = (k) => state?.agentConnections?.[k]?.lastSeenAt || '';
   const agyAt = seen('lead:agy_lead');
   const gemAt = seen('lead:gemini_app');
   const agyOn = agyAt && Date.now() - Date.parse(agyAt) < 3 * 60 * 1000;
   const dutyName = agyOn ? 'AGY (Hydrogen)' : 'Gemini 앱 당직';
   const ago = (iso) => (iso ? formatTime(iso) : '기록 없음');
+  const isStandbyLead = (ag) => leadDeskOn && ag.tier === 'lead' && ag.active;
 
-  const renderNodePill = (ag) => `<button type="button" class="org-node-pill ${ag.active ? '' : 'inactive'}" data-focus-agent="${esc(ag.id)}">
+  const renderNodePill = (ag) => {
+    const standby = isStandbyLead(ag);
+    return `<button type="button" class="org-node-pill ${ag.active && !standby ? '' : 'inactive'}" data-focus-agent="${esc(ag.id)}">
     <span class="agent-avatar sm" style="background:${esc(ag.accent)}">${esc(ag.shortCode)}</span>
     <div style="text-align:left;">
       <div class="org-node-name">${esc(ag.name)}</div>
-      <div class="org-node-role">${ag.tier === 'lead' ? '비상 대체 팀장 · 실무' : `${esc(COST_LABELS[ag.costTier])} · ${esc(MODE_LABELS[ag.connectionMode])}`}</div>
+      <div class="org-node-role">${standby ? '비상 대기 · 평소 미투입' : ag.tier === 'lead' ? '총괄 팀장 · API' : `${esc(COST_LABELS[ag.costTier])} · ${esc(MODE_LABELS[ag.connectionMode])}`}</div>
     </div>
-    <i class="dot ${ag.active ? modeDot(ag.connectionMode) : 'dot-amber'}"></i>
+    <i class="dot ${!ag.active || standby ? 'dot-amber' : modeDot(ag.connectionMode)}"></i>
   </button>`;
+  };
   const leadPill = `<div class="org-node-pill">
-    <span class="agent-avatar sm" style="background:#0E6245">팀장</span>
+    <span class="agent-avatar sm" style="background:${agyOn ? '#0E6245' : '#2563EB'}">${agyOn ? 'AG' : '팀장'}</span>
     <div style="text-align:left;">
       <div class="org-node-name">총괄 팀장 · ${esc(dutyName)}</div>
-      <div class="org-node-role">주간 AGY · 야간 Gemini 앱 · 비상 Gemini API</div>
+      <div class="org-node-role">주간 AGY (Hydrogen) · 야간 Gemini 앱 · 비상 Gemini API 대기</div>
     </div>
     <i class="dot ${agyOn ? 'dot-green' : 'dot-blue'}"></i>
   </div>`;
@@ -2248,11 +2273,19 @@ function renderRosterView() {
       </div>
     </div>
     <div class="org-connector"></div>
-    <div class="org-level">${leadPill}</div>
+    <div class="org-level">${leadDeskOn ? leadPill : apiLead ? renderNodePill(apiLead) : leadPill}</div>
     <div class="org-connector"></div>
     <div class="org-level">
-      ${[apiLead, ...members].filter(Boolean).map(renderNodePill).join('')}
+      ${members.map(renderNodePill).join('')}
     </div>
+    ${
+      leadDeskOn && apiLead
+        ? `<div class="org-level" style="margin-top:14px;opacity:.85;">
+             <span class="badge badge-amber" style="align-self:center;">비상 대기</span>
+             ${renderNodePill(apiLead)}
+           </div>`
+        : ''
+    }
     ${
       onLeave.length
         ? `<div class="org-level" style="margin-top:14px;opacity:.75;">
@@ -2264,18 +2297,27 @@ function renderRosterView() {
   `;
 
   // Tier Cards
-  const renderAgentCard = (ag) => `
-    <article class="agent-card ${ag.active ? '' : 'inactive'} ${highlightedAgentId === ag.id ? 'highlight' : ''}" id="agent-card-${esc(ag.id)}">
+  const renderAgentCard = (ag) => {
+    const standby = isStandbyLead(ag);
+    const badgeCls = standby ? 'badge-amber' : ag.costTier === 'free' ? 'badge-green' : ag.costTier === 'freemium' ? 'badge-blue' : 'badge-amber';
+    const badgeTxt = standby ? '비상 대기' : COST_LABELS[ag.costTier];
+    const roleTxt = standby
+      ? '비상 대기 모드 · 평소 실무 미배정 (AGY·Gemini 앱이 모두 처리 못 하거나 회의실 즉답 시에만 자동 개입)'
+      : ag.tier === 'lead'
+        ? '비상 대체 팀장 (휴직 중 — 완전 미사용)'
+        : ag.roleTitle;
+    return `
+    <article class="agent-card ${ag.active && !standby ? '' : 'inactive'} ${highlightedAgentId === ag.id ? 'highlight' : ''}" id="agent-card-${esc(ag.id)}">
       <div class="agent-card-head">
         <div class="agent-identity">
           <span class="agent-avatar lg" style="background:${esc(ag.accent)}">${esc(ag.shortCode)}</span>
           <div>
             <div class="agent-name">${esc(ag.name)}</div>
-            <div class="agent-role">${ag.tier === 'lead' ? '비상 대체 팀장 · 실무 (AGY·Gemini 앱이 모두 처리 못 할 때, 회의실 즉답·새 업무 분해)' : esc(ag.roleTitle)}</div>
+            <div class="agent-role">${esc(roleTxt)}</div>
           </div>
         </div>
-        <span class="badge ${ag.costTier === 'free' ? 'badge-green' : ag.costTier === 'freemium' ? 'badge-blue' : 'badge-amber'}">
-          ${esc(COST_LABELS[ag.costTier])}
+        <span class="badge ${badgeCls}">
+          ${esc(badgeTxt)}
         </span>
       </div>
 
@@ -2288,28 +2330,29 @@ function renderRosterView() {
           <option value="bridge" ${ag.connectionMode === 'bridge' ? 'selected' : ''}>앱·구독</option>
         </select>
         <button type="button" class="btn btn-ghost btn-sm" data-toggle-agent="${esc(ag.id)}">
-          ${ag.active ? '휴직' : '복직'}
+          ${standby ? '완전 휴직' : ag.active ? '휴직' : '복직'}
         </button>
       </div>
     </article>
   `;
+  };
   const leadDeskCard = `
     <article class="agent-card">
       <div class="agent-card-head">
         <div class="agent-identity">
-          <span class="agent-avatar lg" style="background:#0E6245">팀장</span>
+          <span class="agent-avatar lg" style="background:${agyOn ? '#0E6245' : '#2563EB'}">${agyOn ? 'AG' : '팀장'}</span>
           <div>
             <div class="agent-name">총괄 팀장 (팀장 업무함)</div>
             <div class="agent-role">지금 근무: <strong>${esc(dutyName)}</strong></div>
           </div>
         </div>
-        <span class="badge ${agyOn ? 'badge-green' : 'badge-blue'}">${agyOn ? '주간' : '당직'}</span>
+        <span class="badge ${agyOn ? 'badge-green' : 'badge-blue'}">${agyOn ? '주간 근무' : '야간 당직'}</span>
       </div>
       <p class="agent-strengths">검수 · 작전 계획 · 마일스톤 판단을 지금 깨어 있는 팀장이 맡습니다.</p>
       <div class="routine-sub" style="line-height:1.7;">
         1. 주간: AGY 팀장 감시기 (Hydrogen) · 마지막 접속 ${esc(ago(agyAt))}<br />
         2. 야간·부재: Gemini 앱 예약 작업 · 마지막 실행 ${esc(ago(gemAt))}<br />
-        3. 비상: Gemini 4 Hydrogen API (위 둘이 오래 처리 못 할 때 자동)
+        3. 비상 대기: Gemini 4 Hydrogen API (${apiLead ? '대기 중 · 위 둘이 처리 못 할 때만 자동 개입' : '완전 휴직 중'})
       </div>
     </article>`;
 

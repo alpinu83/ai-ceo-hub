@@ -179,6 +179,31 @@ async function runTests() {
     assert.equal(leadDesk.status.onDuty, 'agy_lead', 'polling as agy_lead marks AGY on duty');
     const badClaim = await fetch(`${BASE}/api/lead-jobs/ldj_none/claim?token=${encodeURIComponent(mcpToken)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ worker: 'agy_lead' }) });
     assert.equal(badClaim.status, 400, 'unknown lead job claim is rejected');
+    // 기존 Gemini API 팀장은 비상 대기 역할이고, 완전 휴직시켜도 실무 배정·팀장 슬롯이 깨지지 않아야 함
+    const pauseLeadRes = await (
+      await fetch(`${BASE}/api/agents/agent_gemini_neon`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ active: false })
+      })
+    ).json();
+    assert.equal(pauseLeadRes.agent.active, false, 'legacy API lead can be paused cleanly');
+    assert.ok(pauseLeadRes.agent.roleTitle.includes('비상 대기'), 'legacy API lead roleTitle must indicate standby');
+    const pausedMission = await (
+      await fetch(`${BASE}/api/missions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: '팀장 대기 확인 테스트', directive: '경쟁 사이트 현황을 조사하고 체크리스트를 정리해 주세요.', domain: 'business' })
+      })
+    ).json();
+    assert.equal(pausedMission.mission.leadAgentId, 'agent_gemini_neon', 'leadAgentId stays on lead slot even when legacy API lead is paused');
+    assert.ok((pausedMission.tasks || []).every((t) => t.assigneeId !== 'agent_gemini_neon'), 'legacy API lead must never receive worker tasks');
+    await fetch(`${BASE}/api/missions/${pausedMission.mission.id}`, { method: 'DELETE' });
+    await fetch(`${BASE}/api/agents/agent_gemini_neon`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ active: true })
+    });
 
     // 7. Team Lead final synthesis
     const synthRes = await (

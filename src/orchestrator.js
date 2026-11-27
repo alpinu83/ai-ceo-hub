@@ -6,7 +6,7 @@ import { createOpenAI } from '@ai-sdk/openai';
 import { z } from 'zod';
 import { uid } from './store.js';
 import { buildMissionLiveContext } from './live-context.js';
-import { askLeadDesk, isLeadPending } from './lead-desk.js';
+import { askLeadDesk, hasLeadDeskWorker, isLeadPending } from './lead-desk.js';
 import { isProviderCooling } from './ai-guard.js';
 import { selectSkills, renderSkills, skillBlock, shouldReview, buildReviewRubric, getSkillSettings } from './skills.js';
 import { getRepoSnapshot, buildCodeEvidence, factCheckOutput } from './grounding.js';
@@ -597,14 +597,18 @@ function buildDispatchPromptBody(agent, task, mission, approvalRule) {
   }
 }
 
+function pickFallbackWorker(agents) {
+  const nonLeadActive = agents.filter((a) => a.active && a.tier !== 'lead');
+  return nonLeadActive[0] || agents.find((a) => a.active) || agents[0];
+}
+
 function selectLeadAgent(agents) {
-  const active = agents.filter((a) => a.active);
-  // Gemini 4 Neon (existing AI Pro subscription, 0 extra API cost) is ALWAYS the primary Team Lead
+  // 팀장 업무함(AGY 주간 · Gemini 앱 당직) 기준 팀장 슬롯 참조 — 비상 API 팀장이 휴직이어도 실무 봇(Muse 등)으로 튀지 않게 유지
   return (
-    active.find((a) => a.id === 'agent_gemini_neon') ||
-    active.find((a) => a.id === 'agent_groq') ||
-    active.find((a) => a.tier === 'lead') ||
-    active[0]
+    agents.find((a) => a.id === 'agent_gemini_neon') ||
+    agents.find((a) => a.tier === 'lead') ||
+    agents.find((a) => a.active) ||
+    agents[0]
   );
 }
 
@@ -626,9 +630,10 @@ const PlanSchema = z.object({
 });
 
 function heuristicDecompose({ directive, domain, costPolicy, agents, leadAgent }) {
-  const active = agents.filter((a) => a.active);
+  const active = agents.filter((a) => a.active && a.tier !== 'lead');
+  const fallback = active[0] || agents.find((a) => a.active) || agents[0];
   const byId = (id) => active.find((a) => a.id === id);
-  const pick = (ids) => ids.map(byId).find(Boolean) || active[0];
+  const pick = (ids) => ids.map(byId).find(Boolean) || fallback;
 
   const text = directive.toLowerCase();
   const tasks = [];
@@ -834,12 +839,12 @@ export function resolveLiveBackendModel(settings) {
 function buildLeadModelChain(leadAgent, settings, agents = null) {
   const p = settings?.providers || {};
   const chain = [];
-  // 휴직 중인 무료 API(Groq·OpenRouter 등)는 팀장 대체 엔진으로도 쓰지 않음 (활성 팀원이 그 제공자를 쓸 때만)
+  // 휴직 중인 무료 API(Groq·OpenRouter·Gemini 비상 API 등)는 팀장 대체 엔진으로도 쓰지 않음 (활성 팀원이 그 제공자를 쓸 때만)
   const providerOn = (prov) => !Array.isArray(agents) || agents.some((a) => a.active && a.provider === prov);
   const push = (m) => {
     if (m && m.model && !chain.some((c) => c.label === m.label)) chain.push(m);
   };
-  if (leadAgent) push(resolveLanguageModel(leadAgent, settings));
+  if (leadAgent && (!Array.isArray(agents) || leadAgent.active)) push(resolveLanguageModel(leadAgent, settings));
   if (p.groq?.apiKey && providerOn('groq')) {
     const client = createOpenAI({
       baseURL: p.groq.baseUrl || 'https://api.groq.com/openai/v1',
@@ -857,11 +862,13 @@ function buildLeadModelChain(leadAgent, settings, agents = null) {
     });
     push({ model: client('openrouter/free'), label: 'openrouter:openrouter/free' });
   }
-  if (p.gemini?.apiKey) {
+  if (p.gemini?.apiKey && providerOn('gemini')) {
     const google = createGoogleGenerativeAI({ apiKey: p.gemini.apiKey.trim() });
     push({ model: google('gemini-3.8-flash'), label: 'gemini:gemini-3.8-flash' });
   }
-  push(resolveLiveBackendModel(settings));
+  if (!Array.isArray(agents) || agents.some((a) => a.active && ['gemini', 'groq', 'openrouter', 'exaone'].includes(a.provider))) {
+    push(resolveLiveBackendModel(settings));
+  }
   return chain;
 }
 
@@ -876,6 +883,7 @@ async function generateObjectChain(models, opts) {
     const { leadDesk, ...rest } = opts;
     opts = rest;
   }
+  if (!Array.isArray(models) || !models.length) throw new Error('사용 가능한 AI 엔진 없음');
   const errors = [];
   for (const m of models) {
     for (const mode of ['auto', 'json']) {
@@ -915,11 +923,12 @@ export async function decomposeDirective({
   assignmentRules = ''
 }) {
   const leadAgent = selectLeadAgent(agents, costPolicy, settings);
-  const activeAgents = agents.filter((a) => a.active);
+  const assignableAgents = agents.filter((a) => a.active && a.tier !== 'lead');
+  const fallbackWorker = pickFallbackWorker(agents);
   const chain = buildLeadModelChain(leadAgent, settings, agents);
 
   if (chain.length) {
-    const rosterText = activeAgents
+    const rosterText = assignableAgents
       .map(
         (a) =>
           `- id: "${a.id}", 이름: "${a.name}", 소속: "${a.team === 'it' ? 'IT유지보수팀' : '전략실행본부'}", 직책: "${a.roleTitle}", 연동: "${a.connectionMode}", 비용: "${a.costTier}", 강점: "${a.strengths}"`
@@ -959,10 +968,10 @@ ${skillBlock({ agent: leadAgent, mission: { directive, domain }, purpose: 'decom
         }`
       });
 
-      const validIds = new Set(activeAgents.map((a) => a.id));
+      const validIds = new Set(assignableAgents.map((a) => a.id));
       const majorDecisionRe = /결제|송금|계약|광고비|예약\s*확정|최종\s*예약|실제\s*발송|대외\s*발송|프로덕션\s*배포|실배포/;
       const normalized = object.tasks.map((t) => {
-        const safeAssignee = validIds.has(t.assigneeId) ? t.assigneeId : activeAgents[0].id;
+        const safeAssignee = validIds.has(t.assigneeId) ? t.assigneeId : fallbackWorker.id;
         const textBlob = `${t.title} ${t.description}`;
         const isMajorExternal =
           (Number(t.estimatedCostKRW) || 0) > 0 ||
@@ -1324,7 +1333,7 @@ export async function leadReviewDeliverable({ task, output, mission, agents, set
   const leadAgent = agents.find((a) => a.id === (mission?.leadAgentId || 'agent_gemini_neon')) || agents.find((a) => a.tier === 'lead') || agents[0];
   const chain = buildLeadModelChain(leadAgent, settings, agents);
   const acceptance = deriveAcceptance(task);
-  if (!chain.length) return { verdict: 'accept', skipped: true, reason: 'AI 엔진 없음', acceptance };
+  if (!chain.length && !hasLeadDeskWorker()) return { verdict: 'accept', skipped: true, reason: 'AI 엔진 없음', acceptance };
   const system = `당신은 총괄 팀장(${leadAgent?.name || '팀장'})입니다. 팀원이 낸 결과물을 "완료 기준"과 "업무 브리핑"으로 엄격하게 검수하세요.
 판정 원칙:
 - accept: 완료 기준을 모두 충족하고, 대표님이나 다음 작업자가 바로 쓸 수 있을 때만.
@@ -1427,7 +1436,7 @@ const MissionPlanSchema = z.object({
 export async function draftMissionPlan({ mission, digest, agents, settings }) {
   const leadAgent = agents.find((a) => a.id === (mission?.leadAgentId || 'agent_gemini_neon')) || agents[0];
   const chain = buildLeadModelChain(leadAgent, settings, agents);
-  if (!chain.length) throw new Error('사용 가능한 AI 엔진 없음');
+  if (!chain.length && !hasLeadDeskWorker()) throw new Error('사용 가능한 AI 엔진 없음');
   const system = `당신은 총괄 팀장(${leadAgent.name})입니다. 이 프로젝트의 목표까지 가는 "작전 계획"을 세우세요.
 - 마일스톤은 결과 중심으로 2~6개, 순서대로. 각 마일스톤은 팀이 1~2주 안에 끝낼 수 있는 크기.
 - doneWhen은 검증 가능한 결과(결과물·숫자·대표님 결정)로. "보고서 작성" 같은 활동은 기준이 될 수 없음.
@@ -1482,7 +1491,7 @@ const MilestoneWorkSchema = z.object({
 export async function planMilestoneWork({ mission, milestone, digest, agents, settings, teamLoad = '', deliverablesText = '', extraNote = '', keySuffix = '', refsExtra = {} }) {
   const leadAgent = agents.find((a) => a.id === (mission?.leadAgentId || 'agent_gemini_neon')) || agents[0];
   const chain = buildLeadModelChain(leadAgent, settings, agents);
-  if (!chain.length) throw new Error('사용 가능한 AI 엔진 없음');
+  if (!chain.length && !hasLeadDeskWorker()) throw new Error('사용 가능한 AI 엔진 없음');
   const system = `당신은 지휘자(Orchestrator)인 총괄 팀장(${leadAgent.name})입니다. 지금 마일스톤을 끝내기 위해 팀을 움직이세요.
 - 먼저 지금까지의 결과물이 마일스톤 완료 기준을 충족하는지 판정하세요(milestoneDone).
 - 아직이면, 완료 기준까지 남은 차이를 메울 작업을 최대 6개. 각 작업마다 검증 가능한 완료 기준(acceptance)을 쓰세요.
@@ -1506,14 +1515,15 @@ ${buildComplianceChecklist(mission)}${extraNote ? `\n\n${extraNote}` : ''}`;
     prompt,
     leadDesk: { key: `ms:${mission.id}:${milestone.id}:${Number(milestone.rounds || 0)}:${textHash(deliverablesText)}${keySuffix ? `:${keySuffix}` : ''}`, purpose: 'milestone', refs: { missionId: mission.id, ...refsExtra } }
   });
-  const validIds = new Set(agents.filter((a) => a.active).map((a) => a.id));
+  const validIds = new Set(agents.filter((a) => a.active && a.tier !== 'lead').map((a) => a.id));
+  const fallbackWorker = pickFallbackWorker(agents);
   return {
     milestoneDone: Boolean(object.milestoneDone),
     report: String(object.report || '').slice(0, 800),
     synthesis: String(object.synthesis || '').slice(0, 12000),
     tasks: (object.tasks || [])
       .filter((t) => t?.title && t?.description)
-      .map((t) => ({ ...t, acceptance: (t.acceptance || []).map((x) => String(x).slice(0, 200)), assigneeId: validIds.has(t.assigneeId) ? t.assigneeId : leadAgent.id })),
+      .map((t) => ({ ...t, acceptance: (t.acceptance || []).map((x) => String(x).slice(0, 200)), assigneeId: validIds.has(t.assigneeId) ? t.assigneeId : fallbackWorker.id })),
     planner: label
   };
 }
@@ -1562,8 +1572,8 @@ function pickResponders(text, agents, mission, tasks) {
   // Default (no specific @mention): ONLY the Team Lead responds concisely to the CEO
   if (matched.length === 0) {
     const lead =
-      active.find((a) => a.id === mission?.leadAgentId) ||
-      active.find((a) => a.tier === 'lead') ||
+      agents.find((a) => a.id === mission?.leadAgentId) ||
+      agents.find((a) => a.tier === 'lead') ||
       active.find((a) => a.id === 'agent_exaone') ||
       active[0];
     if (lead) matched.push(lead);
@@ -1621,18 +1631,20 @@ const DIRECTIVE_HINT_RE = /(해줘|해주세요|해라|하자|해봐|진행해|�
 
 export async function classifyChatDirective({ text, mission, tasks = [], agents, settings, rejectedTitles = [], repoLinked = false, planningRoster = '', assignmentRules = '' }) {
   const active = agents.filter((a) => a.active);
-  const roster = active
+  const assignable = active.filter((a) => a.tier !== 'lead');
+  const fallbackWorker = pickFallbackWorker(agents);
+  const roster = assignable
     .filter((a) => ['exaone', 'gemini', 'groq', 'openrouter'].includes(a.provider))
     .map((a) => `- ${a.id}: ${a.name} (${a.team === 'it' ? 'IT유지보수팀' : '전략실행본부'} · ${a.roleTitle})`)
     .join('\n');
-  const lead = active.find((a) => a.tier === 'lead') || active[0];
+  const lead = active.find((a) => a.tier === 'lead') || null;
   const candidates = [
-    resolveLanguageModel(lead, settings),
+    lead ? resolveLanguageModel(lead, settings) : null,
     ...['agent_it_dev', 'agent_qwen', 'agent_groq', 'agent_exaone', 'agent_gemma'].map((id) => {
       const ag = active.find((a) => a.id === id);
       return ag ? resolveLanguageModel(ag, settings) : null;
     }),
-    resolveLiveBackendModel(settings)
+    active.some((a) => ['gemini', 'groq', 'openrouter', 'exaone'].includes(a.provider)) ? resolveLiveBackendModel(settings) : null
   ].filter(Boolean);
 
   const system = `당신은 AI 조직의 총괄 팀장입니다. 회의실에서 CEO가 한 말이 실제 업무 지시인지 판단하고, 지시라면 1~3개의 구체적 업무로 바꾸세요.
@@ -1659,10 +1671,10 @@ ${assignmentRules ? `\n${assignmentRules}` : ''}`;
   for (const m of candidates) {
     try {
       const { object } = await generateObject({ model: m.model, schema: ChatDirectiveSchema, system, prompt, maxRetries: 0 });
-      const validIds = new Set(active.map((a) => a.id));
+      const validIds = new Set(assignable.map((a) => a.id));
       object.tasks = (object.tasks || []).map((t) => ({
         ...t,
-        assigneeId: validIds.has(t.assigneeId) ? t.assigneeId : t.isCodeChange && validIds.has('agent_it_dev') ? 'agent_it_dev' : lead.id
+        assigneeId: validIds.has(t.assigneeId) ? t.assigneeId : t.isCodeChange && validIds.has('agent_it_dev') ? 'agent_it_dev' : fallbackWorker.id
       }));
       return { ...object, usedModel: m.label || '' };
     } catch {
@@ -1684,7 +1696,7 @@ ${assignmentRules ? `\n${assignmentRules}` : ''}`;
           {
             title: text.replace(/\s+/g, ' ').slice(0, 40),
             description: text,
-            assigneeId: isCode && active.some((a) => a.id === 'agent_it_dev') ? 'agent_it_dev' : lead.id,
+            assigneeId: isCode && active.some((a) => a.id === 'agent_it_dev') ? 'agent_it_dev' : fallbackWorker.id,
             isCodeChange: isCode
           }
         ],
@@ -1700,10 +1712,12 @@ export async function generateTeamChatReplies({ userMessage, mission, tasks, age
 
   for (const ag of responders) {
     const agTasks = tasks.filter((t) => t.assigneeId === ag.id);
-    // Use agent's direct API if available, or live EXAONE backend when Team Lead is responding to general CEO direction
+    // 비상 API 팀장(tier=lead)이 휴직(active=false)이면 API 호출을 하지 않고 팀장 업무함 대기 안내로만 응답
     const resolved =
-      resolveLanguageModel(ag, settings) ||
-      (!hasExplicitMention && ag.tier === 'lead' ? resolveLiveBackendModel(settings) : null);
+      ag.tier === 'lead' && !ag.active
+        ? null
+        : resolveLanguageModel(ag, settings) ||
+          (!hasExplicitMention && ag.tier === 'lead' ? resolveLiveBackendModel(settings) : null);
     let replyText = '';
     let live = false;
     let statusText = '수신함 전달됨';
@@ -1738,11 +1752,16 @@ ${
         });
         replyText = text.trim();
         live = true;
-        statusText = '실시간 AI 응답';
+        statusText = ag.tier === 'lead' ? '비상 즉답 (Gemini API)' : '실시간 AI 응답';
       } catch (err) {
         replyText = `[AI 응답 오류] ${err.message.slice(0, 120)}`;
         statusText = 'API 오류';
       }
+    } else if (ag.tier === 'lead') {
+      replyText = actionNote
+        ? `접수했습니다. ${actionNote} (세부 검수·계획은 팀장 업무함에서 주간 AGY Hydrogen · 야간 Gemini 앱이 이어서 처리합니다.)`
+        : '말씀을 기록했습니다. 백그라운드 팀장 판단(검수·작전 계획·마일스톤)은 팀장 업무함(주간 AGY Hydrogen · 야간 Gemini 앱)이 처리합니다.';
+      statusText = '팀장 업무함 접수';
     } else {
       replyText = buildHonestDispatchNotice(ag, userMessage, agTasks);
       statusText = '수신함 대기';
@@ -2094,13 +2113,14 @@ ${skillBlock({ agent: leadAgent, mission, purpose: 'lead_plan', settings, compac
     maxRetries: 0,
     abortSignal: AbortSignal.timeout(120000)
   });
-  const validIds = new Set(agents.filter((a) => a.active).map((a) => a.id));
+  const validIds = new Set(agents.filter((a) => a.active && a.tier !== 'lead').map((a) => a.id));
+  const fallbackWorker = pickFallbackWorker(agents);
   return {
     goalStatus: object.goalStatus,
     report: String(object.report || '').trim(),
     nextTasks: (object.nextTasks || [])
       .filter((t) => t?.title && t?.description)
-      .map((t) => ({ ...t, assigneeId: validIds.has(t.assigneeId) ? t.assigneeId : leadAgent.id })),
+      .map((t) => ({ ...t, assigneeId: validIds.has(t.assigneeId) ? t.assigneeId : fallbackWorker.id })),
     ceoRequests: (object.ceoRequests || []).map((s) => String(s).trim()).filter(Boolean),
     leadAgentId: leadAgent.id,
     usedModel: resolved.label || ''
