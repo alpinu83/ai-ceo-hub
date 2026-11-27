@@ -313,6 +313,7 @@ export function registerMissionsRoutes(app) {
     const body = await c.req.json().catch(() => ({}));
     try {
       const res = await triggerItPrForMission(missionId, body?.instruction || '');
+      if (res.outsourced) return c.json({ ok: true, outsourced: res.outsourced, state: sanitizeStateForClient(res.db) });
       return c.json({
         ok: true,
         repo: res.result.repo,

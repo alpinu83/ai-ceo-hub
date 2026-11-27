@@ -2210,22 +2210,40 @@ function applyStateKeepingHealth(nextState) {
 }
 
 function renderRosterView() {
-  // Visual Org Tree
-  const treeCanvas = document.getElementById('org-tree-canvas');
-  const leads = state.agents.filter((a) => a.tier === 'lead');
-  const coreWorkers = state.agents.filter((a) => a.tier !== 'lead' && a.team !== 'it');
-  const itWorkers = state.agents.filter((a) => a.team === 'it');
+  // 폐지(retired)된 팀원은 조직도에서 완전히 뺌, 휴직(비활성)은 따로 묶음
+  const all = state.agents.filter((a) => !a.retired);
+  const onLeave = all.filter((a) => !a.active);
+  const working = all.filter((a) => a.active);
+  const apiLead = working.find((a) => a.tier === 'lead');
+  const members = working.filter((a) => a.tier !== 'lead');
   const modeDot = (m) => (m === 'api' || m === 'litellm' ? 'dot-green' : m === 'mcp' ? 'dot-blue' : 'dot-amber');
+
+  // 팀장 = 팀장 업무함 (주간 AGY 팀장 감시기 · 야간 Gemini 앱 당직 · 비상 Gemini API)
+  const seen = (k) => state?.agentConnections?.[k]?.lastSeenAt || '';
+  const agyAt = seen('lead:agy_lead');
+  const gemAt = seen('lead:gemini_app');
+  const agyOn = agyAt && Date.now() - Date.parse(agyAt) < 3 * 60 * 1000;
+  const dutyName = agyOn ? 'AGY (Hydrogen)' : 'Gemini 앱 당직';
+  const ago = (iso) => (iso ? formatTime(iso) : '기록 없음');
 
   const renderNodePill = (ag) => `<button type="button" class="org-node-pill ${ag.active ? '' : 'inactive'}" data-focus-agent="${esc(ag.id)}">
     <span class="agent-avatar sm" style="background:${esc(ag.accent)}">${esc(ag.shortCode)}</span>
     <div style="text-align:left;">
       <div class="org-node-name">${esc(ag.name)}</div>
-      <div class="org-node-role">${esc(COST_LABELS[ag.costTier])} · ${esc(MODE_LABELS[ag.connectionMode])}</div>
+      <div class="org-node-role">${ag.tier === 'lead' ? '비상 대체 팀장 · 실무' : `${esc(COST_LABELS[ag.costTier])} · ${esc(MODE_LABELS[ag.connectionMode])}`}</div>
     </div>
-    <i class="dot ${modeDot(ag.connectionMode)}"></i>
+    <i class="dot ${ag.active ? modeDot(ag.connectionMode) : 'dot-amber'}"></i>
   </button>`;
+  const leadPill = `<div class="org-node-pill">
+    <span class="agent-avatar sm" style="background:#0E6245">팀장</span>
+    <div style="text-align:left;">
+      <div class="org-node-name">총괄 팀장 · ${esc(dutyName)}</div>
+      <div class="org-node-role">주간 AGY · 야간 Gemini 앱 · 비상 Gemini API</div>
+    </div>
+    <i class="dot ${agyOn ? 'dot-green' : 'dot-blue'}"></i>
+  </div>`;
 
+  const treeCanvas = document.getElementById('org-tree-canvas');
   treeCanvas.innerHTML = `
     <div class="org-level">
       <div class="org-node-pill ceo-node">
@@ -2237,19 +2255,23 @@ function renderRosterView() {
       </div>
     </div>
     <div class="org-connector"></div>
+    <div class="org-level">${leadPill}</div>
+    <div class="org-connector"></div>
     <div class="org-level">
-      ${leads.map(renderNodePill).join('')}
+      ${[apiLead, ...members].filter(Boolean).map(renderNodePill).join('')}
     </div>
     <div class="org-connector"></div>
     <div class="org-level">
-      ${coreWorkers.map(renderNodePill).join('')}
+      <span class="badge badge-neutral" style="align-self:center;">외주</span>
+      <div class="org-node-pill"><div style="text-align:left;"><div class="org-node-name">AGY (Antigravity)</div><div class="org-node-role">코드 수정 · 주간 팀장</div></div></div>
+      <div class="org-node-pill"><div style="text-align:left;"><div class="org-node-name">Aside</div><div class="org-node-role">코드 검수·보완 · 브라우저·계정</div></div></div>
+      <div class="org-node-pill"><div style="text-align:left;"><div class="org-node-name">Gemini 앱</div><div class="org-node-role">야간 당직 팀장 · 자문·리서치</div></div></div>
     </div>
     ${
-      itWorkers.length
-        ? `<div class="org-connector"></div>
-           <div class="org-level">
-             <span class="badge badge-green" style="align-self:center;">IT 유지보수팀</span>
-             ${itWorkers.map(renderNodePill).join('')}
+      onLeave.length
+        ? `<div class="org-level" style="margin-top:14px;opacity:.75;">
+             <span class="badge badge-neutral" style="align-self:center;">휴직</span>
+             ${onLeave.map(renderNodePill).join('')}
            </div>`
         : ''
     }
@@ -2263,7 +2285,7 @@ function renderRosterView() {
           <span class="agent-avatar lg" style="background:${esc(ag.accent)}">${esc(ag.shortCode)}</span>
           <div>
             <div class="agent-name">${esc(ag.name)}</div>
-            <div class="agent-role">${esc(ag.roleTitle)}</div>
+            <div class="agent-role">${ag.tier === 'lead' ? '비상 대체 팀장 · 실무 (AGY·Gemini 앱이 모두 처리 못 할 때, 회의실 즉답·새 업무 분해)' : esc(ag.roleTitle)}</div>
           </div>
         </div>
         <span class="badge ${ag.costTier === 'free' ? 'badge-green' : ag.costTier === 'freemium' ? 'badge-blue' : 'badge-amber'}">
@@ -2280,22 +2302,41 @@ function renderRosterView() {
           <option value="bridge" ${ag.connectionMode === 'bridge' ? 'selected' : ''}>앱·구독</option>
         </select>
         <button type="button" class="btn btn-ghost btn-sm" data-toggle-agent="${esc(ag.id)}">
-          ${ag.active ? '비활성' : '활성화'}
+          ${ag.active ? '휴직' : '복직'}
         </button>
       </div>
     </article>
   `;
+  const leadDeskCard = `
+    <article class="agent-card">
+      <div class="agent-card-head">
+        <div class="agent-identity">
+          <span class="agent-avatar lg" style="background:#0E6245">팀장</span>
+          <div>
+            <div class="agent-name">총괄 팀장 (팀장 업무함)</div>
+            <div class="agent-role">지금 근무: <strong>${esc(dutyName)}</strong></div>
+          </div>
+        </div>
+        <span class="badge ${agyOn ? 'badge-green' : 'badge-blue'}">${agyOn ? '주간' : '당직'}</span>
+      </div>
+      <p class="agent-strengths">검수 · 작전 계획 · 마일스톤 판단을 지금 깨어 있는 팀장이 맡습니다.</p>
+      <div class="routine-sub" style="line-height:1.7;">
+        1. 주간: AGY 팀장 감시기 (Hydrogen) · 마지막 접속 ${esc(ago(agyAt))}<br />
+        2. 야간·부재: Gemini 앱 예약 작업 · 마지막 실행 ${esc(ago(gemAt))}<br />
+        3. 비상: Gemini 4 Hydrogen API (위 둘이 오래 처리 못 할 때 자동)
+      </div>
+    </article>`;
 
   const tiers = [
-    { el: document.getElementById('roster-leads'), list: state.agents.filter((a) => a.tier === 'lead') },
-    { el: document.getElementById('roster-specialists'), list: state.agents.filter((a) => a.tier === 'specialist' && a.team !== 'it') },
-    { el: document.getElementById('roster-executors'), list: state.agents.filter((a) => a.tier === 'executor' && a.team !== 'it') },
-    { el: document.getElementById('roster-it'), list: itWorkers }
+    { el: document.getElementById('roster-leads'), html: leadDeskCard + (apiLead ? renderAgentCard(apiLead) : '') },
+    { el: document.getElementById('roster-specialists'), list: members.filter((a) => a.tier === 'specialist') },
+    { el: document.getElementById('roster-executors'), list: members.filter((a) => a.tier === 'executor') },
+    { el: document.getElementById('roster-leave'), list: onLeave }
   ];
 
   for (const t of tiers) {
     if (!t.el) continue;
-    t.el.innerHTML = t.list.map(renderAgentCard).join('');
+    t.el.innerHTML = t.html ?? (t.list.length ? t.list.map(renderAgentCard).join('') : '<div class="empty-state">없음</div>');
   }
 }
 
