@@ -141,7 +141,7 @@ export function getOutsourcingSettings(settings) {
     enabled: o.enabled !== false,
     autoOnFailure: o.autoOnFailure !== false,
     autoForBrowser: o.autoForBrowser !== false,
-    consultMode: ['off', 'proposals', 'proposals_and_reports'].includes(o.consultMode) ? o.consultMode : 'proposals',
+    consultMode: ['off', 'proposals', 'proposals_and_reports'].includes(o.consultMode) ? o.consultMode : 'off',
     // 한 곳에 몰기: auto(종류별 우선순위대로) / aside / antigravity / gemini
     routing: ['auto', 'aside', 'antigravity', 'gemini'].includes(o.routing) ? o.routing : 'auto',
     officeHours: {

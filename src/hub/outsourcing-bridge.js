@@ -96,7 +96,9 @@ export async function approvalFromExternalPr(db, req, mission) {
   const isTwoStageReviewed = req.reviewStage === 'aside_review';
   // Aside가 3번 반려한 뒤 AGY가 다시 낸 PR: 검수를 통과하지 못한 채 올라오므로 대표님 결재 카드에 분명히 표시
   const reviewExhausted = req.reviewStage === 'agy_rework' && (Number(req.reviewRound) || 0) > 3;
-  const workerTag = isTwoStageReviewed ? 'AGY+Aside 검수' : reviewExhausted ? 'AGY · Aside 검수 미통과' : req.result.by;
+  const rawBy = String(req.result.by || '').toLowerCase();
+  const byLabel = rawBy === 'aside' ? '개발팀(Aside)' : rawBy === 'antigravity' || rawBy === 'agy' ? '개발팀(AGY)' : rawBy === 'gemini' ? 'Gemini 앱' : req.result.by || '개발팀';
+  const workerTag = isTwoStageReviewed ? 'AGY+Aside 검수' : reviewExhausted ? 'AGY · Aside 검수 미통과' : rawBy === 'aside' ? 'Aside' : rawBy === 'antigravity' ? 'AGY' : req.result.by;
   const result = {
     repo,
     branch: pr.base?.ref || 'main',
@@ -104,7 +106,7 @@ export async function approvalFromExternalPr(db, req, mission) {
     prNumber: num,
     prUrl: pr.html_url,
     prTitle: String(pr.title || '').replace(/\[OUT-[^\]]+\]\s*/, '') || req.title,
-    prSummary: req.result.summary || oneLineText(pr.body, 600) || '외부 AI 작업 PR',
+    prSummary: req.result.summary || oneLineText(pr.body, 600) || '개발팀 작업 PR',
     changedFiles: files.map((f) => f.filename),
     diffSummary: files
       .map((f) => `파일: ${f.filename} (+${f.additions}/-${f.deletions})\n${String(f.patch || '').slice(0, 1500)}`)
@@ -114,10 +116,10 @@ export async function approvalFromExternalPr(db, req, mission) {
       passed: !reviewExhausted,
       riskLevel: reviewExhausted ? 'high' : 'medium',
       notes: reviewExhausted
-        ? `Aside 검수에서 ${Number(req.reviewRound) - 1}번 반려된 뒤 Antigravity가 다시 낸 PR입니다(검수 미통과). 반려 사유를 확인하고 승인 여부를 결정해 주세요.`
+        ? `Aside 검수에서 ${Number(req.reviewRound) - 1}번 반려된 뒤 AGY가 다시 낸 PR입니다(검수 미통과). 반려 사유를 확인하고 승인 여부를 결정해 주세요.`
         : isTwoStageReviewed
-        ? 'Antigravity 1차 수정 후 Aside 검수·보완을 거친 PR입니다. 승인 시 CI 통과를 확인한 뒤 머지합니다.'
-        : `외부 작업자(${req.result.by})가 만든 PR입니다. 승인 시 CI 통과를 확인한 뒤 머지합니다.`
+        ? '개발팀 AGY 1차 수정 후 Aside 검수·보완을 거친 PR입니다. 승인 시 CI 통과를 확인한 뒤 머지합니다.'
+        : `${byLabel}이 작성한 PR입니다. 승인 시 CI 통과를 확인한 뒤 머지합니다.`
     },
     instruction: req.goal,
     teamContext: ''
@@ -126,15 +128,15 @@ export async function approvalFromExternalPr(db, req, mission) {
   if (existing && existing.kind !== 'next_phase') {
     applyPrFieldsToApproval(existing, result, { outsourceId: req.id });
     setCodeStatus(existing, 'ready');
-    existing.proposedAction = `승인 시 외주 PR #${num}(${workerTag})을 main에 머지하고 ${deployLabelFor(repo)}까지 진행합니다. (CI 실패 시 머지 보류)`;
-    sendApprovalNotifications(db.settings, existing, `외주 · ${workerTag}`);
+    existing.proposedAction = `승인 시 개발팀 PR #${num}(${workerTag})을 main에 머지하고 ${deployLabelFor(repo)}까지 진행합니다. (CI 실패 시 머지 보류)`;
+    sendApprovalNotifications(db.settings, existing, `개발팀 · ${workerTag}`);
     return existing;
   }
-  const byAgentId = req.result?.by === 'antigravity' ? 'agent_agy' : req.result?.by === 'aside' ? 'agent_aside' : 'agent_aside';
+  const byAgentId = rawBy === 'antigravity' || rawBy === 'agy' ? 'agent_agy' : 'agent_aside';
   const apr = createItPrApproval(db, mission || { id: req.missionId }, result, {
     taskIds: req.taskId ? [req.taskId] : [],
     titlePrefix: `[개발팀 · ${workerTag}] `,
-    summaryLead: `외주 요청 ${req.id}: ${req.title}`,
+    summaryLead: req.title,
     agentId: byAgentId,
     workerName: workerTag
   });
@@ -148,19 +150,20 @@ export async function handleOutsourceSubmitted(id) {
   const req = findRequest(db, id);
   if (!req?.result) return;
   const r = req.result;
-  const by = r.by || '외부 AI';
+  const by = r.by || '개발팀';
+  const byLabel = by === 'aside' ? 'Aside' : by === 'antigravity' ? 'AGY' : by;
   const mission = db.missions.find((m) => m.id === req.missionId);
   const nowIso = new Date().toISOString();
   try {
     if (req.kind === 'consult') {
       const apr = req.approvalId ? db.approvals.find((a) => a.id === req.approvalId) : null;
-      const consult = { requestId: req.id, by, summary: r.summary, document: String(r.document || '').slice(0, 12000), at: r.submittedAt };
+      const consult = { requestId: req.id, by: byLabel, summary: r.summary, document: String(r.document || '').slice(0, 12000), at: r.submittedAt };
       if (apr) apr.consult = consult;
       if (mission) {
-        leadSay(db, mission, '외부 자문 도착', `${by}의 외부 자문이 도착했습니다${apr ? ` (결재 "${apr.title}"에 첨부)` : ''}. ${oneLineText(r.summary || r.document, 220)}`);
+        leadSay(db, mission, '검토 의견 도착', `${byLabel}의 검토 의견이 도착했습니다${apr ? ` (결재 "${apr.title}"에 첨부)` : ''}. ${oneLineText(r.summary || r.document, 220)}`);
       }
-      rememberFact(db, { kind: 'lesson', missionId: req.missionId, text: `[외부 자문 · ${by}] ${oneLineText(r.summary || r.document, 220)}`, source: 'outsourcing' });
-      sendTelegramReport(db.settings, `외부 자문 도착 ${req.id}`, `${apr ? `${apr.title}\n` : ''}${oneLineText(r.summary || r.document, 700)}`, `outres:${req.id}`).catch(() => {});
+      rememberFact(db, { kind: 'lesson', missionId: req.missionId, text: `[검토 의견 · ${byLabel}] ${oneLineText(r.summary || r.document, 220)}`, source: 'outsourcing' });
+      sendTelegramReport(db.settings, `검토 의견 도착`, `${apr ? `${apr.title}\n` : ''}${oneLineText(r.summary || r.document, 700)}`, `outres:${req.id}`).catch(() => {});
       req.status = 'accepted';
     } else if (req.codeWorkflow === 'design_first' && !req.designApprovalId) {
       // 개발 지침 "설계 먼저": Aside 설계서 → 대표님 확인 결재 (승인되면 AGY 구현 + Aside 검수)
@@ -499,7 +502,7 @@ export async function outsourcingWatch() {
         await submitResult(r.id, {
           worker: r.claimedBy || 'github',
           summary: `PR 자동 감지: ${pr.title}`,
-          document: String(pr.body || '').trim() || `외부 작업자가 PR을 열었습니다: ${pr.html_url}`,
+          document: String(pr.body || '').trim() || `개발팀이 PR을 열었습니다: ${pr.html_url}`,
           prUrl: pr.html_url
         }).catch((err) => console.warn('outsource PR submit failed:', err.message));
       }
