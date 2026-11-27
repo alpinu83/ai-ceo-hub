@@ -78,6 +78,12 @@ export function ingestCandidates(db, items = [], batchLabel = '') {
     if (existing) {
       existing.views = Math.max(Number(existing.views || 0), Number(raw.views || 0)) || existing.views;
       existing.seenAt = now;
+      // 이번 수집에도 다시 올라온 기사: 지난번에 빠졌던 후보면 되살리고 최신 관심도로 갱신해 맨 위로
+      if (['dropped', 'expired', 'superseded'].includes(existing.status) && raw.kind !== 'youtube') {
+        Object.assign(existing, { status: 'new', url: clip(raw.url, 500) || existing.url, source: clip(raw.source, 80) || existing.source, coverage: Number(raw.coverage || 0) || existing.coverage, trends: raw.trends?.volume ? { query: clip(raw.trends.query, 60), volume: Number(raw.trends.volume) || 0 } : existing.trends, signal: raw.signal?.youtubeViews ? { youtubeViews: Number(raw.signal.youtubeViews) || 0 } : existing.signal, score: Number(raw.score || 0) || existing.score, publishedAt: clip(raw.publishedAt, 40) || existing.publishedAt, batch: clip(batchLabel, 40) });
+        delete existing.dropReason;
+      }
+      if (existing.status === 'new' && !added.includes(existing)) added.push(existing);
       continue;
     }
     const cand = {
@@ -102,8 +108,12 @@ export function ingestCandidates(db, items = [], batchLabel = '') {
     newsFirst(cand);
     if (cand.status === 'new') added.push(cand);
   }
-  // 제작기가 보낸 순서(조회수·보도량 순)를 그대로 맨 위에
-  sh.candidates = [...added, ...sh.candidates].slice(0, MAX_CANDIDATES);
+  // 제작기가 보낸 순서(관심도 순)를 그대로 맨 위에, 이전 묶음의 고르지 않은 후보는 "지난 후보"로 내림
+  if (added.length) {
+    for (const c of sh.candidates) if (c.status === 'new' && !added.includes(c)) c.status = 'superseded';
+  }
+  added.sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
+  sh.candidates = [...added, ...sh.candidates.filter((c) => !added.includes(c))].slice(0, MAX_CANDIDATES);
   sh.lastCollectedAt = now;
   return added;
 }
