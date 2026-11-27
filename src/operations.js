@@ -116,7 +116,7 @@ export function buildDefaultRoutines(missions = []) {
       times: ['09:30'],
       days: [1],
       missionId: tax.id,
-      assigneeId: 'agent_it_qa'
+      assigneeId: 'agent_aside'
     });
   }
   if (office) {
@@ -130,7 +130,7 @@ export function buildDefaultRoutines(missions = []) {
       times: ['10:30'],
       days: [1],
       missionId: office.id,
-      assigneeId: 'agent_it_sec'
+      assigneeId: 'agent_aside'
     });
   }
   return list;

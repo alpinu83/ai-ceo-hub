@@ -579,6 +579,27 @@ function getAgent(id) {
   return state?.agents?.find((a) => a.id === id) || null;
 }
 
+function activeLeadDisplayName() {
+  const onDuty = state?.leadDesk?.onDuty;
+  if (onDuty === 'agy_lead') return '총괄 팀장 (AGY · Hydrogen)';
+  if (onDuty === 'gemini_app') return '총괄 팀장 (Gemini 앱 당직)';
+  return '총괄 팀장';
+}
+
+function displayAgentName(id, ctx = null) {
+  if (id === 'agent_gemini_neon') return activeLeadDisplayName();
+  const ag = getAgent(id);
+  if (ag && ag.active === false && ['agent_it_dev', 'agent_it_sec', 'agent_it_qa'].includes(id)) {
+    const txt = `${ctx?.title || ''} ${ctx?.summary || ''}`;
+    if (ctx?.outsourceId || ctx?.kind === 'it_pr_merge' || /OUT-|개발팀|Aside|Antigravity|AGY/i.test(txt)) {
+      if (/Antigravity|AGY/i.test(ctx?.title || '') && !/Aside/i.test(ctx?.title || '')) return '개발팀 · AGY';
+      if (/Aside/i.test(ctx?.title || '')) return '개발팀 · Aside';
+      return '개발팀 (AGY · Aside)';
+    }
+  }
+  return ag?.name || id || '팀원';
+}
+
 async function copyText(text, label = '복사되었습니다.') {
   try {
     await navigator.clipboard.writeText(text);
@@ -1022,7 +1043,7 @@ function renderActiveMission(mission) {
                 ? `<span class="badge badge-blue">프로젝트${currentStage ? ` · ${esc(currentStage.title.slice(0, 24))}` : ''}</span>`
                 : `<span class="badge badge-neutral">${esc(DOMAIN_LABELS[mission.domain] || mission.domain)}</span>`
             }
-            <span class="badge badge-green">총괄 팀장: ${esc(lead?.name || '팀장')}</span>
+            <span class="badge badge-green">${esc(displayAgentName(mission.leadAgentId || 'agent_gemini_neon'))}</span>
             ${
               linkedRepo
                 ? `<span class="badge ${ghHasToken ? 'badge-green' : 'badge-amber'}" title="${ghHasToken ? '팀이 결정한 내용을 IT팀이 실제 코드(PR)로 만들어 결재에 올리고, 승인하면 바로 머지·배포합니다' : '실제 소스 읽기 가능 · 설정에서 IT팀 GitHub 토큰 등록 시 결재 승인 = 실코드 배포 활성화'}">GitHub: ${esc(linkedRepo)} · ${ghHasToken ? '승인 시 자동 배포' : '읽기 전용'}</span>`
@@ -1332,7 +1353,7 @@ function renderUnifiedTasksView(tasks, mission = null) {
   </div>`;
 
   const agentOptions = state.agents
-    .filter((a) => a.active)
+    .filter((a) => a.active && a.tier !== 'lead')
     .map((a) => ({ id: a.id, label: a.name }));
 
   if (filtered.length === 0) {
@@ -1342,9 +1363,14 @@ function renderUnifiedTasksView(tasks, mission = null) {
   const cards = filtered
     .map((t) => {
       const ag = getAgent(t.assigneeId) || state.agents[0];
+      const isLeadTask = t.assigneeId === 'agent_gemini_neon' || ag?.tier === 'lead';
       const st = STATUS_META[t.status] || { label: t.status, cls: 'badge-neutral' };
       const isFinished = t.status === 'completed' || t.status === 'rejected';
-      const selectOpts = agentOptions
+      const hasCurrentOpt = agentOptions.some((opt) => opt.id === t.assigneeId);
+      const optsForTask = hasCurrentOpt || isLeadTask
+        ? agentOptions
+        : [{ id: t.assigneeId, label: `${displayAgentName(t.assigneeId, t)}${ag?.active === false ? ' (휴직)' : ''}` }, ...agentOptions];
+      const selectOpts = optsForTask
         .map(
           (opt) =>
             `<option value="${esc(opt.id)}" ${opt.id === t.assigneeId ? 'selected' : ''}>${esc(opt.label)}</option>`
@@ -1366,8 +1392,12 @@ function renderUnifiedTasksView(tasks, mission = null) {
 
         <div class="task-footer">
           <div class="assignee-pill">
-            <span class="agent-avatar sm" style="background:${esc(ag.accent)}">${esc(ag.shortCode)}</span>
-            <select class="assignee-select" data-reassign-task="${esc(t.id)}" aria-label="담당 AI 변경">${selectOpts}</select>
+            <span class="agent-avatar sm" style="background:${esc(isLeadTask ? '#0E6245' : ag.accent)}">${esc(isLeadTask ? 'AG' : ag.shortCode)}</span>
+            ${
+              isLeadTask
+                ? `<span style="font-size:12.5px;font-weight:600;color:var(--accent-primary);">${esc(activeLeadDisplayName())}</span>`
+                : `<select class="assignee-select" data-reassign-task="${esc(t.id)}" aria-label="담당 AI 변경">${selectOpts}</select>`
+            }
           </div>
 
           <div class="task-controls">
@@ -1559,7 +1589,7 @@ function renderApprovalsView() {
           </div>
           <div class="queue-item-title">${esc(a.title)}</div>
           <div class="queue-item-meta">
-            <span>상신: ${esc(ag?.name || a.agentId)}</span>
+            <span>상신: ${esc(displayAgentName(a.agentId, a))}</span>
             <span>${esc(formatTime(a.createdAt))}</span>
           </div>
         </button>`;
@@ -1612,7 +1642,7 @@ function renderApprovalsView() {
       </div>
       <div>
         <div class="memo-fact-label">상신 · 검토</div>
-        <div class="memo-fact-val">${esc(apr.agentId === 'agent_gemini_neon' ? '총괄 팀장' : ag?.name || apr.agentId)}${apr.workerName ? ` (실무: ${esc(apr.workerName)})` : ''}${apr.leadScore != null ? ` · 검수 ${apr.leadScore}/10` : ''}</div>
+        <div class="memo-fact-val">${esc(displayAgentName(apr.agentId, apr))}${apr.workerName && !displayAgentName(apr.agentId, apr).includes(apr.workerName) ? ` (실무: ${esc(apr.workerName)})` : ''}${apr.leadScore != null ? ` · 검수 ${apr.leadScore}/10` : ''}</div>
       </div>
       <div>
         <div class="memo-fact-label">예상 비용 · 유형</div>
@@ -1696,7 +1726,7 @@ function renderApprovalsView() {
             .map((t, idx) => {
               const tAg = state.agents.find((a) => a.id === t.assigneeId);
               return `<details ${idx === 0 && !hasLeadBrief ? 'open' : ''} style="margin-bottom:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg-subtle);padding:10px 14px;">
-                <summary style="cursor:pointer;font-weight:600;font-size:13.5px;">${esc(t.title)} <span style="font-weight:400;color:var(--ink-muted);">(${esc(tAg?.name || '팀원')}${hasLeadBrief ? ' · 원문 펼치기' : ''})</span></summary>
+                <summary style="cursor:pointer;font-weight:600;font-size:13.5px;">${esc(t.title)} <span style="font-weight:400;color:var(--ink-muted);">(${esc(displayAgentName(t.assigneeId, t))}${hasLeadBrief ? ' · 원문 펼치기' : ''})</span></summary>
                 <div class="markdown-body" style="margin-top:10px;">${renderMarkdown(t.output)}</div>
               </details>`;
             })
@@ -2338,7 +2368,9 @@ function renderRoutinesView() {
       const mission = state.missions.find((m) => m.id === r.missionId);
       const agent = r.assigneeId ? getAgent(r.assigneeId) : null;
       const target =
-        r.kind === 'task' ? `${mission ? esc(mission.title) : '정기 업무 보드'} · ${agent ? esc(agent.name) : '자동 배정'}` : '시스템 자동 실행 (AI 한도 사용 안 함)';
+        r.kind === 'task'
+          ? `${mission ? esc(mission.title) : '정기 업무 보드'} · ${agent ? `${esc(displayAgentName(r.assigneeId, r))}${agent.active === false ? ' (휴직 → 실행 시 자동 대체)' : ''}` : '자동 배정'}`
+          : '시스템 자동 실행 (AI 한도 사용 안 함)';
       const notifyText = { anomaly: '이상 시 텔레그램', always: '매번 텔레그램', never: '알림 없음' }[r.notify] || '';
       return `<div class="sheet routine-card ${r.enabled ? '' : 'is-off'}">
           <div class="routine-head">
@@ -2876,7 +2908,8 @@ function renderTaskDrawer(task) {
   const cueEmail = state.settings?.providers?.manus?.cueEmail || '';
   const isAsyncPullAgent = ['pickle', 'vooy', 'instinct'].includes(ag.provider);
   const asyncAgentKey = ag.provider === 'pickle' ? 'pickle' : ag.provider === 'vooy' ? 'vooy' : 'instinct';
-  document.getElementById('drawer-agent-meta').textContent = `${ag.name} · ${MODE_LABELS[ag.connectionMode]} · ${COST_LABELS[ag.costTier]}`;
+  const displayAgName = displayAgentName(task.assigneeId, task);
+  document.getElementById('drawer-agent-meta').textContent = `${displayAgName} · ${MODE_LABELS[ag.connectionMode]} · ${COST_LABELS[ag.costTier]}`;
   document.getElementById('drawer-title').textContent = task.title;
 
   const mailtoLink =
@@ -2886,7 +2919,7 @@ function renderTaskDrawer(task) {
 
   document.getElementById('drawer-body').innerHTML = `
     <div class="drawer-section">
-      <h3>1. ${esc(ag.name)} 전달용 맞춤 지시서</h3>
+      <h3>1. ${esc(displayAgName)} 전달용 맞춤 지시서</h3>
       <p class="form-hint">${esc(ag.bridgeGuide)}</p>
       <div class="prompt-box">${esc(task.dispatchPrompt)}</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
