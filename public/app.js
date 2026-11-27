@@ -754,7 +754,7 @@ function renderQuickOrderTargets() {
   const proj = active.filter((m) => m.mode === 'project');
   const one = active.filter((m) => m.mode !== 'project');
   sel.innerHTML = [
-    '<option value="">전체 (회사 공통)</option>',
+    '<option value="">전체 시스템 (회사 공통 · 개입)</option>',
     proj.length ? `<optgroup label="프로젝트">${proj.map((m) => `<option value="${esc(m.id)}">${esc(m.title)}</option>`).join('')}</optgroup>` : '',
     one.length ? `<optgroup label="일반 업무">${one.map((m) => `<option value="${esc(m.id)}">${esc(m.title)}</option>`).join('')}</optgroup>` : ''
   ].join('');
@@ -768,35 +768,57 @@ function renderHomeView() {
   const chatTeaser = document.getElementById('home-chat-teaser');
   if (!msnWrap) return;
 
-  if (state.missions.length === 0) {
-    msnWrap.innerHTML = '<div class="empty-state">진행 중인 미션 없음</div>';
+  const active = (state.missions || []).filter((m) => m.status !== 'completed' && !m.isRoutineHub);
+  const proj = active.filter((m) => m.mode === 'project');
+  const one = active.filter((m) => m.mode !== 'project');
+
+  const renderHomeMissionRow = (m) => {
+    const tasks = state.tasks.filter((t) => t.missionId === m.id);
+    const done = tasks.filter((t) => t.status === 'completed').length;
+    const pct = tasks.length ? Math.round((done / tasks.length) * 100) : 0;
+    const kindBadge =
+      m.mode === 'project'
+        ? `<span class="badge badge-blue">프로젝트${msProgress(m) ? ` ${msProgress(m)}` : ''}</span>`
+        : '<span class="badge badge-neutral">일반 업무</span>';
+    return `<div class="home-item">
+      <div class="home-item-top">
+        <div style="display:flex;align-items:center;gap:6px;min-width:0;flex:1;">
+          ${kindBadge}
+          <div class="home-item-title">${esc(m.title)}</div>
+        </div>
+        <span class="mono" style="color:var(--ink-muted);white-space:nowrap;">${done}/${tasks.length} · ${pct}%</span>
+      </div>
+      <div class="progress-track thin"><div class="progress-fill" style="width:${pct}%"></div></div>
+      <div class="home-item-actions">
+        <button type="button" class="btn btn-ghost btn-sm" data-open-mission-board="${esc(m.id)}">열기</button>
+        <button type="button" class="btn btn-ghost btn-sm" data-jump-view="office">회의실</button>
+      </div>
+    </div>`;
+  };
+
+  if (active.length === 0) {
+    msnWrap.innerHTML = '<div class="empty-state">진행 중인 프로젝트·업무 없음</div>';
   } else {
-    msnWrap.innerHTML = state.missions
-      .slice(0, 3)
-      .map((m) => {
-        const tasks = state.tasks.filter((t) => t.missionId === m.id);
-        const done = tasks.filter((t) => t.status === 'completed').length;
-        const pct = tasks.length ? Math.round((done / tasks.length) * 100) : 0;
-        const kindBadge =
-          m.mode === 'project'
-            ? `<span class="badge badge-blue">프로젝트${msProgress(m) ? ` ${msProgress(m)}` : ''}</span>`
-            : '<span class="badge badge-neutral">일반 업무</span>';
-        return `<div class="home-item">
-          <div class="home-item-top">
-            <div style="display:flex;align-items:center;gap:6px;min-width:0;flex:1;">
-              ${kindBadge}
-              <div class="home-item-title">${esc(m.title)}</div>
-            </div>
-            <span class="mono" style="color:var(--ink-muted);">${pct}%</span>
-          </div>
-          <div class="progress-track thin"><div class="progress-fill" style="width:${pct}%"></div></div>
-          <div class="home-item-actions">
-            <button type="button" class="btn btn-ghost btn-sm" data-open-mission-board="${esc(m.id)}">열기</button>
-            <button type="button" class="btn btn-ghost btn-sm" data-jump-view="office">회의실</button>
-          </div>
-        </div>`;
-      })
-      .join('');
+    const sections = [];
+    if (proj.length) {
+      sections.push(
+        `<div class="routine-sub" style="font-weight:600;margin:2px 0 4px;">프로젝트 (${proj.length}건)</div>` +
+          proj.map(renderHomeMissionRow).join('')
+      );
+    }
+    if (one.length) {
+      const shownOne = one.slice(0, 5);
+      const moreBtn =
+        one.length > shownOne.length
+          ? `<div style="margin-top:6px;"><button type="button" class="btn btn-ghost btn-sm" data-jump-view="missions">일반 업무 ${one.length}건 전체 보기</button></div>`
+          : '';
+      sections.push(
+        `<div class="routine-sub" style="font-weight:600;margin:${proj.length ? '12px' : '2px'} 0 4px;">일반 업무 (${one.length}건)</div>` +
+          shownOne.map(renderHomeMissionRow).join('') +
+          moreBtn
+      );
+    }
+    msnWrap.innerHTML = sections.join('');
   }
 
   if (chatTeaser) {
@@ -3169,7 +3191,7 @@ function bindEvents() {
     if (!sheet.hidden) document.getElementById('input-directive')?.focus();
   });
 
-  // 바로 지시: 회의실과 같은 경로(팀장 응답 + 업무 등록 + 상시 지침 저장)로 보내고 결과를 그 자리에서 보여 줌
+  // 바로 지시: 별도 새 미션을 만들지 않고 전체 시스템 지침 또는 선택한 기존 업무·프로젝트에 직접 개입
   document.getElementById('quick-order-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
     const input = document.getElementById('quick-order-text');
@@ -3179,20 +3201,21 @@ function bindEvents() {
     const text = input.value.trim();
     if (!text) return;
     btn.disabled = true;
-    const targetName = target.value ? target.options[target.selectedIndex].text : '전체';
-    out.innerHTML = `<div class="routine-sub">"${esc(targetName)}"에 전달하는 중…</div>`;
+    const targetName = target.value ? target.options[target.selectedIndex].text : '전체 시스템';
+    out.innerHTML = `<div class="routine-sub">"${esc(targetName)}"에 바로 지시 전달하는 중…</div>`;
     try {
-      const res = await api('/api/chat/send', { method: 'POST', body: JSON.stringify({ text, missionId: target.value }) });
+      const res = await api('/api/chat/send', { method: 'POST', body: JSON.stringify({ text, missionId: target.value, quickOrder: true }) });
       state = res.state;
       input.value = '';
       const replies = (res.replies || []).slice(0, 2);
+      const note = res.intake?.note || res.memoryNote || '';
       out.innerHTML = `<div class="mission-directive-quote" style="margin:0;">
-          <div class="routine-sub">→ ${esc(targetName)}${res.intake?.note ? ` · <strong>업무로 반영:</strong> ${esc(res.intake.note)}` : ''}</div>
+          <div class="routine-sub">→ ${esc(targetName)}${note ? ` · <strong>바로 반영:</strong> ${esc(note)}` : ''}</div>
           ${replies.map((m) => `<div style="margin-top:6px;"><strong>${esc(m.senderName)}</strong>: ${esc(String(m.text || '').slice(0, 400))}</div>`).join('')}
           <div style="margin-top:6px;"><button type="button" class="btn-inline-edit" data-jump-view="office">회의실에서 이어서 보기</button></div>
         </div>`;
       renderAll();
-      toast(res.intake?.note ? '지시가 업무로 등록됐습니다.' : '팀장에게 전달했습니다.');
+      toast(note ? '바로 지시를 기존 업무·전체 지침에 반영했습니다.' : '팀장에게 전달했습니다.');
     } catch (err) {
       out.innerHTML = '';
       toast(err.message, true);
