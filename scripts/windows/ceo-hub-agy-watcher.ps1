@@ -1,0 +1,249 @@
+#Requires -Version 5.1
+<#
+  CEO Hub <-> Local Antigravity (agy) Real-Time Watcher
+  - Parity with Aside's ceo-hub-watcher.ps1 (no CEO Hub server changes / no SSE)
+  - Polls GET /api/outsourcing?worker=antigravity every 60s (pure HTTP, 0 AI cost)
+  - Decrypts MCP token via Windows DPAPI (CurrentUser scope only)
+  - Invokes Antigravity CLI (%LOCALAPPDATA%\agy\bin\agy.exe) in headless auto mode
+  - 20-minute per-request dedup, 90-minute hard timeout, single-instance mutex, exponential backoff
+#>
+param(
+  [switch]$CheckOnce,
+  [int]$IntervalSeconds = 60,
+  [int]$DedupMinutes = 20,
+  [int]$MaxRunMinutes = 90
+)
+
+$ErrorActionPreference = 'Stop'
+
+$BaseDir    = Join-Path $env:LOCALAPPDATA 'CeoHubAgyWatcher'
+$TokenFile  = Join-Path $BaseDir 'mcp-token.dpapi'
+$ConfigFile = Join-Path $BaseDir 'config.json'
+$StateFile  = Join-Path $BaseDir 'watcher-state.json'
+$LogFile    = Join-Path $BaseDir 'watcher.log'
+
+if (-not (Test-Path $BaseDir)) { New-Item -ItemType Directory -Path $BaseDir -Force | Out-Null }
+
+function Write-Log([string]$Message) {
+  $ts = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+  $line = "[$ts] $Message"
+  try {
+    # Rotate log if > 2MB
+    if ((Test-Path $LogFile) -and ((Get-Item $LogFile).Length -gt 2MB)) {
+      Move-Item -Path $LogFile -Destination "$LogFile.bak" -Force
+    }
+    Add-Content -Path $LogFile -Value $line -Encoding UTF8
+  } catch { }
+}
+
+function Resolve-AgyCliPath {
+  $candidates = @(
+    (Join-Path $env:LOCALAPPDATA 'agy\bin\agy.exe'),
+    (Join-Path $env:USERPROFILE '.local\bin\agy.exe')
+  )
+  foreach ($c in $candidates) {
+    if (Test-Path $c) { return $c }
+  }
+  $cmd = Get-Command 'agy.exe' -ErrorAction SilentlyContinue
+  if ($cmd -and $cmd.Source -and ($cmd.Source -notmatch 'Antigravity\.exe$')) {
+    return $cmd.Source
+  }
+  return $null
+}
+
+function Load-Config {
+  $defaults = [PSCustomObject]@{
+    hubBaseUrl = 'https://ai-ceo-hub.onrender.com'
+    worker     = 'antigravity'
+    workDir    = (Join-Path $env:USERPROFILE 'ceo-hub-work')
+    agyCliPath = ''
+  }
+  if (Test-Path $ConfigFile) {
+    try {
+      $loaded = Get-Content -Path $ConfigFile -Raw -Encoding UTF8 | ConvertFrom-Json
+      if ($loaded.hubBaseUrl) { $defaults.hubBaseUrl = [string]$loaded.hubBaseUrl }
+      if ($loaded.worker)     { $defaults.worker     = [string]$loaded.worker }
+      if ($loaded.workDir)    { $defaults.workDir    = [string]$loaded.workDir }
+      if ($loaded.agyCliPath) { $defaults.agyCliPath = [string]$loaded.agyCliPath }
+    } catch { }
+  }
+  return $defaults
+}
+
+function Load-McpToken {
+  if (-not (Test-Path $TokenFile)) {
+    throw "DPAPI token file not found: $TokenFile (run install-agy-watcher.ps1 first)"
+  }
+  $enc = (Get-Content -Path $TokenFile -Raw -Encoding UTF8).Trim()
+  $secure = ConvertTo-SecureString $enc
+  $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+  try {
+    return [Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
+  } finally {
+    [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+  }
+}
+
+function Load-State {
+  $map = @{}
+  if (Test-Path $StateFile) {
+    try {
+      $obj = Get-Content -Path $StateFile -Raw -Encoding UTF8 | ConvertFrom-Json
+      if ($obj -and $obj.triggeredAt) {
+        foreach ($p in $obj.triggeredAt.PSObject.Properties) {
+          $map[$p.Name] = [int64]$p.Value
+        }
+      }
+    } catch { }
+  }
+  return $map
+}
+
+function Save-State([hashtable]$TriggeredMap) {
+  $payload = @{ triggeredAt = $TriggeredMap } | ConvertTo-Json -Depth 4
+  Set-Content -Path $StateFile -Value $payload -Encoding UTF8
+}
+
+function Invoke-AgyRun([string]$AgyExe, [string]$WorkDir, [string[]]$RequestIds) {
+  if (-not (Test-Path $WorkDir)) { New-Item -ItemType Directory -Path $WorkDir -Force | Out-Null }
+
+  $idList = $RequestIds -join ', '
+  $prompt = "ceo-outsourcing 스킬로 CEO Office 외주 처리해줘 (감지된 요청: $idList). 너(Carbon)는 계획·판단·최종 검토만 하고, 여러 파일 구현·원인 추적 같은 중간 난이도 일은 Gemini 4 Neon 하위 에이전트에, 자료 조사·검색·단순 수정·테스트 실행은 Gemini 4 Hydrogen 하위 에이전트에 맡겨. 하위 에이전트를 부를 때 모델 이름을 지시에 적어. 처리할 외주가 없으면 짧게 끝내줘."
+
+  Write-Log "Launching Antigravity CLI for [$idList]: $AgyExe"
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = $AgyExe
+  $psi.WorkingDirectory = $WorkDir
+  $psi.UseShellExecute = $false
+  $psi.CreateNoWindow = $true
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $escapedPrompt = $prompt.Replace('"', '\"')
+  $psi.Arguments = "-p `"$escapedPrompt`" --mode=auto"
+
+  $proc = New-Object System.Diagnostics.Process
+  $proc.StartInfo = $psi
+  [void]$proc.Start()
+
+  $outTask = $proc.StandardOutput.ReadToEndAsync()
+  $errTask = $proc.StandardError.ReadToEndAsync()
+  $timeoutMs = $MaxRunMinutes * 60 * 1000
+  $finished = $proc.WaitForExit($timeoutMs)
+
+  if (-not $finished) {
+    Write-Log "TIMEOUT ($MaxRunMinutes min) reached for [$idList] — terminating agy PID $($proc.Id)"
+    try { & taskkill /PID $proc.Id /T /F 2>$null | Out-Null } catch { }
+    try { $proc.Kill() } catch { }
+    return
+  }
+
+  $exitCode = $proc.ExitCode
+  $stderrNote = ''
+  try {
+    $errText = $errTask.GetAwaiter().GetResult()
+    if ($errText) {
+      $errTrim = ($errText.Trim() -replace '\s+', ' ')
+      if ($errTrim.Length -gt 240) { $errTrim = $errTrim.Substring(0, 240) }
+      if ($errTrim) { $stderrNote = " stderr=$errTrim" }
+    }
+  } catch { }
+  Write-Log "Antigravity CLI finished for [$idList] (exit=$exitCode)$stderrNote"
+}
+
+# Single-instance guard (skip when -CheckOnce)
+$mutex = $null
+if (-not $CheckOnce) {
+  $createdNew = $false
+  $mutex = New-Object System.Threading.Mutex($true, 'Local\CeoHubAgyWatcherMutex', [ref]$createdNew)
+  if (-not $createdNew) {
+    Write-Log 'Another CeoHubAgyWatcher instance is already running. Exiting.'
+    exit 0
+  }
+}
+
+try {
+  $cfg = Load-Config
+  $agyExe = if ($cfg.agyCliPath -and (Test-Path $cfg.agyCliPath)) { $cfg.agyCliPath } else { Resolve-AgyCliPath }
+  $pollUrl = "$($cfg.hubBaseUrl.TrimEnd('/'))/api/outsourcing?worker=$([uri]::EscapeDataString($cfg.worker))"
+  $cliLabel = if ($agyExe) { $agyExe } else { 'NOT_FOUND' }
+
+  Write-Log "Watcher started (worker=$($cfg.worker), interval=${IntervalSeconds}s, cli=$cliLabel)"
+
+  $backoffSec = $IntervalSeconds
+  $consecutiveErrors = 0
+
+  while ($true) {
+    try {
+      $token = Load-McpToken
+      $headers = @{
+        Authorization = "Bearer $token"
+        Accept        = 'application/json'
+      }
+      $resp = Invoke-RestMethod -Method Get -Uri $pollUrl -Headers $headers -TimeoutSec 15
+      $consecutiveErrors = 0
+      $backoffSec = $IntervalSeconds
+
+      $reqs = @()
+      if ($resp -and $resp.requests) { $reqs = @($resp.requests) }
+      $openReqs = @($reqs | Where-Object { $_.status -eq 'open' })
+
+      $state = Load-State
+      $nowMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+      $dedupMs = [int64]$DedupMinutes * 60 * 1000
+
+      # Prune entries older than 6 hours
+      foreach ($k in @($state.Keys)) {
+        if (($nowMs - $state[$k]) -gt (6L * 3600L * 1000L)) { $state.Remove($k) }
+      }
+
+      $actionable = @($openReqs | Where-Object {
+        $last = if ($state.ContainsKey($_.id)) { $state[$_.id] } else { 0L }
+        ($last -eq 0L) -or (($nowMs - $last) -ge $dedupMs)
+      })
+
+      if ($CheckOnce) {
+        [PSCustomObject]@{
+          ok              = $true
+          worker          = $cfg.worker
+          agyCliPath      = $agyExe
+          openCount       = $openReqs.Count
+          actionableCount = $actionable.Count
+          routing         = if ($resp.routing) { "$($resp.routing.label) ($($resp.routing.why))" } else { '' }
+          actionableIds   = @($actionable | ForEach-Object { $_.id })
+        } | ConvertTo-Json -Depth 4
+        break
+      }
+
+      if ($actionable.Count -gt 0) {
+        $ids = @($actionable | ForEach-Object { [string]$_.id })
+        foreach ($id in $ids) { $state[$id] = $nowMs }
+        Save-State $state
+
+        if (-not $agyExe -or -not (Test-Path $agyExe)) {
+          $agyExe = Resolve-AgyCliPath
+        }
+        if (-not $agyExe) {
+          Write-Log "ALERT: open request(s) [$($ids -join ', ')] found, but agy.exe not installed! Run: irm https://antigravity.google/cli/install.ps1 | iex"
+        } else {
+          Invoke-AgyRun -AgyExe $agyExe -WorkDir $cfg.workDir -RequestIds $ids
+        }
+      }
+    } catch {
+      $consecutiveErrors++
+      $mult = [Math]::Pow(2, [Math]::Min($consecutiveErrors - 1, 4))
+      $backoffSec = [Math]::Min(600, [int]($IntervalSeconds * $mult))
+      Write-Log "Poll error (#$consecutiveErrors): $($_.Exception.Message) — retry in ${backoffSec}s"
+      if ($CheckOnce) {
+        Write-Error $_.Exception.Message
+        exit 1
+      }
+    }
+
+    Start-Sleep -Seconds $backoffSec
+  }
+} finally {
+  if ($mutex) {
+    try { $mutex.ReleaseMutex() } catch { }
+    $mutex.Dispose()
+  }
+}
