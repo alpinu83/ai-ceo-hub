@@ -1083,6 +1083,11 @@ function renderActiveMission(mission) {
                 : ''
           }
           ${
+            isProject && currentStage
+              ? `<button type="button" class="btn btn-amber btn-sm" data-advance-milestone="${esc(currentStage.id)}" data-mission-id="${esc(mission.id)}" title="현재 단계를 완료 처리하고 바로 다음 단계로 넘깁니다">다음 단계로 →</button>`
+              : ''
+          }
+          ${
             idleCount > 0
               ? `<button type="button" class="btn btn-ghost btn-sm" id="btn-deploy-idle" data-mission-id="${esc(mission.id)}">대기 팀원 투입 (${idleCount})</button>`
               : ''
@@ -1865,11 +1870,11 @@ function missionPlanHtml(mission) {
   const msRows = (plan?.milestones || [])
     .map((m, i) => {
       const [cls, label] = MS_STATUS[m.status] || MS_STATUS.todo;
-      const canAdvance = m.status === 'doing' || m.status === 'gate';
+      const canAdvance = m.status === 'doing' || m.status === 'gate' || m.status === 'blocked';
       const advanceBtn = canAdvance
-        ? ` <button type="button" class="btn-inline-edit" data-advance-milestone="${esc(m.id)}" data-mission-id="${esc(mission.id)}" title="이 단계를 완료하고 바로 다음 단계로 넘깁니다">완료 · 다음 단계로 →</button>`
+        ? `<div style="margin:6px 0 2px 4px;"><button type="button" class="btn btn-amber btn-sm" data-advance-milestone="${esc(m.id)}" data-mission-id="${esc(mission.id)}">이 단계 완료 · 다음 단계로 →</button></div>`
         : '';
-      return `<li style="margin:6px 0;"><span class="badge ${cls}">${esc(label)}</span> <strong>${i + 1}. ${esc(m.title)}</strong>${m.gate ? ' <span class="badge badge-neutral">관문</span>' : ''}${advanceBtn}<div class="routine-sub" style="margin-left:4px;">완료 기준: ${esc(m.doneWhen)}${m.rounds ? ` · 시도 ${m.rounds}회` : ''}${m.decisionNote ? ` · 대표님: ${esc(m.decisionNote)}` : ''}</div></li>`;
+      return `<li style="margin:8px 0;"><span class="badge ${cls}">${esc(label)}</span> <strong>${i + 1}. ${esc(m.title)}</strong>${m.gate ? ' <span class="badge badge-neutral">관문</span>' : ''}<div class="routine-sub" style="margin-left:4px;">완료 기준: ${esc(m.doneWhen)}${m.rounds ? ` · 시도 ${m.rounds}회` : ''}${m.decisionNote ? ` · 대표님: ${esc(m.decisionNote)}` : ''}</div>${advanceBtn}</li>`;
     })
     .join('');
   return `<details class="mission-directive-quote" open>
