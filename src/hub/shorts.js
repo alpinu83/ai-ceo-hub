@@ -66,10 +66,10 @@ export function ingestCandidates(db, items = [], batchLabel = '') {
       createdAt: now,
       seenAt: now
     };
-    sh.candidates.unshift(cand);
     added.push(cand);
   }
-  sh.candidates = sh.candidates.slice(0, MAX_CANDIDATES);
+  // 제작기가 보낸 순서(조회수·보도량 순)를 그대로 맨 위에
+  sh.candidates = [...added, ...sh.candidates].slice(0, MAX_CANDIDATES);
   sh.lastCollectedAt = now;
   return added;
 }
