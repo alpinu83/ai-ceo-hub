@@ -633,11 +633,18 @@ function buildCeoInboxClient() {
   const fresh = (sh.candidates || []).filter((c) => c.status === 'new');
   const inFlight = sm && (state.tasks || []).some((t) => t.missionId === sm.id && t.shorts && ['queued', 'running', 'awaiting_bridge', 'awaiting_approval', 'outsourced'].includes(t.status));
   if (sm && fresh.length && !inFlight) items.push({ kind: 'shorts_pick', missionId: sm.id, missionTitle: sm.title, title: `쇼츠로 만들 뉴스 1개 고르기 (후보 ${fresh.length}건)`, detail: fresh[0].title, since: sh.lastCollectedAt || fresh[0].createdAt, open: `data-open-mission-board="${esc(sm.id)}"`, btn: '고르러 가기' });
+  const blockedBy = new Map();
   for (const t of state.tasks || []) {
     if (t.status !== 'blocked') continue;
     const m = state.missions.find((x) => x.id === t.missionId);
     if (!m || m.status === 'completed') continue;
-    items.push({ kind: 'blocked', missionId: m.id, missionTitle: m.title, title: t.title, detail: t.blockedReason || '보류됨', since: t.updatedAt, open: `data-open-mission-board="${esc(m.id)}"`, btn: '확인하기' });
+    if (!blockedBy.has(m.id)) blockedBy.set(m.id, { m, tasks: [] });
+    blockedBy.get(m.id).tasks.push(t);
+  }
+  for (const { m, tasks } of blockedBy.values()) {
+    tasks.sort((x, y) => String(x.updatedAt).localeCompare(String(y.updatedAt)));
+    const one = tasks.length === 1;
+    items.push({ kind: 'blocked', missionId: m.id, missionTitle: m.title, title: one ? tasks[0].title : `보류된 작업 ${tasks.length}건 — 다시 맡길지 정리할지 결정`, detail: one ? tasks[0].blockedReason || '보류됨' : tasks.slice(0, 3).map((t) => t.title).join(' · '), since: tasks[0].updatedAt, open: `data-open-mission-board="${esc(m.id)}"`, btn: '프로젝트에서 확인' });
   }
   for (const o of state.outsourcing || []) {
     if (o.status !== 'needs_ceo') continue;
