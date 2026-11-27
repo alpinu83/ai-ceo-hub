@@ -106,9 +106,9 @@ export function createDefaultState() {
     agents: [
       {
         id: 'agent_gemini_neon',
-        name: 'Gemini 4 Hydrogen',
+        name: 'Gemini 4 Hydrogen (API)',
         shortCode: 'GM',
-        roleTitle: '전략·총괄 팀장',
+        roleTitle: '비상 대기 팀장 (Gemini API · 평소 대기)',
         tier: 'lead',
         reportsTo: 'ceo',
         provider: 'gemini',
@@ -119,8 +119,8 @@ export function createDefaultState() {
         monthlyCapKRW: 0,
         spentKRW: 0,
         domains: ['business', 'content', 'dev', 'life'],
-        strengths: '복합 CEO 지시 분해, 프로젝트 단계별 전략 기획, 전체 팀원 업무 배정 및 임원 종합 보고',
-        bridgeGuide: 'Google AI Studio 무료 API 키(Gemini 4 Hydrogen)로 24시간 자동 실행됩니다.',
+        strengths: '비상 대기 모드 — 주간 AGY(Hydrogen)·야간 Gemini 앱이 모두 처리 못 할 때와 회의실 즉답에만 자동 개입 (평소 실무 배정 제외)',
+        bridgeGuide: '팀장 업무함(주간 AGY · 야간 Gemini 앱) 가동 중에는 비상 대기 모드로 유지됩니다.',
         active: true,
         accent: '#0E6245'
       },
@@ -478,9 +478,9 @@ export function loadDb() {
         if (a.id === 'agent_gemini_neon') {
           return {
             ...a,
-            name: 'Gemini 4 Hydrogen',
+            name: 'Gemini 4 Hydrogen (API)',
             shortCode: 'GM',
-            roleTitle: '전략·총괄 팀장',
+            roleTitle: '비상 대기 팀장 (Gemini API · 평소 대기)',
             modelId: 'gemini-4-hydrogen',
             connectionMode: 'api',
             costTier: 'free',

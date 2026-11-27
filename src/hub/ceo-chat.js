@@ -88,7 +88,7 @@ export function getTelegramCallbacks() {
   };
 }
 
-export async function processCeoChat(text, reqMissionIdRaw = '', { channel = 'web' } = {}) {
+export async function processCeoChat(text, reqMissionIdRaw = '', { channel = 'web', quickOrder = false } = {}) {
   const db = loadDb();
   const reqMissionId = String(reqMissionIdRaw || '').trim();
   const mission =
@@ -105,7 +105,7 @@ export async function processCeoChat(text, reqMissionIdRaw = '', { channel = 'we
     senderShortCode: 'CEO',
     senderAccent: '#171614',
     targetAgentId: null,
-    statusText: '회의실 발언',
+    statusText: quickOrder ? '바로 지시' : '회의실 발언',
     type: 'ceo_chat',
     text: channel === 'telegram' ? `${text}\n(텔레그램)` : text
   });
@@ -126,7 +126,7 @@ export async function processCeoChat(text, reqMissionIdRaw = '', { channel = 'we
   // CEO orders in the meeting room become real work (tasks → auto-run → PR/approval), not just chat replies
   let intake = { note: '' };
   try {
-    intake = await intakeChatDirective(text, mission?.id || '');
+    intake = await intakeChatDirective(text, mission?.id || '', { quickOrder });
   } catch (err) {
     console.warn('chat directive intake failed:', err.message);
   }
@@ -232,9 +232,43 @@ export async function handleTelegramChat(rawText) {
 
 export const MAJOR_DECISION_RE = /결제|송금|계약|광고비|예약\s*확정|최종\s*예약|실제\s*발송|대외\s*발송/;
 
-export async function intakeChatDirective(text, missionId) {
+/** 바로 지시(전체 시스템)가 기존 프로젝트·시스템 유지보수 미션 중 어디에 개입해야 하는지 자동 탐색 */
+function resolveQuickOrderMission(db, text) {
+  const active = (db.missions || []).filter((m) => m.status !== 'completed' && !m.isRoutineHub);
+  if (!active.length) return null;
+  const t = String(text || '').toLowerCase();
+  // 1) 미션 제목 키워드가 직접 언급된 경우
+  for (const m of active) {
+    const title = String(m.title || '').toLowerCase();
+    const tokens = title.split(/[\s·,/()[\]-]+/).filter((w) => w.length >= 2);
+    if (tokens.some((w) => t.includes(w))) return m;
+  }
+  // 2) 도메인·시스템 키워드 매칭
+  if (/(쇼츠|shorts|유튜브|구국열사)/i.test(t)) {
+    const m = active.find((x) => /쇼츠|shorts/i.test(`${x.title} ${x.directive || ''}`));
+    if (m) return m;
+  }
+  if (/(세금|세무|연말정산|korea-tax|계산기)/i.test(t)) {
+    const m = active.find((x) => /tax|세금|계산기/i.test(`${x.title} ${x.siteUrl || ''} ${x.githubRepo || ''}`));
+    if (m) return m;
+  }
+  if (/(돈벌|미니앱|토스|수익화)/i.test(t)) {
+    const m = active.find((x) => /돈벌/i.test(x.title || ''));
+    if (m) return m;
+  }
+  if (/(ceo\s*office|홈\s*화면|루틴|회의실|결재|팀장|감시기|조직도|외주|바로\s*지시|시스템|화면|버튼|ui|버그|오류|복구)/i.test(t)) {
+    const m = active.find((x) => x.domain === 'it_ops' || /ai-ceo-hub/i.test(x.githubRepo || '') || /ceo\s*office/i.test(x.title || ''));
+    if (m) return m;
+  }
+  return null;
+}
+
+export async function intakeChatDirective(text, missionId, { quickOrder = false } = {}) {
   const db = loadDb();
-  const mission = missionId ? db.missions.find((m) => m.id === missionId) || null : null;
+  let mission = missionId ? db.missions.find((m) => m.id === missionId) || null : null;
+  if (!mission && quickOrder) {
+    mission = resolveQuickOrderMission(db, text);
+  }
   const tasks = mission ? db.tasks.filter((t) => t.missionId === mission.id) : [];
   const rejected = mission
     ? db.approvals
@@ -254,7 +288,16 @@ export async function intakeChatDirective(text, missionId) {
     planningRoster: buildPlanningRoster(db),
     assignmentRules: ASSIGNMENT_RULES
   });
-  if (cls.kind !== 'directive') return { note: '' };
+  if (cls.kind !== 'directive') {
+    if (quickOrder && !mission) {
+      rememberFact(db, { kind: 'directive', missionId: '', pinned: true, text: `대표님 바로 지시(전체 시스템): ${text}`, source: 'quick_order' });
+      appendLog(db, '바로 지시', `전체 시스템 지침 반영: ${text.slice(0, 120)}`, 'info');
+      saveDb(db);
+      await flushCloudBackup(db);
+      return { note: '전체 시스템 지침(회사 기억)에 바로 반영했습니다 (새 업무 미생성).' };
+    }
+    return { note: '' };
+  }
   if (Array.isArray(cls.tasks) && cls.tasks.length && mission) {
     const before = cls.tasks.length;
     cls.tasks = cls.tasks.filter((t) => !findScopeViolations(mission, `${t.title} ${t.description || ''}`).length && !isForbiddenCodeTask(mission, t));
@@ -266,7 +309,18 @@ export async function intakeChatDirective(text, missionId) {
     if (rb.changes.length) appendLog(db, '총괄 팀장', `회의실 지시 배정 보정: ${rb.changes.join(' / ')}`.slice(0, 600), 'info');
   }
 
-  // No project selected: same as a Telegram /order → new work item, decomposed and auto-run
+  // 바로 지시(전체 시스템): 별도의 새 업무를 생성하지 않고 전체 시스템 지침으로 즉시 반영
+  if (!mission && quickOrder) {
+    rememberFact(db, { kind: 'directive', missionId: '', pinned: true, text: `대표님 바로 지시(전체 시스템): ${text}`, source: 'quick_order' });
+    appendLog(db, '바로 지시', `전체 시스템 지침 반영(별도 업무 미생성): ${text.slice(0, 140)}`, 'info');
+    saveDb(db);
+    await flushCloudBackup(db);
+    return {
+      note: '전체 시스템 고정 지침(회사 기억)에 바로 반영했습니다. 모든 프로젝트와 팀장 판단에 즉시 적용됩니다 (별도 업무 미생성).'
+    };
+  }
+
+  // No project selected (일반 회의실/텔레그램 전체 채널): new work item, decomposed and auto-run
   if (!mission) {
     const created = await createMissionInDb({ directive: text, domain: 'business' });
     return {
@@ -279,10 +333,15 @@ export async function intakeChatDirective(text, missionId) {
   const fresh = loadDb();
   const m = fresh.missions.find((x) => x.id === mission.id);
   const agentMap = Object.fromEntries(fresh.agents.map((a) => [a.id, a]));
+  const fallbackWorker = fresh.agents.find((a) => a.active && a.tier !== 'lead') || fresh.agents[0];
   const now = new Date().toISOString();
   const phase = Number(m.phase) || 1;
   const parts = [];
   const taskIds = [];
+
+  if (quickOrder) {
+    rememberFact(fresh, { kind: 'directive', missionId: m.id, pinned: true, text: `대표님 바로 지시: ${text}`, source: 'quick_order' });
+  }
 
   if (cls.reopenRejected && rejected[0]) {
     const t = fresh.tasks.find((x) => x.id === rejected[0].taskId);
@@ -290,7 +349,7 @@ export async function intakeChatDirective(text, missionId) {
       const ag = agentMap[t.assigneeId];
       t.status = ag?.connectionMode === 'bridge' ? 'awaiting_bridge' : 'queued';
       t.description = `${t.description}\n[CEO 회의실 지시] ${text}`;
-        addLeadNote(t, 'ceo', `대표님 회의실 지시: ${text}`);
+      addLeadNote(t, 'ceo', `대표님 회의실 지시: ${text}`);
       t.updatedAt = now;
       delete t.codeBundleId;
       if (ag) t.dispatchPrompt = buildDispatchPrompt(ag, t, m);
@@ -306,8 +365,9 @@ export async function intakeChatDirective(text, missionId) {
     if (!spec?.title || existingTitles.has(spec.title)) continue;
     let assigneeId = spec.assigneeId;
     if (spec.isCodeChange && repoLinked && agentMap.agent_it_dev?.active) assigneeId = 'agent_it_dev';
-    const ag = agentMap[assigneeId] || agentMap[m.leadAgentId] || fresh.agents[0];
-    const desc = `${spec.description || spec.title}\n[CEO 회의실 원문] ${text}`;
+    const picked = agentMap[assigneeId];
+    const ag = picked && picked.tier !== 'lead' ? picked : fallbackWorker;
+    const desc = `${spec.description || spec.title}\n[CEO ${quickOrder ? '바로 지시' : '회의실'} 원문] ${text}`;
     const task = {
       id: uid('tsk'),
       missionId: m.id,
@@ -322,7 +382,7 @@ export async function intakeChatDirective(text, missionId) {
       dispatchPrompt: '',
       output: '',
       executionModeUsed: '',
-      source: 'meeting_room',
+      source: quickOrder ? 'quick_order' : 'meeting_room',
       createdAt: now,
       updatedAt: now
     };
@@ -330,16 +390,23 @@ export async function intakeChatDirective(text, missionId) {
     fresh.tasks.unshift(task);
     existingTitles.add(task.title);
     taskIds.push(task.id);
-    parts.push(`새 업무 "${task.title}"(@${ag.name})${spec.isCodeChange && repoLinked ? ' → 완료되면 IT팀이 실코드 PR을 만들어 결재에 올림' : ''}`);
+    parts.push(`"${m.title}"에 작업 "${task.title}"(@${ag.name}) 바로 추가${spec.isCodeChange && repoLinked ? ' → 코드 PR 결재 연계' : ''}`);
   }
 
-  if (!taskIds.length) return { note: '' };
+  if (!taskIds.length) {
+    if (quickOrder) {
+      saveDb(fresh);
+      await flushCloudBackup(fresh);
+      return { note: `"${m.title}" 지침에 바로 반영했습니다 (별도 업무 미생성).`, missionId: m.id };
+    }
+    return { note: '' };
+  }
   m.status = 'in_progress';
-  appendLog(fresh, '회의실 지시 반영', `${m.title}: ${parts.join(' / ')}`, 'info');
+  appendLog(fresh, quickOrder ? '바로 지시 개입' : '회의실 지시 반영', `${m.title}: ${parts.join(' / ')}`, 'info');
   saveDb(fresh);
   await flushCloudBackup(fresh);
   return {
-    note: `${parts.join(' / ')} — 등록 후 자동 실행을 시작했습니다.`,
+    note: `${parts.join(' / ')} — 바로 개입해 자동 실행을 시작했습니다.`,
     missionId: m.id,
     startMissionId: m.id,
     taskIds

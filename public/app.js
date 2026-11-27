@@ -534,7 +534,9 @@ function renderAll() {
 
 function renderChrome() {
   const s = state.settings;
-  const activeAgents = state.agents.filter((a) => a.active);
+  const leadDeskOn = s?.leadDesk?.enabled !== false;
+  const activeWorkers = state.agents.filter((a) => a.active && (!leadDeskOn || a.tier !== 'lead'));
+  const activeCount = leadDeskOn ? activeWorkers.length + 1 : activeWorkers.length;
   const pendingCount = state.approvals.filter((a) => a.status === 'pending').length;
   const totalTasks = state.tasks.length;
   const doneTasks = state.tasks.filter((t) => t.status === 'completed').length;
@@ -554,10 +556,10 @@ function renderChrome() {
     mobBadge.classList.toggle('show', pendingCount > 0);
   }
 
-  // Executive 3-Cell KPI Strip (Approvals · Missions · Active AI)
-  document.getElementById('kpi-approvals-val').textContent = `${pendingCount}건`;
+  // Executive 3-Cell KPI Strip (대표님 To Do · Missions · Active AI) — 결재 대기는 To Do List에 포함
+  document.getElementById('kpi-approvals-val').textContent = `${buildCeoInboxClient().length}건`;
   document.getElementById('kpi-agents-val').textContent = `${state.missions.length}건 · ${taskPct}%`;
-  document.getElementById('kpi-budget-val').textContent = `${activeAgents.length}명`;
+  document.getElementById('kpi-budget-val').textContent = `${activeCount}명`;
 
   const meta = VIEW_META[currentView] || VIEW_META.command;
   document.getElementById('page-title').textContent = meta.title;
@@ -627,7 +629,7 @@ function buildCeoInboxClient() {
   const hrs = (iso) => (iso ? Math.max(0, (Date.now() - Date.parse(iso)) / 3600000) : 0);
   for (const a of state.approvals || []) {
     if (a.status !== 'pending') continue;
-    items.push({ kind: a.kind === 'stage_gate' ? 'gate' : 'approval', missionId: a.missionId, missionTitle: mt(a.missionId), title: a.title, detail: a.kind === 'stage_gate' ? '이 결정이 나야 다음 단계로 넘어갑니다' : '', since: a.createdAt, open: `data-open-approval="${esc(a.id)}"`, btn: '결재하기' });
+    items.push({ kind: a.kind === 'stage_gate' ? 'gate' : 'approval', approvalId: a.id, missionId: a.missionId, missionTitle: mt(a.missionId), title: a.title, detail: a.kind === 'stage_gate' ? '이 결정이 나야 다음 단계로 넘어갑니다' : '', since: a.createdAt, open: `data-open-approval="${esc(a.id)}"`, btn: '결재하기' });
   }
   const sm = state.missions.find((m) => m.mode === 'project' && /쇼츠|shorts/i.test(m.title) && m.status !== 'completed');
   const sh = state.shorts || {};
@@ -733,7 +735,7 @@ function renderCeoInbox() {
             <div class="home-item-title">${esc(it.title)}</div>
             ${it.detail ? `<div class="routine-sub">${esc(String(it.detail).slice(0, 140))}</div>` : ''}
             ${it.kind === 'blocked' && it.tasks?.length ? renderInboxBlockedTasks(it) : ''}
-            <div class="home-item-actions">${it.kind === 'outsource' && it.outsource ? renderInboxOutsourceActions(it.outsource) : ''}<button type="button" class="btn ${it.btnGhost ? 'btn-ghost' : 'btn-primary'} btn-sm" ${it.open}>${it.btn}</button></div>
+            <div class="home-item-actions">${it.kind === 'outsource' && it.outsource ? renderInboxOutsourceActions(it.outsource) : ''}${it.kind === 'approval' && it.approvalId ? `<button type="button" class="btn btn-ghost btn-sm" data-quick-approve="${esc(it.approvalId)}">승인</button>` : ''}<button type="button" class="btn ${it.btnGhost ? 'btn-ghost' : 'btn-primary'} btn-sm" ${it.open}>${it.btn}</button></div>
           </div>`;
         })
         .join('')}${items.length > 10 ? `<div class="routine-sub">… 외 ${items.length - 10}건</div>` : ''}</div>
@@ -752,7 +754,7 @@ function renderQuickOrderTargets() {
   const proj = active.filter((m) => m.mode === 'project');
   const one = active.filter((m) => m.mode !== 'project');
   sel.innerHTML = [
-    '<option value="">전체 (회사 공통)</option>',
+    '<option value="">전체 시스템 (회사 공통 · 개입)</option>',
     proj.length ? `<optgroup label="프로젝트">${proj.map((m) => `<option value="${esc(m.id)}">${esc(m.title)}</option>`).join('')}</optgroup>` : '',
     one.length ? `<optgroup label="일반 업무">${one.map((m) => `<option value="${esc(m.id)}">${esc(m.title)}</option>`).join('')}</optgroup>` : ''
   ].join('');
@@ -762,72 +764,61 @@ function renderQuickOrderTargets() {
 function renderHomeView() {
   renderCeoInbox();
   renderQuickOrderTargets();
-  const aprWrap = document.getElementById('home-approvals-list');
   const msnWrap = document.getElementById('home-missions-list');
   const chatTeaser = document.getElementById('home-chat-teaser');
-  if (!aprWrap || !msnWrap) return;
+  if (!msnWrap) return;
 
-  const pending = state.approvals.filter((a) => a.status === 'pending');
-  if (pending.length === 0) {
-    aprWrap.innerHTML = '<div class="empty-state">대기 중인 결재 없음</div>';
+  const active = (state.missions || []).filter((m) => m.status !== 'completed' && !m.isRoutineHub);
+  const proj = active.filter((m) => m.mode === 'project');
+  const one = active.filter((m) => m.mode !== 'project');
+
+  const renderHomeMissionRow = (m) => {
+    const tasks = state.tasks.filter((t) => t.missionId === m.id);
+    const done = tasks.filter((t) => t.status === 'completed').length;
+    const pct = tasks.length ? Math.round((done / tasks.length) * 100) : 0;
+    const kindBadge =
+      m.mode === 'project'
+        ? `<span class="badge badge-blue">프로젝트${msProgress(m) ? ` ${msProgress(m)}` : ''}</span>`
+        : '<span class="badge badge-neutral">일반 업무</span>';
+    return `<div class="home-item">
+      <div class="home-item-top">
+        <div style="display:flex;align-items:center;gap:6px;min-width:0;flex:1;">
+          ${kindBadge}
+          <div class="home-item-title">${esc(m.title)}</div>
+        </div>
+        <span class="mono" style="color:var(--ink-muted);white-space:nowrap;">${done}/${tasks.length} · ${pct}%</span>
+      </div>
+      <div class="progress-track thin"><div class="progress-fill" style="width:${pct}%"></div></div>
+      <div class="home-item-actions">
+        <button type="button" class="btn btn-ghost btn-sm" data-open-mission-board="${esc(m.id)}">열기</button>
+        <button type="button" class="btn btn-ghost btn-sm" data-jump-view="office">회의실</button>
+      </div>
+    </div>`;
+  };
+
+  if (active.length === 0) {
+    msnWrap.innerHTML = '<div class="empty-state">진행 중인 프로젝트·업무 없음</div>';
   } else {
-    aprWrap.innerHTML = pending
-      .slice(0, 3)
-      .map((apr) => {
-        const ag = getAgent(apr.agentId);
-        const msn = state.missions.find((m) => m.id === apr.missionId);
-        const msnTag = msn
-          ? `${msn.mode === 'project' ? '프로젝트' : '업무'} · ${msn.title}`
+    const sections = [];
+    if (proj.length) {
+      sections.push(
+        `<div class="routine-sub" style="font-weight:600;margin:2px 0 4px;">프로젝트 (${proj.length}건)</div>` +
+          proj.map(renderHomeMissionRow).join('')
+      );
+    }
+    if (one.length) {
+      const shownOne = one.slice(0, 5);
+      const moreBtn =
+        one.length > shownOne.length
+          ? `<div style="margin-top:6px;"><button type="button" class="btn btn-ghost btn-sm" data-jump-view="missions">일반 업무 ${one.length}건 전체 보기</button></div>`
           : '';
-        const costTxt = apr.estimatedCostKRW > 0 ? formatKRW(apr.estimatedCostKRW) : '';
-        return `<div class="home-item pending-accent">
-          <div class="home-item-top">
-            <div style="display:flex;gap:5px;flex-wrap:wrap;min-width:0;">
-              ${msnTag ? `<span class="badge badge-blue" style="max-width:100%;overflow:hidden;text-overflow:ellipsis;">${esc(msnTag)}</span>` : ''}
-              <span class="badge badge-amber">${esc(ag?.name || 'AI')}</span>
-            </div>
-            ${costTxt ? `<span class="mono" style="font-weight:700;">${esc(costTxt)}</span>` : ''}
-          </div>
-          <div class="home-item-title">${esc(apr.title)}</div>
-          <div class="home-item-actions">
-            <button type="button" class="btn btn-primary btn-sm" data-quick-approve="${esc(apr.id)}">승인</button>
-            <button type="button" class="btn btn-ghost btn-sm" data-open-approval="${esc(apr.id)}">상세</button>
-            ${msn ? `<button type="button" class="btn btn-ghost btn-sm" data-open-mission-board="${esc(msn.id)}">원본 보기</button>` : ''}
-          </div>
-        </div>`;
-      })
-      .join('');
-  }
-
-  if (state.missions.length === 0) {
-    msnWrap.innerHTML = '<div class="empty-state">진행 중인 미션 없음</div>';
-  } else {
-    msnWrap.innerHTML = state.missions
-      .slice(0, 3)
-      .map((m) => {
-        const tasks = state.tasks.filter((t) => t.missionId === m.id);
-        const done = tasks.filter((t) => t.status === 'completed').length;
-        const pct = tasks.length ? Math.round((done / tasks.length) * 100) : 0;
-        const kindBadge =
-          m.mode === 'project'
-            ? `<span class="badge badge-blue">프로젝트${msProgress(m) ? ` ${msProgress(m)}` : ''}</span>`
-            : '<span class="badge badge-neutral">일반 업무</span>';
-        return `<div class="home-item">
-          <div class="home-item-top">
-            <div style="display:flex;align-items:center;gap:6px;min-width:0;flex:1;">
-              ${kindBadge}
-              <div class="home-item-title">${esc(m.title)}</div>
-            </div>
-            <span class="mono" style="color:var(--ink-muted);">${pct}%</span>
-          </div>
-          <div class="progress-track thin"><div class="progress-fill" style="width:${pct}%"></div></div>
-          <div class="home-item-actions">
-            <button type="button" class="btn btn-ghost btn-sm" data-open-mission-board="${esc(m.id)}">열기</button>
-            <button type="button" class="btn btn-ghost btn-sm" data-jump-view="office">회의실</button>
-          </div>
-        </div>`;
-      })
-      .join('');
+      sections.push(
+        `<div class="routine-sub" style="font-weight:600;margin:${proj.length ? '12px' : '2px'} 0 4px;">일반 업무 (${one.length}건)</div>` +
+          shownOne.map(renderHomeMissionRow).join('') +
+          moreBtn
+      );
+    }
+    msnWrap.innerHTML = sections.join('');
   }
 
   if (chatTeaser) {
@@ -1049,9 +1040,11 @@ function renderOfficeView() {
       ? allMessages
       : allMessages.filter((m) => m.missionId === officeMissionFilter);
 
+  const leadDeskOn = state.settings?.leadDesk?.enabled !== false;
+  const workers = state.agents.filter((a) => a.tier !== 'lead' && a.active);
   const partCount = document.getElementById('office-participant-count');
   if (partCount) {
-    partCount.textContent = String(state.agents.filter((a) => a.active).length);
+    partCount.textContent = String(leadDeskOn ? workers.length + 1 : state.agents.filter((a) => a.active).length);
   }
 
   const renderDesk = (ag) => {
@@ -1083,10 +1076,26 @@ function renderOfficeView() {
     </button>`;
   };
 
-  // 휴직 팀원은 회의실에 표시하지 않음
-  const leads = state.agents.filter((a) => a.tier === 'lead' && a.active);
-  const workers = state.agents.filter((a) => a.tier !== 'lead' && a.active);
-  leadWrap.innerHTML = leads.map(renderDesk).join('');
+  if (leadDeskOn) {
+    const agyAt = state?.agentConnections?.['lead:agy_lead']?.lastSeenAt;
+    const agyOn = agyAt && Date.now() - Date.parse(agyAt) < 3 * 60 * 1000;
+    const isLeadSpeaking = activeSpeakerId === 'agent_gemini_neon';
+    leadWrap.innerHTML = `<button type="button" class="desk-card${isLeadSpeaking ? ' speaking' : ''}" data-mention-desk="총괄 팀장">
+      <div class="desk-head">
+        <div class="desk-person">
+          <span class="agent-avatar sm" style="background:${agyOn ? '#0E6245' : '#2563EB'}">${agyOn ? 'AG' : '팀장'}</span>
+          <div style="min-width:0;">
+            <div class="desk-name">${agyOn ? '총괄 팀장 · AGY (Hydrogen)' : '총괄 팀장 · Gemini 앱'}</div>
+          </div>
+        </div>
+        <span class="desk-status">${isLeadSpeaking ? '발언 중' : agyOn ? '주간 근무' : '야간 당직'}</span>
+      </div>
+    </button>`;
+  } else {
+    // 팀장 업무함이 꺼져 있을 때만 기존 API 팀장 카드 표시
+    const leads = state.agents.filter((a) => a.tier === 'lead' && a.active);
+    leadWrap.innerHTML = leads.map(renderDesk).join('');
+  }
   workerWrap.innerHTML = workers.map(renderDesk).join('');
 
   // Render filtered channel feed
@@ -2245,31 +2254,36 @@ function renderRosterView() {
   const all = state.agents.filter((a) => !a.retired);
   const onLeave = all.filter((a) => !a.active);
   const working = all.filter((a) => a.active);
+  const leadDeskOn = state.settings?.leadDesk?.enabled !== false;
   const apiLead = working.find((a) => a.tier === 'lead');
   const members = working.filter((a) => a.tier !== 'lead');
   const modeDot = (m) => (m === 'api' || m === 'litellm' ? 'dot-green' : m === 'mcp' ? 'dot-blue' : 'dot-amber');
 
-  // 팀장 = 팀장 업무함 (주간 AGY 팀장 감시기 · 야간 Gemini 앱 당직 · 비상 Gemini API)
+  // 팀장 = 팀장 업무함 (주간 AGY 팀장 감시기 · 야간 Gemini 앱 당직 · 비상 Gemini API 대기)
   const seen = (k) => state?.agentConnections?.[k]?.lastSeenAt || '';
   const agyAt = seen('lead:agy_lead');
   const gemAt = seen('lead:gemini_app');
   const agyOn = agyAt && Date.now() - Date.parse(agyAt) < 3 * 60 * 1000;
   const dutyName = agyOn ? 'AGY (Hydrogen)' : 'Gemini 앱 당직';
   const ago = (iso) => (iso ? formatTime(iso) : '기록 없음');
+  const isStandbyLead = (ag) => leadDeskOn && ag.tier === 'lead' && ag.active;
 
-  const renderNodePill = (ag) => `<button type="button" class="org-node-pill ${ag.active ? '' : 'inactive'}" data-focus-agent="${esc(ag.id)}">
+  const renderNodePill = (ag) => {
+    const standby = isStandbyLead(ag);
+    return `<button type="button" class="org-node-pill ${ag.active && !standby ? '' : 'inactive'}" data-focus-agent="${esc(ag.id)}">
     <span class="agent-avatar sm" style="background:${esc(ag.accent)}">${esc(ag.shortCode)}</span>
     <div style="text-align:left;">
       <div class="org-node-name">${esc(ag.name)}</div>
-      <div class="org-node-role">${ag.tier === 'lead' ? '비상 대체 팀장 · 실무' : `${esc(COST_LABELS[ag.costTier])} · ${esc(MODE_LABELS[ag.connectionMode])}`}</div>
+      <div class="org-node-role">${standby ? '비상 대기 · 평소 미투입' : ag.tier === 'lead' ? '총괄 팀장 · API' : `${esc(COST_LABELS[ag.costTier])} · ${esc(MODE_LABELS[ag.connectionMode])}`}</div>
     </div>
-    <i class="dot ${ag.active ? modeDot(ag.connectionMode) : 'dot-amber'}"></i>
+    <i class="dot ${!ag.active || standby ? 'dot-amber' : modeDot(ag.connectionMode)}"></i>
   </button>`;
+  };
   const leadPill = `<div class="org-node-pill">
-    <span class="agent-avatar sm" style="background:#0E6245">팀장</span>
+    <span class="agent-avatar sm" style="background:${agyOn ? '#0E6245' : '#2563EB'}">${agyOn ? 'AG' : '팀장'}</span>
     <div style="text-align:left;">
       <div class="org-node-name">총괄 팀장 · ${esc(dutyName)}</div>
-      <div class="org-node-role">주간 AGY · 야간 Gemini 앱 · 비상 Gemini API</div>
+      <div class="org-node-role">주간 AGY (Hydrogen) · 야간 Gemini 앱 · 비상 Gemini API 대기</div>
     </div>
     <i class="dot ${agyOn ? 'dot-green' : 'dot-blue'}"></i>
   </div>`;
@@ -2286,11 +2300,19 @@ function renderRosterView() {
       </div>
     </div>
     <div class="org-connector"></div>
-    <div class="org-level">${leadPill}</div>
+    <div class="org-level">${leadDeskOn ? leadPill : apiLead ? renderNodePill(apiLead) : leadPill}</div>
     <div class="org-connector"></div>
     <div class="org-level">
-      ${[apiLead, ...members].filter(Boolean).map(renderNodePill).join('')}
+      ${members.map(renderNodePill).join('')}
     </div>
+    ${
+      leadDeskOn && apiLead
+        ? `<div class="org-level" style="margin-top:14px;opacity:.85;">
+             <span class="badge badge-amber" style="align-self:center;">비상 대기</span>
+             ${renderNodePill(apiLead)}
+           </div>`
+        : ''
+    }
     ${
       onLeave.length
         ? `<div class="org-level" style="margin-top:14px;opacity:.75;">
@@ -2302,18 +2324,27 @@ function renderRosterView() {
   `;
 
   // Tier Cards
-  const renderAgentCard = (ag) => `
-    <article class="agent-card ${ag.active ? '' : 'inactive'} ${highlightedAgentId === ag.id ? 'highlight' : ''}" id="agent-card-${esc(ag.id)}">
+  const renderAgentCard = (ag) => {
+    const standby = isStandbyLead(ag);
+    const badgeCls = standby ? 'badge-amber' : ag.costTier === 'free' ? 'badge-green' : ag.costTier === 'freemium' ? 'badge-blue' : 'badge-amber';
+    const badgeTxt = standby ? '비상 대기' : COST_LABELS[ag.costTier];
+    const roleTxt = standby
+      ? '비상 대기 모드 · 평소 실무 미배정 (AGY·Gemini 앱이 모두 처리 못 하거나 회의실 즉답 시에만 자동 개입)'
+      : ag.tier === 'lead'
+        ? '비상 대체 팀장 (휴직 중 — 완전 미사용)'
+        : ag.roleTitle;
+    return `
+    <article class="agent-card ${ag.active && !standby ? '' : 'inactive'} ${highlightedAgentId === ag.id ? 'highlight' : ''}" id="agent-card-${esc(ag.id)}">
       <div class="agent-card-head">
         <div class="agent-identity">
           <span class="agent-avatar lg" style="background:${esc(ag.accent)}">${esc(ag.shortCode)}</span>
           <div>
             <div class="agent-name">${esc(ag.name)}</div>
-            <div class="agent-role">${ag.tier === 'lead' ? '비상 대체 팀장 · 실무 (AGY·Gemini 앱이 모두 처리 못 할 때, 회의실 즉답·새 업무 분해)' : esc(ag.roleTitle)}</div>
+            <div class="agent-role">${esc(roleTxt)}</div>
           </div>
         </div>
-        <span class="badge ${ag.costTier === 'free' ? 'badge-green' : ag.costTier === 'freemium' ? 'badge-blue' : 'badge-amber'}">
-          ${esc(COST_LABELS[ag.costTier])}
+        <span class="badge ${badgeCls}">
+          ${esc(badgeTxt)}
         </span>
       </div>
 
@@ -2326,28 +2357,29 @@ function renderRosterView() {
           <option value="bridge" ${ag.connectionMode === 'bridge' ? 'selected' : ''}>앱·구독</option>
         </select>
         <button type="button" class="btn btn-ghost btn-sm" data-toggle-agent="${esc(ag.id)}">
-          ${ag.active ? '휴직' : '복직'}
+          ${standby ? '완전 휴직' : ag.active ? '휴직' : '복직'}
         </button>
       </div>
     </article>
   `;
+  };
   const leadDeskCard = `
     <article class="agent-card">
       <div class="agent-card-head">
         <div class="agent-identity">
-          <span class="agent-avatar lg" style="background:#0E6245">팀장</span>
+          <span class="agent-avatar lg" style="background:${agyOn ? '#0E6245' : '#2563EB'}">${agyOn ? 'AG' : '팀장'}</span>
           <div>
             <div class="agent-name">총괄 팀장 (팀장 업무함)</div>
             <div class="agent-role">지금 근무: <strong>${esc(dutyName)}</strong></div>
           </div>
         </div>
-        <span class="badge ${agyOn ? 'badge-green' : 'badge-blue'}">${agyOn ? '주간' : '당직'}</span>
+        <span class="badge ${agyOn ? 'badge-green' : 'badge-blue'}">${agyOn ? '주간 근무' : '야간 당직'}</span>
       </div>
       <p class="agent-strengths">검수 · 작전 계획 · 마일스톤 판단을 지금 깨어 있는 팀장이 맡습니다.</p>
       <div class="routine-sub" style="line-height:1.7;">
         1. 주간: AGY 팀장 감시기 (Hydrogen) · 마지막 접속 ${esc(ago(agyAt))}<br />
         2. 야간·부재: Gemini 앱 예약 작업 · 마지막 실행 ${esc(ago(gemAt))}<br />
-        3. 비상: Gemini 4 Hydrogen API (위 둘이 오래 처리 못 할 때 자동)
+        3. 비상 대기: Gemini 4 Hydrogen API (${apiLead ? '대기 중 · 위 둘이 처리 못 할 때만 자동 개입' : '완전 휴직 중'})
       </div>
     </article>`;
 
@@ -3109,7 +3141,11 @@ function bindEvents() {
   document.getElementById('btn-close-participants')?.addEventListener('click', closeParticipantsDrawer);
   document.getElementById('participants-backdrop')?.addEventListener('click', closeParticipantsDrawer);
 
-  document.getElementById('kpi-approvals-cell')?.addEventListener('click', () => switchView('approvals'));
+  // 대표님 To Do 지표: 홈의 To Do List(결재 포함)로 이동
+  document.getElementById('kpi-approvals-cell')?.addEventListener('click', () => {
+    if (currentView !== 'command') switchView('command');
+    document.getElementById('home-ceo-inbox')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
   document.getElementById('kpi-missions-cell')?.addEventListener('click', () => switchView('missions'));
   document.getElementById('kpi-budget-cell')?.addEventListener('click', () => switchView('roster'));
 
@@ -3160,7 +3196,7 @@ function bindEvents() {
     if (!sheet.hidden) document.getElementById('input-directive')?.focus();
   });
 
-  // 바로 지시: 회의실과 같은 경로(팀장 응답 + 업무 등록 + 상시 지침 저장)로 보내고 결과를 그 자리에서 보여 줌
+  // 바로 지시: 별도 새 미션을 만들지 않고 전체 시스템 지침 또는 선택한 기존 업무·프로젝트에 직접 개입
   document.getElementById('quick-order-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
     const input = document.getElementById('quick-order-text');
@@ -3170,20 +3206,21 @@ function bindEvents() {
     const text = input.value.trim();
     if (!text) return;
     btn.disabled = true;
-    const targetName = target.value ? target.options[target.selectedIndex].text : '전체';
-    out.innerHTML = `<div class="routine-sub">"${esc(targetName)}"에 전달하는 중…</div>`;
+    const targetName = target.value ? target.options[target.selectedIndex].text : '전체 시스템';
+    out.innerHTML = `<div class="routine-sub">"${esc(targetName)}"에 바로 지시 전달하는 중…</div>`;
     try {
-      const res = await api('/api/chat/send', { method: 'POST', body: JSON.stringify({ text, missionId: target.value }) });
+      const res = await api('/api/chat/send', { method: 'POST', body: JSON.stringify({ text, missionId: target.value, quickOrder: true }) });
       state = res.state;
       input.value = '';
       const replies = (res.replies || []).slice(0, 2);
+      const note = res.intake?.note || res.memoryNote || '';
       out.innerHTML = `<div class="mission-directive-quote" style="margin:0;">
-          <div class="routine-sub">→ ${esc(targetName)}${res.intake?.note ? ` · <strong>업무로 반영:</strong> ${esc(res.intake.note)}` : ''}</div>
+          <div class="routine-sub">→ ${esc(targetName)}${note ? ` · <strong>바로 반영:</strong> ${esc(note)}` : ''}</div>
           ${replies.map((m) => `<div style="margin-top:6px;"><strong>${esc(m.senderName)}</strong>: ${esc(String(m.text || '').slice(0, 400))}</div>`).join('')}
           <div style="margin-top:6px;"><button type="button" class="btn-inline-edit" data-jump-view="office">회의실에서 이어서 보기</button></div>
         </div>`;
       renderAll();
-      toast(res.intake?.note ? '지시가 업무로 등록됐습니다.' : '팀장에게 전달했습니다.');
+      toast(note ? '바로 지시를 기존 업무·전체 지침에 반영했습니다.' : '팀장에게 전달했습니다.');
     } catch (err) {
       out.innerHTML = '';
       toast(err.message, true);
@@ -4667,7 +4704,7 @@ function startVoiceInput(targetId) {
     return;
   }
   stopVoiceInput(true);
-  const s = { targetId, manualStop: false, rec: null, committed: null, lastWritten: null, restartTimer: null, quickEnds: 0 };
+  const s = { targetId, manualStop: false, rec: null, committed: null, lastWritten: null, restartTimer: null, quickEnds: 0, lastFinalText: '', lastFinalAt: 0 };
   voiceCtl.active = s;
   setVoiceBtnState(targetId, true);
 
@@ -4706,8 +4743,18 @@ function startVoiceInput(targetId) {
       let interim = '';
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const piece = event.results[i][0].transcript;
-        if (event.results[i].isFinal) s.committed = joinVoiceText(s.committed, piece);
-        else interim = joinVoiceText(interim, piece);
+        if (event.results[i].isFinal) {
+          const norm = String(piece || '').trim();
+          const now = Date.now();
+          // 안드로이드 크롬·삼성 브라우저에서 continuous=true 시 같은 확정 문장이 연속 중복 들어오는 현상 방지
+          if (norm && !(norm === s.lastFinalText && now - s.lastFinalAt < 1500)) {
+            s.committed = joinVoiceText(s.committed, norm);
+            s.lastFinalText = norm;
+            s.lastFinalAt = now;
+          }
+        } else {
+          interim = joinVoiceText(interim, piece);
+        }
       }
       const next = joinVoiceText(s.committed, interim);
       el.value = next;

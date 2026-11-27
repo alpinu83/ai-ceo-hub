@@ -4,6 +4,7 @@ import { kickShortsFactory, queueShortsJob } from './shorts.js';
 import { pickBotOrDevMember, ASSIGNMENT_RULES, buildPlanningRoster, isStandingOrder, markCeoActivity, rebalanceAssignments, rememberFact, addLeadNote, isAgentExhausted, pickQuotaSubstitute } from '../lead-engine.js';
 import { appendLog, appendMessage, applyInferredMissionBindings, flushCloudBackup, loadDb, saveDb, uid } from '../store.js';
 import { assessFeasibility, getOutsourcingSettings } from '../outsourcing.js';
+import { leadSpeakerProfile } from '../lead-desk.js';
 import { buildDispatchPrompt, decomposeDirective, executeAgentTask, synthesizeMissionReport } from '../orchestrator.js';
 import { describeGoogleDataStatus } from '../google-data.js';
 import { cancelStaleConsults } from './outsourcing-bridge.js';
@@ -113,8 +114,10 @@ export async function createMissionInDb({
   };
 
   const agentMap = Object.fromEntries(db.agents.map((a) => [a.id, a]));
+  const fallbackWorker = db.agents.find((a) => a.active && a.tier !== 'lead') || db.agents[0];
   const createdTasks = plan.tasks.map((t) => {
-    const ag = agentMap[t.assigneeId] || db.agents[0];
+    const picked = agentMap[t.assigneeId];
+    const ag = picked && picked.tier !== 'lead' ? picked : fallbackWorker;
     const taskObj = {
       id: uid('tsk'),
       missionId: mission.id,
@@ -139,7 +142,7 @@ export async function createMissionInDb({
   db.missions.unshift(mission);
   db.tasks.unshift(...createdTasks);
 
-  const lead = agentMap[plan.leadAgentId];
+  const lead = leadSpeakerProfile(db) || agentMap[plan.leadAgentId];
   appendLog(
     db,
     lead?.name || '총괄 팀장',
@@ -168,7 +171,7 @@ export async function createMissionInDb({
     senderId: lead?.id || 'agent_gemini_neon',
     senderName: lead?.name || '총괄 팀장',
     senderRole: lead?.roleTitle || '총괄 팀장',
-    senderShortCode: lead?.shortCode || 'GN',
+    senderShortCode: lead?.shortCode || '팀장',
     senderAccent: lead?.accent || '#0E6245',
     targetAgentId: createdTasks[0]?.assigneeId || null,
     statusText: '업무 분배 완료',
@@ -379,13 +382,14 @@ export async function autoStartLiveMissionTasks(missionId, { priorRunTaskIds = [
 }
 
 export function leadSay(db, mission, statusText, text) {
-  const lead = db.agents.find((a) => a.id === (mission.leadAgentId || 'agent_gemini_neon')) || db.agents[0];
+  const fallback = db.agents.find((a) => a.id === (mission.leadAgentId || 'agent_gemini_neon')) || db.agents[0];
+  const lead = leadSpeakerProfile(db) || fallback;
   appendMessage(db, {
     missionId: mission.id,
     senderId: lead?.id || 'agent_gemini_neon',
     senderName: lead?.name || '총괄 팀장',
     senderRole: lead?.roleTitle || '총괄 팀장',
-    senderShortCode: lead?.shortCode || 'GN',
+    senderShortCode: lead?.shortCode || '팀장',
     senderAccent: lead?.accent || '#0E6245',
     targetAgentId: 'ceo',
     statusText,

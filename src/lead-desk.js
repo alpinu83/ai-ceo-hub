@@ -73,6 +73,21 @@ export function leadDeskStatus(db) {
   };
 }
 
+/** 회의실·보고 발신자 표기용: 팀장 업무함 가동 중이면 현재 근무 팀장(주간 AGY / 당직 Gemini 앱) 프로필 반환 */
+export function leadSpeakerProfile(db) {
+  if (!getLeadDeskSettings(db?.settings).enabled) return null;
+  const agy = leadWorkerOnline(db, 'agy_lead');
+  return agy
+    ? { id: 'agent_gemini_neon', name: '총괄 팀장 (AGY · Hydrogen)', roleTitle: '주간 총괄 팀장 · AGY (Hydrogen)', shortCode: 'AG', accent: '#0E6245', onDuty: 'agy_lead' }
+    : { id: 'agent_gemini_neon', name: '총괄 팀장 (Gemini 앱 당직)', roleTitle: '당직 총괄 팀장 · Gemini 앱', shortCode: '팀장', accent: '#2563EB', onDuty: 'gemini_app' };
+}
+
+/** 주간 AGY 팀장 또는 야간 Gemini 앱 당직이 실제 연결돼 있는지 (API 전멸 시 팀장 업무함 진행 가능 여부) */
+export function hasLeadDeskWorker(db = loadDb()) {
+  if (!getLeadDeskSettings(db?.settings).enabled) return false;
+  return Boolean(leadWorkerOnline(db, 'agy_lead') || leadWorkerSeenAt(db, 'gemini_app'));
+}
+
 // ---------- zod 스키마 → 답안 형식 안내 ----------
 function describeZod(s, depth = 0) {
   const def = s?._def || {};

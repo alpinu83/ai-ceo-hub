@@ -127,8 +127,8 @@
         <section class="view active" id="view-command" aria-label="CEO 홈">
           <div id="home-ceo-inbox"></div>
           <div class="kpi-strip" aria-label="핵심 지표">
-            <button type="button" class="kpi-card accent-amber" id="kpi-approvals-cell">
-              <span class="kpi-label">결재 대기</span>
+            <button type="button" class="kpi-card accent-amber" id="kpi-approvals-cell" title="대표님 To Do List로 이동 (결재 포함)">
+              <span class="kpi-label">대표님 To Do</span>
               <strong class="kpi-value" id="kpi-approvals-val">0건</strong>
             </button>
             <button type="button" class="kpi-card" id="kpi-missions-cell">
@@ -150,7 +150,7 @@
               <textarea id="quick-order-text" rows="2" placeholder="예) 쇼츠 대본은 40초 이내로 / 이번 주 Korea-tax-cal은 교육비 공제 페이지 먼저" required></textarea>
               <div class="composer-bar">
                 <select id="quick-order-target" class="assignee-select" aria-label="지시 대상">
-                  <option value="">전체 (회사 공통)</option>
+                  <option value="">전체 시스템 (회사 공통 · 개입)</option>
                 </select>
                 <div class="composer-send-group">
                   <button type="button" class="icon-btn voice-btn" id="btn-voice-quick" title="음성 지시" aria-label="음성 지시">
@@ -225,20 +225,15 @@
             </form>
           </div>
 
-          <!-- Core Executive Lists -->
-          <div class="home-grid">
+          <!-- Core Executive Lists (결재 대기 카드는 위 대표님 To Do List에 통합되어 삭제) -->
+          <div class="home-grid" style="grid-template-columns:minmax(0,1fr);">
             <div class="card">
               <div class="card-head">
-                <h2 class="card-title">결재 대기</h2>
-                <button type="button" class="text-link" data-jump-view="approvals">전체</button>
-              </div>
-              <div id="home-approvals-list" class="clean-stack"></div>
-            </div>
-
-            <div class="card">
-              <div class="card-head">
-                <h2 class="card-title">진행 미션</h2>
-                <button type="button" class="text-link" data-jump-view="projects">프로젝트</button>
+                <h2 class="card-title">진행 중인 프로젝트 · 업무</h2>
+                <div style="display:flex;gap:12px;align-items:center;">
+                  <button type="button" class="text-link" data-jump-view="projects">프로젝트</button>
+                  <button type="button" class="text-link" data-jump-view="missions">일반 업무</button>
+                </div>
               </div>
               <div id="home-missions-list" class="clean-stack"></div>
               <div id="home-chat-teaser" class="chat-teaser-wrap"></div>
@@ -1002,6 +997,6 @@
   </nav>
 
   <div class="toast-region" id="toast-region" aria-live="polite"></div>
-  <script type="module" src="./app.js?v=20261127o"></script>
+  <script type="module" src="./app.js?v=20261127s"></script>
 </body>
 </html>

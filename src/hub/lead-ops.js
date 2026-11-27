@@ -7,7 +7,7 @@ import { buildDispatchPrompt, draftMissionPlan, planLeadFollowUp, planMilestoneW
 import { getAiProviderHealth } from '../ai-guard.js';
 import { describeGoogleDataStatus } from '../google-data.js';
 import { getOutsourcingSettings } from '../outsourcing.js';
-import { isLeadPending } from '../lead-desk.js';
+import { isLeadPending, leadSpeakerProfile } from '../lead-desk.js';
 import { DEV_TEAM, devPolicyRules, dispatchDevTeamTask, routeCodeTask } from './dev-policy.js';
 import { sendTelegramReport } from '../telegram.js';
 import { MAJOR_DECISION_RE } from './ceo-chat.js';
@@ -27,13 +27,13 @@ export function leadAgentFor(db, mission) {
 
 export function leadMessage(db, missionId, statusText, text, type = 'plan') {
   const mission = db.missions.find((m) => m.id === missionId);
-  const lead = leadAgentFor(db, mission) || {};
+  const lead = leadSpeakerProfile(db) || leadAgentFor(db, mission) || {};
   return appendMessage(db, {
     missionId: missionId || '',
     senderId: lead.id || 'agent_gemini_neon',
     senderName: lead.name || '총괄 팀장',
     senderRole: lead.roleTitle || '총괄 팀장',
-    senderShortCode: lead.shortCode || 'GN',
+    senderShortCode: lead.shortCode || '팀장',
     senderAccent: lead.accent || '#0E6245',
     targetAgentId: 'ceo',
     statusText,
