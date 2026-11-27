@@ -11,6 +11,7 @@ import { getOutsourcingSettings } from '../outsourcing.js';
 import { sendTelegramGated } from '../telegram.js';
 import { autoStartLiveMissionTasks, updateMissionStatus } from './missions.js';
 import { flushTelegramQueue, notifyTelegramAnomaly } from './notify.js';
+import { DEV_TEAM, dispatchDevTeamTask } from './dev-policy.js';
 import { getMissionRepoCfg, isCodeTask } from './code-pipeline.js';
 import { isOpsMission, opsCycle, runLeadFollowUp } from './lead-ops.js';
 import { outsourceTask } from './task-results.js';
@@ -90,7 +91,17 @@ export function createRoutineTask(routine) {
   const mission = db.missions.find((m) => m.id === r.missionId) || getRoutineHubMission(db);
   const agentMap = Object.fromEntries(db.agents.map((a) => [a.id, a]));
   let ag = agentMap[r.assigneeId];
-  if (!ag?.active) ag = db.agents.find((a) => a.active && INTERNAL_AI_PROVIDERS.has(a.provider) && a.tier !== 'lead') || db.agents[0];
+  if (!ag?.active || ag.tier === 'lead') {
+    const isCodeRoutine =
+      ['agent_it_dev', 'agent_it_sec', 'agent_it_qa'].includes(r.assigneeId) ||
+      /코드|저장소|보안|사이트|SEO|계산기/.test(`${r.title || ''} ${r.description || ''}`);
+    ag =
+      (isCodeRoutine ? db.agents.find((a) => a.active && (a.id === 'agent_aside' || a.id === 'agent_agy')) : null) ||
+      db.agents.find((a) => a.active && a.tier !== 'lead' && INTERNAL_AI_PROVIDERS.has(a.provider)) ||
+      db.agents.find((a) => a.active && a.tier !== 'lead' && a.id === 'agent_aside') ||
+      db.agents.find((a) => a.active && a.tier !== 'lead') ||
+      db.agents[0];
+  }
   const now = new Date().toISOString();
   const task = {
     id: uid('tsk'),
@@ -113,6 +124,7 @@ export function createRoutineTask(routine) {
   };
   task.dispatchPrompt = buildDispatchPrompt(ag, task, mission);
   db.tasks.unshift(task);
+  if (DEV_TEAM[ag.id]) dispatchDevTeamTask(db, task);
   mission.status = 'in_progress';
   r.lastTaskId = task.id;
   saveDb(db);

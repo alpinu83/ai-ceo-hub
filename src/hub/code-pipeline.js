@@ -238,15 +238,27 @@ export function requestDiffApproval(db, apr, result, mission, extraIds = []) {
   return newApr;
 }
 
-export function createItPrApproval(db, mission, result, { taskIds = [], titlePrefix = '', summaryLead = '' } = {}) {
+function resolveCodeApprovalAgentId(db, preferredId = '') {
+  const agents = db?.agents || [];
+  const isActive = (id) => Boolean(id && agents.find((a) => a.id === id && a.active));
+  if (isActive(preferredId)) return preferredId;
+  if (isActive('agent_aside')) return 'agent_aside';
+  if (isActive('agent_agy')) return 'agent_agy';
+  if (isActive('agent_it_dev')) return 'agent_it_dev';
+  return preferredId || 'agent_aside';
+}
+
+export function createItPrApproval(db, mission, result, { taskIds = [], titlePrefix = '', summaryLead = '', agentId = '', workerName = '' } = {}) {
   const now = new Date().toISOString();
+  const resolvedAgentId = resolveCodeApprovalAgentId(db, agentId);
   const apr = {
     id: uid('apr'),
     kind: 'it_pr_merge',
     missionId: mission?.id || '',
     taskId: '',
     taskIds,
-    agentId: 'agent_it_dev',
+    agentId: resolvedAgentId,
+    ...(workerName ? { workerName } : {}),
     title: `${titlePrefix}[${result.repo} PR #${result.prNumber}] ${result.prTitle}`,
     category: 'IT 코드 수정 · 실배포 승인',
     estimatedCostKRW: 0,
@@ -265,13 +277,16 @@ export function createItPrApproval(db, mission, result, { taskIds = [], titlePre
 }
 
 export function itTeamMessage(db, missionId, statusText, text, type = 'work') {
+  const senderId = resolveCodeApprovalAgentId(db);
+  const senderAg = (db?.agents || []).find((a) => a.id === senderId);
+  const isDevTeam = senderId === 'agent_aside' || senderId === 'agent_agy';
   appendMessage(db, {
     missionId: missionId || '',
-    senderId: 'agent_it_dev',
-    senderName: 'IT 유지보수팀',
-    senderRole: 'IT팀 실코드 반영·배포',
-    senderShortCode: 'IT',
-    senderAccent: '#0F766E',
+    senderId,
+    senderName: isDevTeam ? '개발팀 (AGY · Aside)' : senderAg?.name || 'IT 유지보수팀',
+    senderRole: '개발팀 실코드 반영·배포',
+    senderShortCode: isDevTeam ? 'DEV' : 'IT',
+    senderAccent: senderAg?.accent || '#0F766E',
     targetAgentId: 'ceo',
     statusText,
     type,

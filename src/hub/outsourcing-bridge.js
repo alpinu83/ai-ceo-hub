@@ -130,13 +130,16 @@ export async function approvalFromExternalPr(db, req, mission) {
     sendApprovalNotifications(db.settings, existing, `외주 · ${workerTag}`);
     return existing;
   }
+  const byAgentId = req.result?.by === 'antigravity' ? 'agent_agy' : req.result?.by === 'aside' ? 'agent_aside' : 'agent_aside';
   const apr = createItPrApproval(db, mission || { id: req.missionId }, result, {
     taskIds: req.taskId ? [req.taskId] : [],
     titlePrefix: `[개발팀 · ${workerTag}] `,
-    summaryLead: `외주 요청 ${req.id}: ${req.title}`
+    summaryLead: `외주 요청 ${req.id}: ${req.title}`,
+    agentId: byAgentId,
+    workerName: workerTag
   });
   apr.outsourceId = req.id;
-  sendApprovalNotifications(db.settings, apr, `외주 · ${workerTag}`);
+  sendApprovalNotifications(db.settings, apr, `개발팀 · ${workerTag}`);
   return apr;
 }
 

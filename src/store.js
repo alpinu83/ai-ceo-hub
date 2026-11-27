@@ -551,10 +551,27 @@ export function loadDb() {
       }
     }
     parsed.agents = rawAgents;
+    const pausedAgentIds = new Set(rawAgents.filter((a) => a.active === false).map((a) => a.id));
+    const activeDevId = rawAgents.find((a) => a.id === 'agent_aside' && a.active)?.id || rawAgents.find((a) => a.id === 'agent_agy' && a.active)?.id || '';
     if (Array.isArray(parsed.tasks)) {
       parsed.tasks.forEach((t) => {
         if (t.assigneeId === 'agent_gemini_free') t.assigneeId = 'agent_exaone';
         if (t.assigneeId === 'agent_claude') t.assigneeId = 'agent_groq';
+      });
+    }
+    if (Array.isArray(parsed.approvals) && activeDevId) {
+      parsed.approvals.forEach((a) => {
+        if (!a || a.kind !== 'it_pr_merge' || !pausedAgentIds.has(a.agentId)) return;
+        const txt = `${a.title || ''} ${a.summary || ''}`;
+        if (a.outsourceId || /OUT-|개발팀|Aside|Antigravity|AGY/i.test(txt)) {
+          a.agentId = /Antigravity|AGY/i.test(a.title || '') && !/Aside/i.test(a.title || '') ? 'agent_agy' : activeDevId;
+        }
+      });
+    }
+    if (Array.isArray(parsed.routines) && activeDevId) {
+      parsed.routines.forEach((r) => {
+        if (!r || !['agent_it_dev', 'agent_it_sec', 'agent_it_qa'].includes(r.assigneeId)) return;
+        if (pausedAgentIds.has(r.assigneeId)) r.assigneeId = activeDevId;
       });
     }
     if (Array.isArray(parsed.missions)) {
