@@ -1117,16 +1117,26 @@ function renderOfficeView() {
       : messages
           .map((m) => {
             const isCeo = m.senderId === 'ceo';
+            const senderAgent = !isCeo ? getAgent(m.senderId) : null;
+            const isLead =
+              !isCeo &&
+              (m.senderId === 'agent_gemini_neon' ||
+                m.senderId === 'agy_lead' ||
+                m.senderId === 'gemini_app' ||
+                senderAgent?.tier === 'lead' ||
+                /^총괄\s*팀장/.test(String(m.senderName || '')) ||
+                /총괄\s*팀장/.test(String(m.senderRole || '')));
             const tb = typeBadges[m.type] || { label: '대화', cls: 'badge-neutral' };
             const mTag =
               officeMissionFilter === 'all' && m.missionId && missionTitleMap[m.missionId]
                 ? `<span class="badge badge-neutral">${esc(missionTitleMap[m.missionId].slice(0, 14))}</span>`
                 : '';
-            return `<div class="chat-msg ${isCeo ? 'from-ceo' : ''} ${m.type === 'approval' ? 'msg-approval' : ''}">
+            return `<div class="chat-msg ${isCeo ? 'from-ceo' : isLead ? 'from-lead' : ''} ${m.type === 'approval' ? 'msg-approval' : ''}">
               <span class="agent-avatar" style="background:${esc(m.senderAccent || '#0E6245')}">${esc(m.senderShortCode || 'AI')}</span>
               <div class="chat-body">
                 <div class="chat-meta">
                   <span class="chat-sender">${esc(m.senderName)}</span>
+                  ${isLead ? '<span class="chat-lead-tag">팀장</span>' : ''}
                   <span class="badge ${tb.cls}">${esc(tb.label)}</span>
                   ${mTag}
                   <span class="mono">${esc(formatTime(m.timestamp))}</span>

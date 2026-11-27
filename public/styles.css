@@ -1506,6 +1506,39 @@ textarea:focus {
   color: var(--bg-canvas);
 }
 
+.chat-msg.from-lead .chat-sender {
+  color: var(--accent-primary);
+}
+
+.chat-lead-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1.4;
+  color: var(--accent-primary);
+  background: var(--accent-primary-soft);
+  border: 1px solid rgba(13, 110, 102, 0.25);
+}
+
+.chat-msg.from-lead .chat-bubble {
+  background: #e6f4f1;
+  border-color: rgba(13, 110, 102, 0.3);
+  border-left: 3px solid var(--accent-primary);
+}
+
+html[data-theme="studio"] .chat-msg.from-lead .chat-bubble {
+  background: rgba(44, 194, 178, 0.14);
+  border-color: rgba(44, 194, 178, 0.34);
+  border-left: 3px solid var(--accent-primary);
+}
+
+html[data-theme="studio"] .chat-lead-tag {
+  border-color: rgba(44, 194, 178, 0.35);
+}
+
 .chat-msg.msg-approval .chat-bubble {
   background: var(--accent-amber-soft);
   border-color: rgba(180, 83, 9, 0.35);
