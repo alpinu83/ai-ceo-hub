@@ -125,6 +125,7 @@
       <main class="content-area" id="content-area">
         <!-- 1. CEO HOME (MAIN) -->
         <section class="view active" id="view-command" aria-label="CEO 홈">
+          <div id="home-ceo-inbox"></div>
           <div class="kpi-strip" aria-label="핵심 지표">
             <button type="button" class="kpi-card accent-amber" id="kpi-approvals-cell">
               <span class="kpi-label">결재 대기</span>
@@ -140,8 +141,37 @@
             </button>
           </div>
 
-          <!-- Clean Command Bar with Korean Voice Input -->
-          <div class="card composer-card" id="directive-sheet">
+          <!-- 바로 지시: 회의실·결재함에 들어가지 않고 전체/프로젝트·업무별로 팀장에게 바로 지시 -->
+          <div class="card composer-card" id="quick-order-sheet">
+            <div class="card-head">
+              <h2 class="card-title">바로 지시</h2>
+              <span class="routine-sub">팀장에게 바로 전달돼요. 지시면 업무로 등록되고, "앞으로 …"처럼 말하면 고정 지침이 됩니다.</span>
+            </div>
+            <form id="quick-order-form" class="composer-form">
+              <textarea id="quick-order-text" rows="2" placeholder="예) 쇼츠 대본은 40초 이내로 / 이번 주 Korea-tax-cal은 교육비 공제 페이지 먼저" required></textarea>
+              <div class="composer-bar">
+                <select id="quick-order-target" class="assignee-select" aria-label="지시 대상">
+                  <option value="">전체 (회사 공통)</option>
+                </select>
+                <div class="composer-send-group">
+                  <button type="button" class="icon-btn voice-btn" id="btn-voice-quick" title="음성 지시" aria-label="음성 지시">
+                    <i data-lucide="mic" class="icon-sm"></i>
+                  </button>
+                  <button type="submit" class="btn btn-primary" id="btn-quick-order">
+                    <i data-lucide="send" class="icon-xs"></i>
+                    <span>지시</span>
+                  </button>
+                </div>
+              </div>
+            </form>
+            <div id="quick-order-result" style="margin-top:8px;"></div>
+          </div>
+          <div style="margin:0 0 14px;">
+            <button type="button" class="btn btn-ghost btn-sm" id="btn-toggle-new-mission">+ 새 업무·프로젝트 만들기</button>
+          </div>
+
+          <!-- 새 업무·프로젝트 만들기 (평소엔 접혀 있음) -->
+          <div class="card composer-card" id="directive-sheet" hidden>
             <form id="directive-form" class="composer-form">
               <textarea id="input-directive" rows="2" placeholder="AI 팀에게 지시하세요." required></textarea>
               <div class="composer-bar">

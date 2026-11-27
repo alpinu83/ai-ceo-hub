@@ -1,4 +1,6 @@
 // hub/ceo-chat.js: server.js에서 분리 (공유 로직)
+import { sendTelegramApprovalCard } from '../telegram.js';
+import { handleTodoCallback, sendInboxTelegram } from './ceo-inbox.js';
 import { handleShortsCallback } from './shorts.js';
 import { ASSIGNMENT_RULES, buildPlanningRoster, ensureLeadDefaults, escapeTelegramHtml, findScopeViolations, isForbiddenCodeTask, isStandingOrder, markCeoActivity, rebalanceAssignments, rememberFact, addLeadNote } from '../lead-engine.js';
 import { appendLog, appendMessage, flushCloudBackup, loadDb, saveDb, uid } from '../store.js';
@@ -49,7 +51,7 @@ export function getTelegramCallbacks() {
         `• 진행 중 업무: ${activeMissions}건`,
         `• CEO 결재 대기: <b>${pending}건</b>`,
         ``,
-        `명령어: /approvals · /doc (결재 성과품 파일) · /order 지시내용 · /out (외주 현황) · /away 3 (PC 자리비움, Aside 건너뜀) · /office · /route`,
+        `명령어: /todo (대표님 할 일) · /approvals · /doc (결재 성과품 파일) · /order 지시내용 · /out (외주 현황) · /away 3 (PC 자리비움, Aside 건너뜀) · /office · /route`,
         `자유 대화: 그냥 메시지를 보내면 총괄 팀장이 답하고, 지시면 실제 업무로 등록합니다. (#업무명 으로 채널 지정, #전체 로 해제)`,
         `알림: /notify 상태 · /report on|off · /quiet 23:00-08:00 · /quiet off`
       ].join('\n');
@@ -59,6 +61,15 @@ export function getTelegramCallbacks() {
     onOutsourceCommand: async (cmd, arg) => handleOutsourceTelegramCommand(cmd, arg),
     onOutsourceCallback: async (action, id) => handleOutsourceTelegramCallback(action, id),
     onShortsCallback: async (action, id) => handleShortsCallback(action, id),
+    onTodo: async () => sendInboxTelegram(loadDb()),
+    onTodoCallback: async (action, id) =>
+      handleTodoCallback(action, id, {
+        sendApprovalCards: async () => {
+          const db = loadDb();
+          const map = Object.fromEntries(db.agents.map((a) => [a.id, a.name]));
+          for (const apr of db.approvals.filter((a) => a.status === 'pending').slice(0, 5)) await sendTelegramApprovalCard(db.settings, apr, map[apr.agentId] || apr.agentId).catch(() => {});
+        }
+      }),
     onDeliverable: async (aprId) => buildApprovalDeliverable(loadDb(), aprId),
     onListPending: async () => {
       const db = loadDb();

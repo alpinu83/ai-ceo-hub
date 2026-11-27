@@ -1,4 +1,5 @@
 // hub/routines.js: server.js에서 분리 (공유 로직)
+import { maybeSendInboxDigest } from './ceo-inbox.js';
 import { appendLog, flushCloudBackup, getCloudPersistenceStatus, loadDb, saveDb, uid } from '../store.js';
 import { buildDailyBriefing, buildDefaultRoutines, dueSlotKeys, kstParts, normalizeDays, normalizeTimes, runOpsCheck } from '../operations.js';
 import { buildDispatchPrompt } from '../orchestrator.js';
@@ -349,6 +350,7 @@ export async function opsTick() {
       await runWatchdog();
     }
     await flushTelegramQueue();
+    await maybeSendInboxDigest().catch((err) => console.warn('inbox digest failed:', err.message));
     const leadCfg = getLeadSettings(loadDb().settings);
     const followEveryMs = Math.max(10, Number(leadCfg.followUpMinutes) || 30) * 60 * 1000;
     if (leadCfg.enabled && Date.now() - lastLeadFollowUpAt > followEveryMs) {
