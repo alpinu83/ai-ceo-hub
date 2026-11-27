@@ -143,6 +143,33 @@ async function runTests() {
     const reDecide = await fetch(`${BASE}/api/approvals/${pendingApr.id}/decide`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision: 'approved' }) });
     assert.equal(reDecide.status, 409, 'already decided approvals are not processed twice');
 
+    // 6-1. 홈 "대표님이 하실 일" 보류 작업 결정 API: 잘못된 값은 거부, 보류가 아닌 작업은 건너뜀(상태 그대로)
+    const decideTaskId = created.tasks[0].id;
+    const badDecision = await fetch(`${BASE}/api/tasks/ceo-decision`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ taskIds: [decideTaskId], action: 'nope' }) });
+    assert.equal(badDecision.status, 400, 'unknown CEO decision must be rejected');
+    const emptyDecision = await fetch(`${BASE}/api/tasks/ceo-decision`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ taskIds: [], action: 'retry' }) });
+    assert.equal(emptyDecision.status, 400, 'CEO decision without tasks must be rejected');
+    const beforeStatus = (await (await fetch(`${BASE}/api/state`)).json()).tasks.find((t) => t.id === decideTaskId)?.status;
+    const notBlocked = await (
+      await fetch(`${BASE}/api/tasks/ceo-decision`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ taskIds: [decideTaskId], action: 'drop', feedback: 'CI' }) })
+    ).json();
+    assert.equal(notBlocked.ok, true);
+    assert.equal(notBlocked.done.length, 0, 'only blocked tasks can be decided');
+    assert.equal(notBlocked.skipped.length, 1, 'non-blocked task is skipped');
+    assert.equal(notBlocked.state.tasks.find((t) => t.id === decideTaskId)?.status, beforeStatus, 'skipped task status must not change');
+
+    // 6-2. 외주 요청별 "AGY 수정 + Aside 검수" 협업 선택 → 코드 요청·Antigravity 지정·협업 표시
+    const collabRes = await (
+      await fetch(`${BASE}/api/outsourcing`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: 'CI 협업 선택', goal: 'CI에서 협업 선택이 저장되는지 확인합니다.', kind: 'task', worker: 'agy_aside' }) })
+    ).json();
+    assert.equal(collabRes.request.kind, 'code', 'AGY+Aside collaboration is a code request');
+    assert.equal(collabRes.request.pinnedWorker, 'antigravity', 'collaboration starts with Antigravity');
+    assert.equal(collabRes.request.codeWorkflow, 'agy_then_aside', 'collaboration flag stored on request');
+    const collabList = await (await fetch(`${BASE}/api/outsourcing?status=active`)).json();
+    const collabRow = (collabList.requests || []).find((r) => r.id === collabRes.request.id);
+    if (collabRow) assert.equal(collabRow.codeWorkflow, 'agy_then_aside', 'list exposes codeWorkflow');
+    await fetch(`${BASE}/api/outsourcing/${collabRes.request.id}/cancel`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+
     // 7. Team Lead final synthesis
     const synthRes = await (
       await fetch(`${BASE}/api/missions/${created.mission.id}/synthesize`, { method: 'POST' })
