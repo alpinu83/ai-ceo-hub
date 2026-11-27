@@ -251,11 +251,13 @@ export function collectSystemAuditTelemetry(db, { windowHours = 48, now = Date.n
   };
 }
 
+// 전사 회고는 특정 사업 프로젝트 소속이 아님: CEO Office(ai-ceo-hub) 프로젝트 → 루틴 허브 순으로만 연결하고,
+// 없으면 프로젝트 없이(missionId '') 처리한다. (임의의 첫 프로젝트에 붙이면 결재 카드·회의실 보고·개발 외주 요청서에
+// 무관한 프로젝트 지침이 섞임)
 function findHubMission(db) {
   return (
     (db.missions || []).find((m) => /ai-ceo-hub/i.test(m.githubRepo || '') || /CEO Office/i.test(m.title || '')) ||
-    (db.missions || []).find((m) => m.mode === 'project' && !m.isRoutineHub) ||
-    (db.missions || [])[0] ||
+    (db.missions || []).find((m) => m.isRoutineHub) ||
     null
   );
 }
@@ -463,6 +465,9 @@ function applySystemAuditResult(db, record, audit, telemetry, { manual = false }
   return { record, createdApprovals, learnedCount, markdown };
 }
 
+// 같은 회고 키를 동시에 두 번 처리하지 않도록(답 제출 직후 훅과 1분 틱이 겹치는 경우 등) 진행 중인 키를 기억
+const auditsInFlight = new Set();
+
 /**
  * 2단계 실행: 전사 운영 회고를 시작 (팀장 업무함 대기 또는 즉시 완료)
  */
@@ -472,11 +477,28 @@ export async function runSystemAudit({ auditKey = '', manual = false, windowHour
   const key =
     String(auditKey || '').trim() ||
     (manual ? `system_audit:manual:${Date.now().toString(36)}` : `system_audit:daily:${kstParts().date}`);
-  let record = db.systemAudits.find((a) => a.auditKey === key);
+  const record = db.systemAudits.find((a) => a.auditKey === key);
   if (record?.status === 'completed') {
     return { ok: true, status: 'completed', audit: record, markdown: record.markdown || '' };
   }
+  if (auditsInFlight.has(key)) {
+    return {
+      ok: true,
+      status: 'pending',
+      auditKey: key,
+      telemetry: record?.telemetry || collectSystemAuditTelemetry(db, { windowHours }),
+      result: '같은 전사 운영 회고가 이미 처리 중입니다.'
+    };
+  }
+  auditsInFlight.add(key);
+  try {
+    return await runSystemAuditOnce({ db, key, record, manual, windowHours });
+  } finally {
+    auditsInFlight.delete(key);
+  }
+}
 
+async function runSystemAuditOnce({ db, key, record, manual, windowHours }) {
   const telemetry = record?.telemetry || collectSystemAuditTelemetry(db, { windowHours });
   if (!record) {
     record = {
@@ -531,6 +553,10 @@ export async function runSystemAudit({ auditKey = '', manual = false, windowHour
     return { ok: false, status: 'skipped', error: res.reason || '팀장 판단 엔진을 사용할 수 없습니다.', telemetry };
   }
 
+  // 기다리는 사이 다른 경로가 이미 반영했으면 결재 카드·교훈·알림을 두 번 만들지 않음
+  if (target.status === 'completed') {
+    return { ok: true, status: 'completed', audit: target, markdown: target.markdown || '', result: target.markdown || '' };
+  }
   const applied = applySystemAuditResult(fresh, target, res, telemetry, { manual: target.manual });
   saveDb(fresh);
   await flushCloudBackup(fresh);
