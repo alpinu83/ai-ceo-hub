@@ -3,6 +3,7 @@ import { buildCompanyContext } from '../lead-engine.js';
 import { loadDb, recordAgentHeartbeat, saveDb } from '../store.js';
 import { renderSkills, selectSkills } from '../skills.js';
 import { checkInboxToken, handleAgentInboxReply, resolveInboxAgent } from '../hub/agent-inbox.js';
+import { buildAgentRecentFeedback, taskFeedbackSummary } from '../hub/deliverables.js';
 
 
 export function registerAgentInboxRoutes(app) {
@@ -28,16 +29,24 @@ export function registerAgentInboxRoutes(app) {
     const token = db.settings?.mcpToken || '';
     const pendingTasks = db.tasks
       .filter((t) => t.assigneeId === agent.id && t.status !== 'completed' && t.status !== 'rejected')
-      .map((t) => ({
-        id: t.id,
-        missionId: t.missionId,
-        title: t.title,
-        description: t.description,
-        status: t.status,
-        requiresApproval: t.requiresApproval,
-        estimatedCostKRW: t.estimatedCostKRW,
-        dispatchPrompt: t.dispatchPrompt
-      }));
+      .map((t) => {
+        const fb = taskFeedbackSummary(db, t);
+        return {
+          id: t.id,
+          missionId: t.missionId,
+          title: t.title,
+          description: t.description,
+          status: t.status,
+          requiresApproval: t.requiresApproval,
+          estimatedCostKRW: t.estimatedCostKRW,
+          dispatchPrompt: t.dispatchPrompt,
+          ceoFeedback: fb.ceoFeedback,
+          leadNotes: fb.leadNotes,
+          lastDecision: fb.lastDecision
+        };
+      });
+
+    const recentFeedback = buildAgentRecentFeedback(db, agent.id, 10);
 
     const recentMeetingRoom = (db.messages || []).slice(-15).map((m) => ({
       sender: m.senderName,
@@ -61,8 +70,18 @@ export function registerAgentInboxRoutes(app) {
         '',
         `=== 나에게 배정된 대기 업무 (${pendingTasks.length}건) ===`,
         ...(pendingTasks.length
-          ? pendingTasks.map((t, i) => `${i + 1}. [${t.id}] ${t.title}\n   설명: ${t.description}\n   승인 필요: ${t.requiresApproval ? '예(확정·결제 전 정지)' : '아니오'}`)
+          ? pendingTasks.map(
+              (t, i) =>
+                `${i + 1}. [${t.id}] ${t.title}\n   설명: ${t.description}${t.ceoFeedback ? `\n   CEO 피드백·수정 지시: ${t.ceoFeedback}` : ''}\n   승인 필요: ${t.requiresApproval ? '예(확정·결제 전 정지)' : '아니오'}`
+            )
           : ['현재 새로 배정된 업무가 없습니다.']),
+        ...(recentFeedback.length
+          ? [
+              '',
+              `=== 최근 CEO 결재 피드백 (반려·수정 지시·승인, ${recentFeedback.length}건) ===`,
+              ...recentFeedback.map((f) => `- [${f.taskId || f.approvalId}] ${f.title} → ${f.decisionLabel}: ${f.reason}`)
+            ]
+          : []),
         '',
         `=== 최근 #전사-회의실 대화 (최근 ${recentMeetingRoom.length}건) ===`,
         ...recentMeetingRoom.map((m) => `- ${m.sender}: ${m.text}`),
@@ -93,6 +112,7 @@ export function registerAgentInboxRoutes(app) {
         guide: renderSkills(selectSkills({ agent, task: t, purpose: 'task', settings: db.settings }), { compact: true })
       })),
       myPendingTasks: pendingTasks,
+      recentFeedback,
       recentMeetingRoom,
       howToReply: {
         method: 'POST',

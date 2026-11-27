@@ -7,7 +7,7 @@ import { notifyWebhook } from './orchestrator.js';
 import { sendTelegramApprovalCard } from './telegram.js';
 import { sendWebPushNotification } from './push.js';
 import { buildCompanyContext } from './lead-engine.js';
-import { enrichApprovalDeliverables } from './hub/deliverables.js';
+import { buildAgentRecentFeedback, enrichApprovalDeliverables, taskFeedbackSummary } from './hub/deliverables.js';
 import { LEAD_WORKERS, buildLeadPacket, claimLeadJob, leadDeskStatus, listLeadJobs, submitLeadJob, summarizeLeadJob, touchLeadWorker } from './lead-desk.js';
 import { listRequests, summarizeRequest, claimRequest, findRequest, buildPacket, submitResult, requestCeoAction, resolveTarget, describeRouting, passRequest } from './outsourcing.js';
 
@@ -114,17 +114,25 @@ export function createCeoMcpServer() {
       });
       const data = {
         count: tasks.length,
-        tasks: tasks.map((t) => ({
-          id: t.id,
-          missionId: t.missionId,
-          assigneeId: t.assigneeId,
-          title: t.title,
-          description: t.description,
-          status: t.status,
-          requiresApproval: t.requiresApproval,
-          estimatedCostKRW: t.estimatedCostKRW,
-          dispatchPrompt: t.dispatchPrompt
-        }))
+        tasks: tasks.map((t) => {
+          const fb = taskFeedbackSummary(db, t);
+          return {
+            id: t.id,
+            missionId: t.missionId,
+            assigneeId: t.assigneeId,
+            title: t.title,
+            description: t.description,
+            status: t.status,
+            requiresApproval: t.requiresApproval,
+            estimatedCostKRW: t.estimatedCostKRW,
+            dispatchPrompt: t.dispatchPrompt,
+            ceoFeedback: fb.ceoFeedback,
+            rejectionReason: fb.rejectionReason,
+            leadNotes: fb.leadNotes,
+            lastDecision: fb.lastDecision
+          };
+        }),
+        ...(agent_id ? { recentFeedback: buildAgentRecentFeedback(db, agent_id, 10) } : {})
       };
       return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
     }

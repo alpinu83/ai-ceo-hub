@@ -25,6 +25,68 @@ function fileList(v) {
   return v.map((f) => `- ${typeof f === 'string' ? f : f?.filename || f?.path || f?.name || JSON.stringify(f)}`).join('\n');
 }
 
+function tryParseJsonLoose(raw = '') {
+  const txt = String(raw || '').trim();
+  if (!txt || (txt[0] !== '{' && txt[0] !== '[')) return null;
+  try {
+    return JSON.parse(txt);
+  } catch {
+    try {
+      return JSON.parse(txt.replace(/,\s*([}\]])/g, '$1'));
+    } catch {
+      return null;
+    }
+  }
+}
+
+function shortsScriptToMarkdown(obj) {
+  const scenes = (Array.isArray(obj.scenes) ? obj.scenes : []).filter((s) => s && String(s.text || '').trim());
+  const sources = (Array.isArray(obj.sources) ? obj.sources : []).map((u) => String(u || '').trim()).filter(Boolean);
+  const hashtags = (Array.isArray(obj.hashtags) ? obj.hashtags : []).map((h) => String(h || '').trim()).filter(Boolean);
+  const lines = [`### 🎬 쇼츠 대본: ${obj.title || '제목 없음'} (${scenes.length}장면)`, ''];
+  scenes.forEach((s, i) => {
+    lines.push(`${i + 1}. ${String(s.text).trim()}`);
+    if (s.keywords) lines.push(`   - _배경 키워드: ${String(s.keywords).trim()}_`);
+  });
+  if (sources.length) {
+    lines.push('', '**출처 기사**');
+    for (const u of sources) lines.push(`- ${u}`);
+  }
+  if (hashtags.length) {
+    lines.push('', `**해시태그**: ${hashtags.join(' ')}`);
+  }
+  lines.push('', '<details>', '<summary>자동 제작용 원본 JSON 보기</summary>', '', '```json', JSON.stringify(obj, null, 2), '```', '</details>');
+  return lines.join('\n');
+}
+
+export function formatDeliverableOutput(raw = '') {
+  let text = String(raw || '').trim();
+  if (!text) return '';
+  let formattedShorts = false;
+  text = text.replace(/```(?:json)?\s*\r?\n?([\s\S]*?)```/gi, (match, inner) => {
+    const obj = tryParseJsonLoose(inner);
+    if (obj && typeof obj === 'object' && !Array.isArray(obj) && typeof obj.title === 'string' && Array.isArray(obj.scenes) && obj.scenes.some((s) => s && String(s.text || '').trim())) {
+      formattedShorts = true;
+      return shortsScriptToMarkdown(obj);
+    }
+    if (obj && !String(inner || '').trim().includes('\n') && String(inner || '').length > 100) {
+      return `\`\`\`json\n${JSON.stringify(obj, null, 2)}\n\`\`\``;
+    }
+    return match;
+  });
+  if (!formattedShorts) {
+    const bareStart = text.lastIndexOf('{"title"');
+    const bareEnd = text.lastIndexOf('}');
+    if (bareStart >= 0 && bareEnd > bareStart) {
+      const obj = tryParseJsonLoose(text.slice(bareStart, bareEnd + 1));
+      if (obj && typeof obj.title === 'string' && Array.isArray(obj.scenes) && obj.scenes.some((s) => s && String(s.text || '').trim())) {
+        text = `${text.slice(0, bareStart).trimEnd()}\n\n${shortsScriptToMarkdown(obj)}${text.slice(bareEnd + 1)}`;
+      }
+    }
+  }
+  return text;
+}
+
 /** 결재 안건과 연결된 업무 ID들: 단일 업무, 묶음(PR·성과품) 업무, 관문/다음단계 결재면 그 업무의 최근 결과물 */
 export function relatedTaskIds(db, apr) {
   const ids = new Set();
@@ -181,7 +243,7 @@ export function buildApprovalDeliverable(db, aprId) {
     sections.push({
       heading: `시안·결과물: ${t.title}`,
       meta: [agentName(t.assigneeId), t.status ? `상태 ${t.status}` : '', score != null ? `팀장 검수 ${score}/10` : ''].filter(Boolean).join(' · '),
-      body: clip(t.output)
+      body: clip(formatDeliverableOutput(t.output))
     });
   }
 
@@ -267,7 +329,7 @@ export function buildReportDeliverableBundle(db, mission, tasks = [], checklistI
   for (const t of validTasks) {
     const score = t.review?.score ?? t.quality?.score;
     const meta = [agentName(t.assigneeId), score != null ? `팀장 검수 ${score}/10` : ''].filter(Boolean).join(' · ');
-    lines.push(`## 📄 ${t.title}`, meta ? `_${meta}_` : '', '', clip(t.output), '');
+    lines.push(`## 📄 ${t.title}`, meta ? `_${meta}_` : '', '', clip(formatDeliverableOutput(t.output)), '');
   }
 
   let markdown = lines.join('\n').trim() + '\n';
@@ -281,4 +343,86 @@ export function buildReportDeliverableBundle(db, mission, tasks = [], checklistI
     taskCount: validTasks.length,
     checklistCount: Array.isArray(checklistItems) ? checklistItems.length : 0
   };
+}
+
+const DECISION_LABELS = {
+  approved: '승인',
+  revision_requested: '수정 지시',
+  rejected: '반려',
+  retry: '수정 재지시',
+  accept: '완료 처리',
+  drop: '반려·중단'
+};
+
+export function taskFeedbackSummary(db, task) {
+  if (!task) return { ceoFeedback: '', rejectionReason: '', leadNotes: [], lastDecision: null };
+  const linkedApr = (db?.approvals || []).find((a) => a.taskId === task.id && a.status !== 'pending');
+  const ceoFeedback = String(task.ceoFeedback || task.ceoDecision?.feedback || linkedApr?.ceoNote || '').trim();
+  const rejectionReason =
+    task.status === 'rejected'
+      ? String(task.rejectionReason || ceoFeedback || '상세 사유 미입력').trim()
+      : String(task.rejectionReason || '').trim();
+  const leadNotes = Array.isArray(task.leadNotes)
+    ? task.leadNotes.slice(-3).map((n) => ({ by: n.by || '', text: String(n.text || '').trim(), at: n.at || '' }))
+    : [];
+  const lastDecision =
+    task.ceoDecision ||
+    (linkedApr
+      ? {
+          action: linkedApr.status,
+          decision: linkedApr.status,
+          feedback: String(linkedApr.ceoNote || '').trim(),
+          approvalId: linkedApr.id,
+          at: linkedApr.decidedAt || linkedApr.createdAt || ''
+        }
+      : null);
+  return { ceoFeedback, rejectionReason, leadNotes, lastDecision };
+}
+
+export function buildAgentRecentFeedback(db, agentId, limit = 10) {
+  if (!db || !agentId) return [];
+  const taskById = new Map((db.tasks || []).map((t) => [t.id, t]));
+  const items = [];
+  const seenKeys = new Set();
+
+  for (const a of db.approvals || []) {
+    if (!a || a.status === 'pending') continue;
+    const t = a.taskId ? taskById.get(a.taskId) : null;
+    if (a.agentId !== agentId && t?.assigneeId !== agentId) continue;
+    const key = a.taskId ? `tsk:${a.taskId}:${a.status}` : `apr:${a.id}`;
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+    items.push({
+      approvalId: a.id,
+      taskId: a.taskId || '',
+      missionId: a.missionId || t?.missionId || '',
+      title: t?.title || a.title || a.id,
+      decision: a.status,
+      decisionLabel: DECISION_LABELS[a.status] || a.status,
+      reason: String(a.ceoNote || t?.rejectionReason || t?.ceoFeedback || '').trim() || '상세 사유 미입력',
+      decidedAt: a.decidedAt || a.createdAt || ''
+    });
+  }
+
+  for (const t of db.tasks || []) {
+    if (t.assigneeId !== agentId) continue;
+    const hasDecision = Boolean(t.ceoDecision || t.rejectionReason || t.ceoFeedback);
+    if (!hasDecision && t.status !== 'rejected') continue;
+    const decision = t.ceoDecision?.decision || t.ceoDecision?.action || (t.status === 'rejected' ? 'rejected' : 'revision_requested');
+    const key = `tsk:${t.id}:${decision}`;
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+    items.push({
+      approvalId: t.ceoDecision?.approvalId || '',
+      taskId: t.id,
+      missionId: t.missionId || '',
+      title: t.title || t.id,
+      decision,
+      decisionLabel: DECISION_LABELS[decision] || decision,
+      reason: String(t.rejectionReason || t.ceoFeedback || t.ceoDecision?.feedback || '').trim() || '상세 사유 미입력',
+      decidedAt: t.ceoDecision?.at || t.updatedAt || t.createdAt || ''
+    });
+  }
+
+  return items.sort((a, b) => Date.parse(b.decidedAt || 0) - Date.parse(a.decidedAt || 0)).slice(0, limit);
 }

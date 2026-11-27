@@ -676,6 +676,7 @@ export function registerMissionsRoutes(app) {
         task.reviewRounds = 0;
         if (task.triage) task.triage = { ...task.triage, retries: 0, scopeRetries: 0 };
         task.status = agent.connectionMode === 'bridge' ? 'awaiting_bridge' : 'queued';
+        task.ceoFeedback = feedback || '';
         if (mission) task.dispatchPrompt = buildDispatchPrompt(agent, task, mission);
       } else if (action === 'accept') {
         if (!String(task.output || '').trim()) {
@@ -688,10 +689,12 @@ export function registerMissionsRoutes(app) {
         registerDeliverable(db, mission, task, db.agents.find((a) => a.id === task.assigneeId));
       } else {
         task.status = 'rejected';
+        task.ceoFeedback = feedback || '';
+        task.rejectionReason = feedback || '대표님이 작업을 접음';
         task.output = `${task.output || ''}\n\n---\n**대표님이 작업을 접음** (${stamp})${feedback ? `\n- 사유: ${feedback}` : ''}`.trim();
         delete task.blockedReason;
       }
-      task.ceoDecision = { action, feedback, at: now };
+      task.ceoDecision = { action, decision: action === 'drop' ? 'rejected' : action === 'retry' ? 'revision_requested' : 'approved', feedback, at: now };
       task.updatedAt = now;
       done.push(id);
       if (mission) {

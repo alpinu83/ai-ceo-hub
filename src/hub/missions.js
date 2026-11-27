@@ -431,6 +431,7 @@ export function applyApprovalDecisionInDb(aprId, decision, ceoNote = '') {
   if (task) {
     if (decision === 'approved') {
       task.status = 'completed';
+      task.ceoDecision = { action: 'approved', decision: 'approved', feedback: apr.ceoNote || '', approvalId: apr.id, at: now };
       task.output = `${task.output || ''}\n\n---\n**CEO 최종 승인 완료** (${new Date().toLocaleString('ko-KR')})${apr.ceoNote ? `\n- CEO 메모: ${apr.ceoNote}` : ''}`.trim();
       // 쇼츠 대본 승인 → 자동 제작기 대기열 (비공개 업로드까지 자동)
       if (task.shorts) {
@@ -438,15 +439,27 @@ export function applyApprovalDecisionInDb(aprId, decision, ceoNote = '') {
         if (job?.status === 'queued') kickShortsFactory(db.settings).catch(() => {});
       }
     } else if (decision === 'revision_requested') {
-      task.status = agent?.connectionMode === 'bridge' ? 'awaiting_bridge' : 'queued';
+      const targetAgent = db.agents.find((a) => a.id === task.assigneeId) || agent;
+      task.status = targetAgent?.connectionMode === 'bridge' ? 'awaiting_bridge' : 'queued';
+      task.ceoFeedback = apr.ceoNote || '수정 지시 후 재상신 요청';
+      task.ceoDecision = { action: 'revision_requested', decision: 'revision_requested', feedback: apr.ceoNote || '', approvalId: apr.id, at: now };
       if (apr.ceoNote) {
         task.description = `${task.description}\n[CEO 수정 지시] ${apr.ceoNote}`;
-      addLeadNote(task, 'ceo', `대표님 수정 지시: ${apr.ceoNote}`);
-        const mission = db.missions.find((m) => m.id === task.missionId);
-        if (agent && mission) task.dispatchPrompt = buildDispatchPrompt(agent, task, mission);
+        addLeadNote(task, 'ceo', `대표님 수정 지시: ${apr.ceoNote}`);
+      } else {
+        addLeadNote(task, 'ceo', '대표님 수정 지시 (상세 메모 없음)');
       }
+      const mission = db.missions.find((m) => m.id === task.missionId);
+      if (targetAgent && mission) task.dispatchPrompt = buildDispatchPrompt(targetAgent, task, mission);
     } else {
       task.status = 'rejected';
+      task.ceoFeedback = apr.ceoNote || '';
+      task.rejectionReason = apr.ceoNote || '대표님 결재 반려 (상세 사유 미입력)';
+      task.ceoDecision = { action: 'rejected', decision: 'rejected', feedback: apr.ceoNote || '', approvalId: apr.id, at: now };
+      if (apr.ceoNote) {
+        task.description = `${task.description}\n[CEO 반려 사유] ${apr.ceoNote}`;
+      }
+      addLeadNote(task, 'ceo', apr.ceoNote ? `대표님 결재 반려: ${apr.ceoNote}` : '대표님 결재 반려');
     }
     task.updatedAt = now;
     updateMissionStatus(db, task.missionId);
@@ -467,6 +480,23 @@ export function applyApprovalDecisionInDb(aprId, decision, ceoNote = '') {
     text: `결재 ${labelMap[decision]}: ${apr.title}${apr.ceoNote && !autoNote ? ` — 메모: ${apr.ceoNote}` : ''}`,
     source: 'approval'
   });
+  // 반려·수정 지시는 회의실에도 남겨 외부 봇(Cue·피클·Muse 등) 수신함의 recentMeetingRoom에서도 바로 사유를 보게 함
+  if ((decision === 'rejected' || decision === 'revision_requested') && !autoNote) {
+    const targetAg = db.agents.find((a) => a.id === (task?.assigneeId || apr.agentId));
+    const mentionPrefix = targetAg ? `@${targetAg.name} ` : '';
+    appendMessage(db, {
+      missionId: apr.missionId || task?.missionId || db.missions[0]?.id || '',
+      senderId: 'ceo',
+      senderName: `${db.settings?.ceoName || '대표님'} (CEO)`,
+      senderRole: 'CEO 결재 피드백',
+      senderShortCode: 'CEO',
+      senderAccent: '#171614',
+      targetAgentId: targetAg?.id || '',
+      statusText: `결재 ${labelMap[decision]}`,
+      type: 'directive',
+      text: `${mentionPrefix}결재 ${labelMap[decision]}: "${task?.title || apr.title}"${apr.ceoNote ? `\n사유·지시: ${apr.ceoNote}` : ' (상세 사유 미입력)'}`
+    });
+  }
   if (apr.missionId) markCeoActivity(db, apr.missionId);
   // 결재 메모에 담긴 상시 지침("앞으로 여기서 … 하지 말 것")은 그 업무의 고정 지침으로 저장
   if (apr.ceoNote && !autoNote && isStandingOrder(apr.ceoNote)) {
