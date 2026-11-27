@@ -108,7 +108,9 @@ function Invoke-AgyRun([string]$AgyExe, [string]$WorkDir, [string[]]$RequestIds)
   if (-not (Test-Path $WorkDir)) { New-Item -ItemType Directory -Path $WorkDir -Force | Out-Null }
 
   $idList = $RequestIds -join ', '
-  $prompt = "ceo-outsourcing 스킬로 CEO Office 외주 처리해줘 (감지된 요청: $idList). 너(Carbon)는 계획·판단·최종 검토만 하고, 여러 파일 구현·원인 추적 같은 중간 난이도 일은 Gemini 4 Neon 하위 에이전트에, 자료 조사·검색·단순 수정·테스트 실행은 Gemini 4 Hydrogen 하위 에이전트에 맡겨. 하위 에이전트를 부를 때 모델 이름을 지시에 적어. 처리할 외주가 없으면 짧게 끝내줘."
+  # Pure ASCII prompt avoids Windows PowerShell 5.1 UTF-8-without-BOM encoding issues;
+  # agy.exe reads the Korean ceo-outsourcing SKILL.md directly in UTF-8.
+  $prompt = "Use the ceo-outsourcing skill to process open CEO Office outsourcing requests assigned to worker antigravity (detected: $idList). Follow Carbon > Neon > Hydrogen model delegation from SKILL.md, claim each request, complete it, and submit via submit_outsourcing_result (or request_ceo_action / pass_outsourcing_request if blocked). If no open requests remain, exit briefly."
 
   Write-Log "Launching Antigravity CLI for [$idList]: $AgyExe"
   $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -150,6 +152,29 @@ function Invoke-AgyRun([string]$AgyExe, [string]$WorkDir, [string[]]$RequestIds)
   Write-Log "Antigravity CLI finished for [$idList] (exit=$exitCode)$stderrNote"
 }
 
+function Invoke-Utf8JsonGet([string]$Uri, [hashtable]$Headers) {
+  $req = [System.Net.HttpWebRequest]::Create($Uri)
+  $req.Method = 'GET'
+  $req.Timeout = 15000
+  $req.ReadWriteTimeout = 15000
+  foreach ($k in $Headers.Keys) {
+    if ($k -eq 'Accept') { $req.Accept = $Headers[$k] }
+    else { $req.Headers.Add($k, $Headers[$k]) }
+  }
+  $res = $req.GetResponse()
+  try {
+    $reader = New-Object System.IO.StreamReader($res.GetResponseStream(), [System.Text.Encoding]::UTF8)
+    try {
+      $raw = $reader.ReadToEnd()
+      return ($raw | ConvertFrom-Json)
+    } finally {
+      $reader.Dispose()
+    }
+  } finally {
+    $res.Close()
+  }
+}
+
 # Single-instance guard (skip when -CheckOnce)
 $mutex = $null
 if (-not $CheckOnce) {
@@ -179,7 +204,7 @@ try {
         Authorization = "Bearer $token"
         Accept        = 'application/json'
       }
-      $resp = Invoke-RestMethod -Method Get -Uri $pollUrl -Headers $headers -TimeoutSec 15
+      $resp = Invoke-Utf8JsonGet -Uri $pollUrl -Headers $headers
       $consecutiveErrors = 0
       $backoffSec = $IntervalSeconds
 
