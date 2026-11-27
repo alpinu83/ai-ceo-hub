@@ -644,17 +644,67 @@ function buildCeoInboxClient() {
   for (const { m, tasks } of blockedBy.values()) {
     tasks.sort((x, y) => String(x.updatedAt).localeCompare(String(y.updatedAt)));
     const one = tasks.length === 1;
-    items.push({ kind: 'blocked', missionId: m.id, missionTitle: m.title, title: one ? tasks[0].title : `보류된 작업 ${tasks.length}건 — 다시 맡길지 정리할지 결정`, detail: one ? tasks[0].blockedReason || '보류됨' : tasks.slice(0, 3).map((t) => t.title).join(' · '), since: tasks[0].updatedAt, open: `data-open-mission-board="${esc(m.id)}"`, btn: '프로젝트에서 확인' });
+    items.push({ kind: 'blocked', missionId: m.id, missionTitle: m.title, title: one ? tasks[0].title : `보류된 작업 ${tasks.length}건 — 다시 맡길지 정리할지 결정`, detail: one ? tasks[0].blockedReason || '보류됨' : tasks.slice(0, 3).map((t) => t.title).join(' · '), since: tasks[0].updatedAt, open: `data-open-mission-board="${esc(m.id)}"`, btn: '프로젝트에서 확인', btnGhost: true, tasks });
   }
   for (const o of state.outsourcing || []) {
     if (o.status !== 'needs_ceo') continue;
-    items.push({ kind: 'outsource', missionId: o.missionId, missionTitle: mt(o.missionId), title: `${o.id} ${o.title}`, detail: o.ceoAction?.action || '대표님 확인 필요', since: o.ceoAction?.at || o.updatedAt, open: 'data-jump-view="outsourcing"', btn: '처리하기' });
+    items.push({ kind: 'outsource', missionId: o.missionId, missionTitle: mt(o.missionId), title: `${o.id} ${o.title}`, detail: o.ceoAction?.action || '대표님 확인 필요', since: o.ceoAction?.at || o.updatedAt, open: 'data-jump-view="outsourcing"', btn: '외부 협업에서 보기', btnGhost: true, outsource: o });
   }
   for (const it of items) it.ageHours = hrs(it.since);
   return items.sort((x, y) => y.ageHours - x.ageHours);
 }
+/** 대표님 할 일 · 보류된 작업: 작업별로 피드백 주고 다시 맡기기 / 이대로 완료 / 작업 접기 (POST /api/tasks/ceo-decision) */
+function renderInboxBlockedTasks(it) {
+  const agents = (state.agents || []).filter((a) => a.active);
+  const assigneeSelect = (key) =>
+    `<select class="assignee-select" data-inbox-assignee="${esc(key)}" aria-label="다시 맡길 담당"><option value="">담당 그대로</option>${agents.map((a) => `<option value="${esc(a.id)}">${esc(a.name)}에게</option>`).join('')}</select>`;
+  const actions = (ids, key, hasOutput) => `<div class="home-item-actions" style="align-items:center;">
+      ${assigneeSelect(key)}
+      <button type="button" class="btn btn-primary btn-sm" data-inbox-decide="retry" data-inbox-tasks="${esc(ids.join(','))}" data-inbox-key="${esc(key)}">피드백 반영해 다시 맡기기</button>
+      ${hasOutput ? `<button type="button" class="btn btn-ghost btn-sm" data-inbox-decide="accept" data-inbox-tasks="${esc(ids.join(','))}" data-inbox-key="${esc(key)}">이대로 완료</button>` : ''}
+      <button type="button" class="btn btn-ghost btn-sm" data-inbox-decide="drop" data-inbox-tasks="${esc(ids.join(','))}" data-inbox-key="${esc(key)}" style="color:var(--accent-danger);">작업 접기</button>
+    </div>`;
+  const feedbackBox = (key, placeholder) => `<textarea rows="2" data-inbox-feedback="${esc(key)}" placeholder="${esc(placeholder)}" style="margin-top:6px;"></textarea>`;
+  const rows = it.tasks
+    .map((t) => {
+      const ag = getAgent(t.assigneeId);
+      const hasOutput = Boolean(String(t.output || '').trim());
+      return `<div style="border-top:1px solid var(--border-hairline);padding:10px 0 4px;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
+          <div style="min-width:0;"><div style="font-weight:600;line-height:1.4;">${esc(t.title)}</div><div class="routine-sub">보류 사유: ${esc(t.blockedReason || '보류됨')}${ag ? ` · 담당 ${esc(ag.name)}` : ''}</div></div>
+          <button type="button" class="btn btn-ghost btn-sm" data-open-drawer="${esc(t.id)}">${hasOutput ? '결과 보기' : '상세'}</button>
+        </div>
+        ${feedbackBox(t.id, '피드백·지시 (선택) 예) 배포·코드 얘기는 빼고 문서로만 정리해')}
+        ${actions([t.id], t.id, hasOutput)}
+      </div>`;
+    })
+    .join('');
+  const many = it.tasks.length > 1;
+  const bulk = many
+    ? `<div style="padding:4px 0 8px;">
+        <div class="routine-sub">한 번에 결정 (${it.tasks.length}건 모두)</div>
+        ${feedbackBox(`all:${it.missionId}`, '모두에게 줄 피드백 (선택)')}
+        ${actions(it.tasks.map((t) => t.id), `all:${it.missionId}`, it.tasks.some((t) => String(t.output || '').trim()))}
+      </div>`
+    : '';
+  return `<details data-inbox-details="${esc(it.missionId)}" ${many ? '' : 'open'} style="margin-top:4px;">
+      <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--accent-primary);">${many ? `작업별로 결정하기 (${it.tasks.length}건)` : '결정하기'}</summary>
+      ${bulk}${rows}
+    </details>`;
+}
+
+/** 대표님 할 일 · 외주 조치: 할 일 설명 + 여기서 바로 재개 */
+function renderInboxOutsourceActions(o) {
+  const detail = o.ceoAction?.detail ? `<div class="routine-sub" style="width:100%;">${esc(String(o.ceoAction.detail).slice(0, 300))}</div>` : '';
+  return `${detail}<button type="button" class="btn btn-primary btn-sm" data-out-resume="${esc(o.id)}" data-out-resume-worker="">처리했어요 · 재개</button>`;
+}
+
 function renderCeoInbox() {
   const wrap = document.getElementById('home-ceo-inbox');
+  // 다시 그리기 전에 펼친 목록·쓰던 피드백을 기억 (5초 자동 갱신으로 사라지지 않게)
+  const keepOpen = new Set(wrap ? [...wrap.querySelectorAll('details[data-inbox-details]')].filter((d) => d.open).map((d) => d.dataset.inboxDetails) : []);
+  const keepVals = {};
+  if (wrap) wrap.querySelectorAll('[data-inbox-feedback],[data-inbox-assignee]').forEach((el) => { if (el.value) keepVals[el.dataset.inboxFeedback !== undefined ? `f:${el.dataset.inboxFeedback}` : `a:${el.dataset.inboxAssignee}`] = el.value; });
   const items = buildCeoInboxClient();
   const base = String(document.title || 'CEO Office').replace(/^\(\d+\)\s*/, '');
   document.title = items.length ? `(${items.length}) ${base}` : base;
@@ -667,12 +717,12 @@ function renderCeoInbox() {
   }
   if (!wrap) return;
   if (!items.length) {
-    wrap.innerHTML = '<div class="card" style="margin-bottom:14px;"><div class="card-head"><h2 class="card-title">대표님이 하실 일</h2></div><div class="empty-state">지금 대표님 때문에 멈춘 일은 없습니다 ✓</div></div>';
+    wrap.innerHTML = '<div class="card" style="margin-bottom:14px;"><div class="card-head"><h2 class="card-title">대표님 To Do List (텔레그램 /todo)</h2></div><div class="empty-state">지금 대표님 때문에 멈춘 일은 없습니다 ✓</div></div>';
     return;
   }
   const age = (h) => (h >= 24 ? `${Math.floor(h / 24)}일째 대기` : h >= 1 ? `${Math.floor(h)}시간째 대기` : '방금');
   wrap.innerHTML = `<div class="card" style="margin-bottom:14px;border:2px solid var(--accent-amber, #d97706);">
-      <div class="card-head"><h2 class="card-title">대표님이 하실 일 ${items.length}건</h2><span class="routine-sub">이게 끝나야 팀이 다음으로 넘어갑니다 · 텔레그램 /todo · 매일 08:30·19:30 알림</span></div>
+      <div class="card-head"><h2 class="card-title">대표님 To Do List (텔레그램 /todo) <span class="badge badge-red">${items.length}</span></h2></div>
       <div class="clean-stack">${items
         .slice(0, 10)
         .map((it) => {
@@ -681,11 +731,15 @@ function renderCeoInbox() {
             <div class="home-item-top"><div style="display:flex;gap:5px;flex-wrap:wrap;min-width:0;"><span class="badge ${cls}">${label}</span>${it.missionTitle ? `<span class="badge badge-neutral">${esc(it.missionTitle)}</span>` : ''}</div><span class="mono" style="color:${it.ageHours >= 24 ? 'var(--accent-red, #dc2626)' : 'var(--ink-muted)'};">${age(it.ageHours)}</span></div>
             <div class="home-item-title">${esc(it.title)}</div>
             ${it.detail ? `<div class="routine-sub">${esc(String(it.detail).slice(0, 140))}</div>` : ''}
-            <div class="home-item-actions"><button type="button" class="btn btn-primary btn-sm" ${it.open}>${it.btn}</button></div>
+            ${it.kind === 'blocked' && it.tasks?.length ? renderInboxBlockedTasks(it) : ''}
+            <div class="home-item-actions">${it.kind === 'outsource' && it.outsource ? renderInboxOutsourceActions(it.outsource) : ''}<button type="button" class="btn ${it.btnGhost ? 'btn-ghost' : 'btn-primary'} btn-sm" ${it.open}>${it.btn}</button></div>
           </div>`;
         })
         .join('')}${items.length > 10 ? `<div class="routine-sub">… 외 ${items.length - 10}건</div>` : ''}</div>
     </div>`;
+  wrap.querySelectorAll('details[data-inbox-details]').forEach((d) => { if (keepOpen.has(d.dataset.inboxDetails)) d.open = true; });
+  wrap.querySelectorAll('[data-inbox-feedback]').forEach((el) => { const v = keepVals[`f:${el.dataset.inboxFeedback}`]; if (v) el.value = v; });
+  wrap.querySelectorAll('[data-inbox-assignee]').forEach((el) => { const v = keepVals[`a:${el.dataset.inboxAssignee}`]; if (v && [...el.options].some((o) => o.value === v)) el.value = v; });
 }
 
 /** 바로 지시: 대상 목록(전체 + 진행 중 프로젝트·업무) */
@@ -1735,6 +1789,7 @@ function outCardHtml(r) {
             <span class="badge badge-neutral mono">${esc(r.id)}</span>
             <span class="badge badge-neutral">${esc(OUT_KIND_LABELS[r.kind] || r.kind)}</span>
             <span class="badge ${cls}">${esc(label)}${r.claimedBy && r.status === 'claimed' ? ` · ${esc(r.claimedBy)}` : ''}</span>
+            ${r.codeWorkflow === 'agy_then_aside' && !r.reviewStage ? '<span class="badge badge-blue">AGY 수정 → Aside 검수</span>' : ''}
             ${r.reviewStage === 'aside_review' ? `<span class="badge badge-blue">2단계 검수·보완${Number(r.reviewRound) > 1 ? ` ${r.reviewRound}차` : ''}</span>` : ''}
             ${r.reviewStage === 'agy_rework' ? `<span class="badge badge-amber">검수 반려 · AGY 재수정 ${Number(r.reviewRound) || 2}차</span>` : ''}
             ${r.reviewRequestId ? `<span class="badge badge-neutral">→ Aside 검수 (${esc(r.reviewRequestId)})</span>` : ''}
@@ -1750,7 +1805,8 @@ function outCardHtml(r) {
               ? `<select class="out-assign" data-out-assign="${esc(r.id)}" title="이 요청을 누구에게 맡길지">
                   <option value="auto" ${!r.pinnedWorker ? 'selected' : ''}>대상: 자동</option>
                   <option value="aside" ${r.pinnedWorker === 'aside' ? 'selected' : ''}>대상: Aside</option>
-                  <option value="antigravity" ${r.pinnedWorker === 'antigravity' ? 'selected' : ''}>대상: Antigravity</option>
+                  <option value="antigravity" ${r.pinnedWorker === 'antigravity' && r.codeWorkflow !== 'agy_then_aside' ? 'selected' : ''}>대상: Antigravity</option>
+                  ${r.kind === 'code' && !r.reviewStage ? `<option value="agy_aside" ${r.codeWorkflow === 'agy_then_aside' ? 'selected' : ''}>대상: AGY 수정 + Aside 검수</option>` : ''}
                   ${OUT_WORKER_CAPS.gemini.includes(r.kind) ? `<option value="gemini" ${r.pinnedWorker === 'gemini' ? 'selected' : ''}>대상: Gemini 앱</option>` : ''}
                 </select>`
               : ''
@@ -1841,7 +1897,7 @@ function renderOutsourcingView() {
             <label class="field" style="margin-top:12px;"><span class="field-label">해야 할 일 *</span><textarea id="out-new-goal" rows="4" placeholder="무엇을, 어떤 기준으로 끝내면 되는지 적어 주세요."></textarea></label>
             <div class="form-row-two" style="margin-top:12px;">
               <label class="field"><span class="field-label">관련 프로젝트</span><select id="out-new-mission"><option value="">없음</option>${missions.map((m) => `<option value="${esc(m.id)}">${esc(m.title)}</option>`).join('')}</select></label>
-              <label class="field"><span class="field-label">맡길 곳</span><select id="out-new-worker"><option value="any">자동 (역할 분담표대로)</option><option value="antigravity">Antigravity</option><option value="aside">Aside</option><option value="gemini">Gemini 앱 (자문·리서치·문서만)</option></select></label>
+              <label class="field"><span class="field-label">맡길 곳</span><select id="out-new-worker"><option value="any">자동 (역할 분담표대로)</option><option value="antigravity">Antigravity</option><option value="aside">Aside</option><option value="gemini">Gemini 앱 (자문·리서치·문서만)</option><option value="agy_aside">AGY 수정 + Aside 검수 (코드)</option></select></label>
             </div>
             <div class="routine-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-out-new-toggle="1">닫기</button><button type="button" class="btn btn-primary btn-sm" data-out-create="1">요청 올리기</button></div>
           </div>`
@@ -2459,7 +2515,7 @@ let currentConfigAgent = 'gemini';
 
 const BRIDGE_AGENT_META = {
   pickle: { title: '피클 (알렉스) 연결 설정', inboxKey: 'pickle' },
-  vooy: { title: '부이 (vooy) 연결 설정 (대기 중)', inboxKey: 'vooy' },
+  vooy: { title: '부이 (vooy) 연결 설정', inboxKey: 'vooy' },
   instinct: { title: '인스팅스 (Instinct) 연결 설정', inboxKey: 'instinct' },
   muse: { title: 'Meta Muse 연결 설정', inboxKey: 'muse' },
   cue: { title: 'Manus Cue 연결 설정', inboxKey: 'cue' }
@@ -2901,7 +2957,7 @@ function bindEvents() {
       applyStateKeepingHealth(res.state);
       renderAll();
       refreshIcons();
-      toast(sel.value === 'auto' ? '대상을 자동으로 되돌렸습니다.' : `이 요청을 ${OUT_WORKER_LABELS[sel.value]}로 넘겼습니다.`);
+      toast(sel.value === 'auto' ? '대상을 자동으로 되돌렸습니다.' : sel.value === 'agy_aside' ? '이 요청을 AGY 수정 + Aside 검수로 맡겼습니다.' : `이 요청을 ${OUT_WORKER_LABELS[sel.value]}로 넘겼습니다.`);
     } catch (err) {
       toast(err.message, true);
     }
@@ -3110,6 +3166,39 @@ function bindEvents() {
 
     const target = e.target.closest('button');
     if (!target) return;
+
+    // 홈 "대표님이 하실 일" · 보류된 작업 결정 (다시 맡기기 / 이대로 완료 / 작업 접기)
+    if (target.dataset.inboxDecide) {
+      const action = target.dataset.inboxDecide;
+      const taskIds = String(target.dataset.inboxTasks || '').split(',').filter(Boolean);
+      const key = target.dataset.inboxKey || taskIds[0] || '';
+      const wrap = document.getElementById('home-ceo-inbox') || document;
+      const fbEl = [...wrap.querySelectorAll('[data-inbox-feedback]')].find((el) => el.dataset.inboxFeedback === key);
+      const agEl = [...wrap.querySelectorAll('[data-inbox-assignee]')].find((el) => el.dataset.inboxAssignee === key);
+      const feedback = String(fbEl?.value || '').trim();
+      const assigneeId = agEl?.value || '';
+      if (!taskIds.length) return;
+      if (action === 'retry' && !feedback && !assigneeId && !window.confirm('피드백·담당 변경 없이 그대로 다시 맡길까요? 같은 이유로 다시 보류될 수 있습니다.')) return;
+      if (action === 'accept' && !window.confirm(`${taskIds.length}건을 지금 결과물 그대로 완료 처리할까요?`)) return;
+      if (action === 'drop' && !window.confirm(`${taskIds.length}건을 접을까요? (반려 처리, 다시 진행하지 않음)`)) return;
+      target.disabled = true;
+      try {
+        const res = await api('/api/tasks/ceo-decision', { method: 'POST', body: JSON.stringify({ taskIds, action, feedback, assigneeId }) });
+        if (fbEl) fbEl.value = '';
+        if (agEl) agEl.value = '';
+        applyStateKeepingHealth(res.state);
+        renderAll();
+        refreshIcons();
+        const label = { retry: '다시 맡겼습니다. 팀장이 곧 이어서 진행합니다', accept: '완료 처리했습니다', drop: '접었습니다' }[action] || '처리했습니다';
+        const doneN = (res.done || []).length;
+        const skipN = (res.skipped || []).length;
+        toast(`${doneN}건 ${label}.${skipN ? ` (${skipN}건 건너뜀: ${res.skipped[0].reason})` : ''}`, !doneN);
+      } catch (err) {
+        toast(err.message, true);
+        target.disabled = false;
+      }
+      return;
+    }
 
     if (target.dataset.outTab) {
       outListTab = target.dataset.outTab;

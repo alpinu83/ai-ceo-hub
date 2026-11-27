@@ -22,6 +22,7 @@
    - SSE 엔드포인트 추가 금지(60초 HTTP 폴링 유지).
 3. **2단계 코드 협업 (`codeWorkflow: 'agy_then_aside'`) 계약**:
    - 1단계(Antigravity): `kind: 'code'` 요청을 `out/<요청ID>` 브랜치로 작업·테스트 후 PR URL과 함께 `submit`.
+   - 켜는 방법: 설정 → 역할 분담의 코드 수정 1순위(전체 기본값) 또는 외주 요청별 "맡길 곳: AGY 수정 + Aside 검수"(요청 필드 `codeWorkflow: 'agy_then_aside'`, `pinnedWorker: 'antigravity'`).
    - 서버 자동 인계: `reviewStage: 'aside_review'`, `sourcePrUrl: <1차 PR URL>`, `sourceOutsourceId: <1차 요청 ID>`, `reviewRound: 1..3`, `pinnedWorker: 'aside'`로 새 `kind: 'code'` 요청 생성.
    - 2단계(Aside):
      - 통과/직접 보완 완료: `POST /api/outsourcing/:id/submit` (`worker: "aside"`, `prUrl`, `summary`, `document`; `prUrl` 생략 시 `sourcePrUrl` 자동 폴백) → 대표님 결재 카드 생성.

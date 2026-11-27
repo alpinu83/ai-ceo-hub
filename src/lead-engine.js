@@ -485,7 +485,7 @@ export const AGENT_PROFILES = {
   agent_muse: { good: '대표님 취향·제약 기억 정리, 프로젝트 보드·체크리스트, 개인화 기획', bad: '즉시 응답 아님(외부 앱이 가져가 처리)', async: true },
   agent_pickle: { good: '국내 전화 문의·예약 실행(결제 전 대표님 승인)', bad: '문서·분석 업무 불가. 실제 전화가 필요한 일만', async: true, realWorld: true },
   agent_instinct: { good: '문자·전화로 빠른 확인·심부름', bad: '문서·분석 업무 불가', async: true, realWorld: true },
-  agent_vooy: { good: '매일 같은 조건의 뉴스·가격 반복 수집', bad: '연동 대기 중', async: true }
+  agent_vooy: { good: '매일 같은 조건의 뉴스·트렌드·가격 반복 수집·정기 브리핑', bad: '코드·전략 판단·일회성 심층 분석은 맡기지 말 것. 즉시 응답 아님(부이 앱이 수신함에서 가져가 처리)', async: true }
 };
 const COMPLEX_RE = /(분석|전략|설계|조사|리서치|코드|구현|개발|비교|진단|수익|기획안|검증|아키텍처|리스크)/;
 // 실제 웹을 봐야 하는 일 (시장·경쟁·수요·사례·가격 조사)

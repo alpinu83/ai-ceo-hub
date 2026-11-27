@@ -1,5 +1,5 @@
 // hub/outsourcing-bridge.js: server.js에서 분리 (공유 로직)
-import { OUTSOURCE_WORKER_LABELS, assignRequest, cancelRequest, createOutsourcingRequest, describeRolesLine, describeRouting, findRequest, getOutsourcingSettings, listRequests, releaseExpiredLeases, resolveTarget, resumeRequest, setOutsourcingHandlers, shortenForeignLeases, submitResult } from '../outsourcing.js';
+import { OUTSOURCE_WORKER_LABELS, assignRequest, cancelRequest, createOutsourcingRequest, describeRolesLine, describeRouting, findRequest, getOutsourcingSettings, listRequests, releaseExpiredLeases, resolveTarget, resumeRequest, setOutsourcingHandlers, shortenForeignLeases, submitResult, wantsTwoStage } from '../outsourcing.js';
 import { appendLog, flushCloudBackup, loadDb, saveDb } from '../store.js';
 import { buildMissionDigest, escapeTelegramHtml, findOutputViolations, rememberFact } from '../lead-engine.js';
 import { createApprovalForTask } from '../orchestrator.js';
@@ -162,14 +162,8 @@ export async function handleOutsourceSubmitted(id) {
       const cfg = getOutsourcingSettings(db.settings);
       const isAgySubmit = by === 'antigravity' || (by === 'github' && req.claimedBy === 'antigravity');
       const reworkPrUrl = r.prUrl || (req.reviewStage === 'agy_rework' ? req.sourcePrUrl : '');
-      const isInitialTwoStage =
-        req.kind === 'code' &&
-        !req.reviewStage &&
-        cfg.codeWorkflow === 'agy_then_aside' &&
-        cfg.routing === 'auto' &&
-        !req.pinnedWorker &&
-        isAgySubmit &&
-        Boolean(r.prUrl);
+      // 설정(자동 배정) 또는 요청별 지정("AGY 수정 + Aside 검수")이면 Aside 검수로 인계
+      const isInitialTwoStage = wantsTwoStage(db.settings, req) && isAgySubmit && Boolean(r.prUrl);
       const isReworkToReview =
         req.kind === 'code' &&
         req.reviewStage === 'agy_rework' &&

@@ -1170,7 +1170,7 @@ CEO 원지시: ${String(mission.directive || '').slice(0, 800)}
     agent.provider === 'pickle'
       ? '피클(알렉스) HTTPS 수신함 전달 완료'
       : agent.provider === 'vooy'
-        ? '부이(vooy) 연동 대기 중'
+        ? '부이(vooy) HTTPS 수신함 전달 완료'
         : agent.provider === 'muse'
           ? 'Meta Muse 공식 MCP 전달 완료'
           : agent.provider === 'manus'
@@ -1543,7 +1543,7 @@ function buildHonestDispatchNotice(agent, userMessage, agentTasks) {
     case 'muse':
       return `[MCP 전달됨] Meta Muse에서 CEO Office 커넥터로 이 요청을 조회·보고할 수 있습니다${taskRef}.`;
     case 'vooy':
-      return `[연동 대기 중] 부이(vooy)는 아직 연결 대기 상태입니다. 연동 완료 후 자동 수신됩니다.`;
+      return `[수신함 전달됨] 부이(vooy) HTTPS 수신함에 대표님 메시지를 등록했습니다${taskRef}. 부이가 다음 확인 때 가져가 이곳 회의실로 결과를 보고합니다.`;
     case 'instinct':
       return `[문자 전달 대기] 인스팅스는 외부 앱입니다. 업무 상세에서 지시서를 복사해 전달해 주세요.`;
     default:
@@ -1705,7 +1705,7 @@ ${
       }
     } else {
       replyText = buildHonestDispatchNotice(ag, userMessage, agTasks);
-      statusText = ag.provider === 'vooy' ? '연동 대기 중' : '수신함 대기';
+      statusText = '수신함 대기';
     }
 
     const prevMsg = replies[replies.length - 1];
@@ -1777,10 +1777,8 @@ export async function generateStandupSession({ mission, tasks, agents, settings 
         text = `[완료] "${t.title}" 결과가 등록되어 있습니다.`;
       } else if (t.status === 'awaiting_approval') {
         text = `[결재 대기] "${t.title}" — @${ceoName} 결재함 승인 대기 중입니다.`;
-      } else if (ag.provider === 'pickle' || ag.provider === 'manus' || ag.provider === 'muse') {
+      } else if (ag.provider === 'pickle' || ag.provider === 'manus' || ag.provider === 'muse' || ag.provider === 'vooy') {
         text = `[수신함/MCP 대기] "${t.title}" — ${ag.name}가 수신함에서 가져가 처리 대기 중입니다.`;
-      } else if (ag.provider === 'vooy') {
-        text = `[연동 대기] "${t.title}" — 부이(vooy) 연동 대기 상태입니다.`;
       } else {
         text = `[대기] "${t.title}" — 실행 또는 외부 앱 전달 대기 중입니다.`;
       }
