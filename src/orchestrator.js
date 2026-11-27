@@ -1655,7 +1655,7 @@ ${assignmentRules ? `\n${assignmentRules}` : ''}`;
       const validIds = new Set(active.map((a) => a.id));
       object.tasks = (object.tasks || []).map((t) => ({
         ...t,
-        assigneeId: validIds.has(t.assigneeId) ? t.assigneeId : t.isCodeChange ? 'agent_it_dev' : lead.id
+        assigneeId: validIds.has(t.assigneeId) ? t.assigneeId : t.isCodeChange && validIds.has('agent_it_dev') ? 'agent_it_dev' : lead.id
       }));
       return { ...object, usedModel: m.label || '' };
     } catch {
@@ -1677,7 +1677,7 @@ ${assignmentRules ? `\n${assignmentRules}` : ''}`;
           {
             title: text.replace(/\s+/g, ' ').slice(0, 40),
             description: text,
-            assigneeId: isCode ? 'agent_it_dev' : lead.id,
+            assigneeId: isCode && active.some((a) => a.id === 'agent_it_dev') ? 'agent_it_dev' : lead.id,
             isCodeChange: isCode
           }
         ],
