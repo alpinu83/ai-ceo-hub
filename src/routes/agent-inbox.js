@@ -27,6 +27,7 @@ export function registerAgentInboxRoutes(app) {
     const proto = c.req.header('x-forwarded-proto') || parsedUrl.protocol.replace(':', '');
     const origin = `${proto}://${parsedUrl.host}`;
     const token = db.settings?.mcpToken || '';
+    const missionTitleById = Object.fromEntries((db.missions || []).map((m) => [m.id, m.title]));
     const pendingTasks = db.tasks
       .filter((t) => t.assigneeId === agent.id && t.status !== 'completed' && t.status !== 'rejected')
       .map((t) => {
@@ -34,6 +35,7 @@ export function registerAgentInboxRoutes(app) {
         return {
           id: t.id,
           missionId: t.missionId,
+          missionTitle: missionTitleById[t.missionId] || '',
           title: t.title,
           description: t.description,
           status: t.status,
@@ -72,7 +74,7 @@ export function registerAgentInboxRoutes(app) {
         ...(pendingTasks.length
           ? pendingTasks.map(
               (t, i) =>
-                `${i + 1}. [${t.id}] ${t.title}\n   설명: ${t.description}${t.ceoFeedback ? `\n   CEO 피드백·수정 지시: ${t.ceoFeedback}` : ''}\n   승인 필요: ${t.requiresApproval ? '예(확정·결제 전 정지)' : '아니오'}`
+                `${i + 1}. [${t.id}] (${t.missionTitle || t.missionId}) ${t.title} [상태: ${t.status}]\n   설명: ${t.description}${t.ceoFeedback ? `\n   CEO 피드백·수정 지시: ${t.ceoFeedback}` : ''}\n   승인 필요: ${t.requiresApproval ? '예(확정·결제 전 정지)' : '아니오'}`
             )
           : ['현재 새로 배정된 업무가 없습니다.']),
         ...(recentFeedback.length
@@ -88,7 +90,8 @@ export function registerAgentInboxRoutes(app) {
         '',
         `=== 답변/결과 제출 방법 (POST JSON) ===`,
         `URL: ${replyUrl}`,
-        `Body: {"message":"회의실 보고 내용","taskId":"업무ID(선택)","deliverable":"상세 결과(선택)","requestApproval":true,"estimatedCostKRW":0}`
+        `규칙: 업무 결과를 제출할 때는 반드시 정확한 taskId와 missionId를 함께 보내세요. 일반 회의실 보고·정정 메시지는 taskId·deliverable 없이 message와 missionId만 보내세요.`,
+        `Body: {"message":"회의실 보고 내용","missionId":"프로젝트ID","taskId":"업무ID","deliverable":"상세 결과","requestApproval":false,"estimatedCostKRW":0}`
       ];
       return c.text(lines.join('\n'));
     }
@@ -118,11 +121,16 @@ export function registerAgentInboxRoutes(app) {
         method: 'POST',
         url: replyUrl,
         contentType: 'application/json',
+        rules: [
+          '업무 결과 제출 시 반드시 정확한 taskId와 missionId를 함께 보내세요 (대기 업무가 2건 이상이면 taskId 없이 제출 시 자동 연결되지 않습니다).',
+          '일반 회의실 보충 보고·정정 메시지는 taskId와 deliverable을 생략하고 message와 missionId만 보내세요.'
+        ],
         exampleBody: {
-          message: '조사 결과를 보고합니다. 확정 전 CEO 결재 부탁드립니다.',
+          message: '조사 결과를 보고합니다.',
+          missionId: pendingTasks[0]?.missionId || '',
           taskId: pendingTasks[0]?.id || '',
           deliverable: '상세 결과 내용',
-          requestApproval: true,
+          requestApproval: false,
           approvalTitle: '예약/실행 승인 요청',
           estimatedCostKRW: 0
         }

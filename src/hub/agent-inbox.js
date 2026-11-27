@@ -92,13 +92,50 @@ export async function handleAgentInboxReply(c) {
   const estimatedCostKRW = Number(body.estimatedCostKRW || body.estimated_cost_krw || 0) || 0;
   const now = new Date().toISOString();
 
-  let task = body.taskId || body.task_id ? db.tasks.find((t) => t.id === (body.taskId || body.task_id)) : null;
-  if (!task && (body.deliverable || body.result || requestApproval)) {
-    task = db.tasks.find((t) => t.assigneeId === agent.id && t.status !== 'completed' && t.status !== 'rejected') || null;
+  const requestedTaskId = String(body.taskId || body.task_id || '').trim();
+  const requestedMissionId = String(body.missionId || body.mission_id || '').trim();
+  let task = null;
+  let taskWarning = '';
+  let openTasksHint = null;
+
+  if (requestedTaskId) {
+    task = db.tasks.find((t) => t.id === requestedTaskId) || null;
+    if (!task) {
+      saveDb(db);
+      return c.json({ error: `요청한 taskId를 찾을 수 없습니다: ${requestedTaskId}` }, 404);
+    }
+    if (task.assigneeId !== agent.id) {
+      saveDb(db);
+      return c.json({ error: `해당 업무(${requestedTaskId})는 ${agent.name}에게 배정된 업무가 아닙니다.` }, 403);
+    }
+    if (requestedMissionId && task.missionId && requestedMissionId !== task.missionId) {
+      saveDb(db);
+      return c.json({ error: `taskId(${requestedTaskId})와 missionId(${requestedMissionId})가 서로 다른 프로젝트입니다. 올바른 taskId를 지정해 주세요.` }, 400);
+    }
+  } else if (body.deliverable || body.result || requestApproval) {
+    // taskId가 생략된 경우: 절대 다른 프로젝트나 review_pending/awaiting_approval 업무에 무작위로 붙이지 않음.
+    // 실제로 처리 대기 중(queued/awaiting_bridge)인 업무가 정확히 1건일 때만 자동 연결.
+    const workable = db.tasks.filter(
+      (t) =>
+        t.assigneeId === agent.id &&
+        ['queued', 'awaiting_bridge'].includes(t.status) &&
+        (!requestedMissionId || t.missionId === requestedMissionId)
+    );
+    if (workable.length === 1) {
+      task = workable[0];
+    } else if (workable.length > 1) {
+      taskWarning = `대기 중인 업무가 ${workable.length}건 있어 잘못된 프로젝트에 붙는 것을 막기 위해 자동 연결하지 않았습니다. 정확한 taskId를 지정해 다시 제출해 주세요.`;
+      openTasksHint = workable.slice(0, 10).map((t) => ({
+        id: t.id,
+        missionId: t.missionId,
+        missionTitle: db.missions.find((m) => m.id === t.missionId)?.title || '',
+        title: t.title
+      }));
+    }
   }
 
   const postedMsg = appendMessage(db, {
-    missionId: body.missionId || task?.missionId || db.missions[0]?.id || '',
+    missionId: requestedMissionId || task?.missionId || db.missions[0]?.id || '',
     senderId: agent.id,
     senderName: agent.name,
     senderRole: `${agent.roleTitle} · 실제 앱 보고`,
@@ -111,6 +148,7 @@ export async function handleAgentInboxReply(c) {
   });
 
   let approvalId = null;
+  let revisionInfo = null;
   if (task) {
     task.output = deliverable;
     task.executionModeUsed = 'external_agent_https';
@@ -124,6 +162,12 @@ export async function handleAgentInboxReply(c) {
     const missionX = db.missions.find((m) => m.id === task.missionId);
     const outX = await processTaskResult(db, task, agent, missionX, { output: deliverable, executionModeUsed: 'external_agent_https' }, { message: false });
     approvalId = outX?.approvalId || db.approvals.find((a) => a.taskId === task.id && a.status === 'pending')?.id || null;
+    if (outX?.needsRevision || (task.status === 'awaiting_bridge' && task.review?.verdict === 'revise')) {
+      revisionInfo = {
+        needsRevision: true,
+        revisionReason: outX?.revisionReason || task.review?.feedback || '팀장 검토 결과 보완이 필요합니다.'
+      };
+    }
     const statusText =
       task.status === 'review_pending'
         ? '팀장 검수·재가공 대기'
@@ -137,10 +181,10 @@ export async function handleAgentInboxReply(c) {
     appendLog(db, `${agent.name} (HTTPS 보고)`, `"${task.title}" 결과 보고 → ${statusText}.`, task.status === 'awaiting_approval' ? 'approval' : 'info');
     if (outX?.requeued) setTimeout(() => autoStartLiveMissionTasks(task.missionId).catch(() => {}), 1500);
     updateMissionStatus(db, task.missionId);
-  } else if (requestApproval) {
+  } else if (requestApproval && !taskWarning) {
     const apr = {
       id: uid('apr'),
-      missionId: db.missions[0]?.id || '',
+      missionId: requestedMissionId || db.missions[0]?.id || '',
       taskId: '',
       agentId: agent.id,
       title: body.approvalTitle || `${agent.name} CEO 결재 요청`,
@@ -160,7 +204,7 @@ export async function handleAgentInboxReply(c) {
     notifyAllApprovalChannels(db.settings, apr, agent.name);
     appendLog(db, `${agent.name} (HTTPS 보고)`, `실제 결재 안건 상신: "${apr.title}"`, 'approval');
   } else {
-    appendLog(db, `${agent.name} (HTTPS 보고)`, `사내 회의실에 실제 답변을 올렸습니다.`, 'success');
+    appendLog(db, `${agent.name} (HTTPS 보고)`, taskWarning ? `회의실 보고만 등록 (${taskWarning})` : `사내 회의실에 실제 답변을 올렸습니다.`, taskWarning ? 'warning' : 'success');
     sendWebPushNotification({
       title: `[새 보고] ${agent.name}`,
       body: message.slice(0, 100),
@@ -177,6 +221,8 @@ export async function handleAgentInboxReply(c) {
     postedMessageId: postedMsg.id,
     taskId: task?.id || null,
     taskStatus: task?.status || null,
-    approvalId
+    approvalId,
+    ...(revisionInfo || {}),
+    ...(taskWarning ? { taskAutoMatchSkipped: true, warning: taskWarning, openTasks: openTasksHint } : {})
   });
 }
