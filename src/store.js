@@ -952,9 +952,9 @@ function scheduleGistBackup(serialized) {
 }
 
 /** 백업 Gist의 이전 버전 목록 (관리자 복구용) */
-export async function listBackupRevisions(limit = 40) {
+export async function listBackupRevisions(limit = 40, page = 1) {
   if (!isGistTokenSet() || !activeGistId) throw new Error('클라우드 백업이 연결되어 있지 않습니다.');
-  const res = await fetch(`https://api.github.com/gists/${encodeURIComponent(activeGistId)}/commits?per_page=${Math.min(100, limit)}`, { headers: getGistHeaders() });
+  const res = await fetch(`https://api.github.com/gists/${encodeURIComponent(activeGistId)}/commits?per_page=${Math.min(100, limit)}&page=${Math.max(1, Number(page) || 1)}`, { headers: getGistHeaders() });
   if (!res.ok) throw new Error(`Gist 이력 조회 실패 HTTP ${res.status}`);
   const list = await res.json();
   return (Array.isArray(list) ? list : []).map((c) => ({ version: c.version, committedAt: c.committed_at, changes: c.change_status || {} }));
@@ -1001,10 +1001,23 @@ export async function flushCloudBackup(db) {
   return patchGistContent(serialized);
 }
 
+let allowWipeOnce = false;
+/** 확인 문구를 거친 전체 초기화만 한 번 허용 */
+export function allowDataWipeOnce() {
+  allowWipeOnce = true;
+}
 export function saveDb(db) {
   if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true });
   }
+  // 안전장치: 프로젝트가 3개 이상 있던 상태에서 한 번에 0개가 되는 저장은 거부 (실수·오류로 전체 데이터가 지워지는 것 방지)
+  const prevMissions = Array.isArray(dbCache?.missions) ? dbCache.missions.length : 0;
+  const nextMissions = Array.isArray(db?.missions) ? db.missions.length : 0;
+  if (prevMissions >= 3 && nextMissions === 0 && !allowWipeOnce && db !== dbCache) {
+    console.error(`[안전장치] 프로젝트 ${prevMissions}개 → 0개 저장을 거부했습니다.`);
+    throw new Error('안전장치: 모든 프로젝트가 지워지는 저장은 막혀 있습니다.');
+  }
+  allowWipeOnce = false;
   dbCache = db;
   const serialized = JSON.stringify(db, null, 2);
   fs.writeFileSync(DB_PATH, serialized, 'utf8');
