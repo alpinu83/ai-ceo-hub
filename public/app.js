@@ -1600,7 +1600,7 @@ function shortsPanelHtml(mission) {
   const jobs = (sh.jobs || []).filter((j) => j.missionId === mission.id).slice(0, 8);
   const views = (v) => (v ? (v >= 10000 ? `${(v / 10000).toFixed(1)}만회` : `${v}회`) : '');
   const candRows = cands
-    .map((c) => `<li style="margin:6px 0;display:flex;gap:8px;align-items:flex-start;"><button type="button" class="btn btn-primary btn-sm" data-shorts-pick="${esc(c.id)}">선택</button><div><strong>${esc(c.title)}</strong><div class="routine-sub">${c.views ? `조회 ${views(c.views)} · ` : c.coverage ? `보도 ${c.coverage}건 · ` : ''}${esc(c.source || '')}${c.url ? ` · <a href="${esc(c.url)}" target="_blank" rel="noreferrer">원문</a>` : ''}</div></div></li>`)
+    .map((c) => `<li style="margin:6px 0;display:flex;gap:8px;align-items:flex-start;"><button type="button" class="btn btn-primary btn-sm" data-shorts-pick="${esc(c.id)}">선택</button><div><strong>${esc(c.title)}</strong><div class="routine-sub">${esc(c.source || '')}${c.url ? ` · <a href="${esc(c.url)}" target="_blank" rel="noreferrer">기사 원문</a>` : ''}${c.publishedAt ? ` · ${esc(formatTime(c.publishedAt))}` : ''}${c.coverage ? ` · 보도 ${c.coverage}곳` : ''}${c.trends?.volume ? ` · 검색 관심 ${views(c.trends.volume).replace('회', '')}+` : ''}${c.signal?.youtubeViews ? ` · 화제 👁 ${views(c.signal.youtubeViews)}(관련 유튜브, 영상은 안 씀)` : ''}</div></div></li>`)
     .join('');
   const jobRows = jobs
     .map((j) => {
@@ -1610,7 +1610,7 @@ function shortsPanelHtml(mission) {
     .join('');
   return `<details class="mission-directive-quote" open>
       <summary style="cursor:pointer;"><strong>쇼츠 제작</strong> <span class="routine-sub">뉴스 후보를 고르면 팀이 대본을 써서 결재로 올리고, 승인하면 자동 제작기가 구국열사 채널에 비공개로 올립니다${sh.lastCollectedAt ? ` · 후보 수집 ${esc(formatTime(sh.lastCollectedAt))}` : ''}</span></summary>
-      ${candRows ? `<div style="margin-top:8px;"><strong>후보 뉴스</strong><ul style="list-style:none;padding:0;margin:4px 0 0;">${candRows}</ul></div>` : '<div class="routine-sub" style="margin-top:6px;">아직 후보가 없습니다. 매일 아침 7시·저녁 6시에 조회수 높은 정치 뉴스를 모아 옵니다.</div>'}
+      ${candRows ? `<div style="margin-top:8px;"><strong>후보 기사</strong> <span class="routine-sub">(최근 1~2일 국내 정치 · 보도량·검색 관심·화제도 순 · 다른 채널 영상은 쓰지 않음)</span><ul style="list-style:none;padding:0;margin:4px 0 0;">${candRows}</ul></div>` : '<div class="routine-sub" style="margin-top:6px;">아직 후보가 없습니다. 매일 아침 7시·저녁 6시에 최근 1~2일 국내 정치 기사 중 관심 높은 것을 모아 옵니다.</div>'}
       ${jobRows ? `<div style="margin-top:10px;"><strong>제작 현황</strong><ul style="list-style:none;padding:0;margin:4px 0 0;">${jobRows}</ul></div>` : ''}
     </details>`;
 }
