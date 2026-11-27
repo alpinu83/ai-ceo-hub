@@ -1474,19 +1474,19 @@ const MilestoneWorkSchema = z.object({
         risky: z.boolean().optional().describe('코드 작업일 때: 구조 변경·데이터·보안·돈이 걸리면 true')
       })
     )
-    .max(4)
+    .max(6)
     .describe('milestoneDone=false일 때 완료 기준까지 남은 차이를 메울 작업. 이미 한 일 반복 금지')
 });
 
 /** 현재 마일스톤: 완료 판정 + 남은 차이를 메울 작업 계획 (팀원 역량에 맞게 배정) */
-export async function planMilestoneWork({ mission, milestone, digest, agents, settings, teamLoad = '', deliverablesText = '' }) {
+export async function planMilestoneWork({ mission, milestone, digest, agents, settings, teamLoad = '', deliverablesText = '', extraNote = '', keySuffix = '', refsExtra = {} }) {
   const leadAgent = agents.find((a) => a.id === (mission?.leadAgentId || 'agent_gemini_neon')) || agents[0];
   const chain = buildLeadModelChain(leadAgent, settings, agents);
   if (!chain.length) throw new Error('사용 가능한 AI 엔진 없음');
   const system = `당신은 지휘자(Orchestrator)인 총괄 팀장(${leadAgent.name})입니다. 지금 마일스톤을 끝내기 위해 팀을 움직이세요.
 - 먼저 지금까지의 결과물이 마일스톤 완료 기준을 충족하는지 판정하세요(milestoneDone).
-- 아직이면, 완료 기준까지 남은 차이를 메울 작업만 최대 4개. 각 작업마다 검증 가능한 완료 기준(acceptance)을 쓰세요.
-- 팀원 역량에 맞게, 대기 중인 팀원부터 서로 다른 팀원에게 나눠 배정하세요. 실제 웹 조사는 웹 조사가 되는 팀원에게.
+- 아직이면, 완료 기준까지 남은 차이를 메울 작업을 최대 6개. 각 작업마다 검증 가능한 완료 기준(acceptance)을 쓰세요.
+- 팀원 역량에 맞게, 대기 중인 팀원부터 서로 다른 팀원에게 나눠 배정하세요. 접속 중인 봇 팀원은 일을 많이 해도 되니 놀지 않게 각자 맞는 일을 주세요. 실제 웹 조사는 웹 조사가 되는 팀원에게.
 - 이미 끝난 일을 반복하지 마세요. 업무 브리핑의 "절대 하지 말 것"을 지키세요.
 
 [조직도]
@@ -1499,12 +1499,12 @@ ${deliverablesText || '(아직 없음)'}
 
 ${digest}
 
-${buildComplianceChecklist(mission)}`;
+${buildComplianceChecklist(mission)}${extraNote ? `\n\n${extraNote}` : ''}`;
   const { object, label } = await generateObjectChain(chain, {
     schema: MilestoneWorkSchema,
     system,
     prompt,
-    leadDesk: { key: `ms:${mission.id}:${milestone.id}:${Number(milestone.rounds || 0)}:${textHash(deliverablesText)}`, purpose: 'milestone', refs: { missionId: mission.id } }
+    leadDesk: { key: `ms:${mission.id}:${milestone.id}:${Number(milestone.rounds || 0)}:${textHash(deliverablesText)}${keySuffix ? `:${keySuffix}` : ''}`, purpose: 'milestone', refs: { missionId: mission.id, ...refsExtra } }
   });
   const validIds = new Set(agents.filter((a) => a.active).map((a) => a.id));
   return {
