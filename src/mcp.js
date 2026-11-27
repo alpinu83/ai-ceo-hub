@@ -409,6 +409,25 @@ export function createCeoMcpServer() {
     }
   );
 
+  server.tool(
+    'pass_outsourcing_request',
+    '이 외주가 내 환경에서 할 수 없는 일이면(예: Gemini 앱인데 코드 저장소 수정이나 로그인이 필요한 사이트 작업) 다른 작업자에게 넘깁니다. 억지로 하거나 그럴듯하게 지어내지 말고 넘기세요.',
+    {
+      request_id: z.string().describe('요청 ID'),
+      worker: z.string().describe('내 작업자 이름 (gemini, aside, antigravity)'),
+      to: z.string().optional().describe('넘길 곳: antigravity(코드 수정) / aside(로그인·콘솔 작업) / auto(시간대 담당) / deep(같은 작업자의 상위 모델로 올림: Gemini Hydrogen → Neon)'),
+      reason: z.string().describe('왜 넘기는지, 지금까지 한 것과 남은 일 (다음 작업자가 이어받을 수 있게)')
+    },
+    async ({ request_id, worker, to = 'auto', reason }) => {
+      try {
+        const req = passRequest(request_id, { worker, to, reason });
+        return { content: [{ type: 'text', text: `넘겼습니다: ${req.id} → ${req.pinnedWorker}. 다음 요청을 처리하세요.` }] };
+      } catch (err) {
+        return { isError: true, content: [{ type: 'text', text: err.message }] };
+      }
+    }
+  );
+
   // ---- 팀장 업무함 (주간: AGY 팀장 감시기 · 야간 당직: Gemini 앱 예약 작업) ----
   server.tool(
     'list_lead_jobs',
@@ -457,25 +476,6 @@ export function createCeoMcpServer() {
       try {
         const j = await submitLeadJob(job_id, { worker: LEAD_WORKERS[worker] ? worker : 'gemini_app', result: result_json });
         return { content: [{ type: 'text', text: `제출 완료: ${j.id}. 다음 팀장 판단이 있으면 이어서 처리하세요.` }] };
-      } catch (err) {
-        return { isError: true, content: [{ type: 'text', text: err.message }] };
-      }
-    }
-  );
-
-  server.tool(
-    'pass_outsourcing_request',
-    '이 외주가 내 환경에서 할 수 없는 일이면(예: Gemini 앱인데 코드 저장소 수정이나 로그인이 필요한 사이트 작업) 다른 작업자에게 넘깁니다. 억지로 하거나 그럴듯하게 지어내지 말고 넘기세요.',
-    {
-      request_id: z.string().describe('요청 ID'),
-      worker: z.string().describe('내 작업자 이름 (gemini, aside, antigravity)'),
-      to: z.string().optional().describe('넘길 곳: antigravity(코드 수정) / aside(로그인·콘솔 작업) / auto(시간대 담당) / deep(같은 작업자의 상위 모델로 올림: Gemini Hydrogen → Neon)'),
-      reason: z.string().describe('왜 넘기는지, 지금까지 한 것과 남은 일 (다음 작업자가 이어받을 수 있게)')
-    },
-    async ({ request_id, worker, to = 'auto', reason }) => {
-      try {
-        const req = passRequest(request_id, { worker, to, reason });
-        return { content: [{ type: 'text', text: `넘겼습니다: ${req.id} → ${req.pinnedWorker}. 다음 요청을 처리하세요.` }] };
       } catch (err) {
         return { isError: true, content: [{ type: 'text', text: err.message }] };
       }
