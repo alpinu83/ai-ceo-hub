@@ -1,7 +1,7 @@
 // hub/lead-ops.js: server.js에서 분리 (공유 로직)
 import { ASSIGNMENT_RULES, buildCompletionReport, buildMissionDigest, buildPlanningRoster, collectFollowUps, ensureLeadDefaults, findScopeViolations, getLeadSettings, getMissionGoal, isForbiddenCodeTask, markCeoActivity, missionLeadState, rebalanceAssignments, rememberFact } from '../lead-engine.js';
 import { appendLog, appendMessage, flushCloudBackup, loadDb, saveDb, uid } from '../store.js';
-import { buildDispatchPrompt, draftMissionPlan, planLeadFollowUp, planMilestoneWork } from '../orchestrator.js';
+import { buildDispatchPrompt, draftMissionPlan, planLeadFollowUp, planMilestoneWork, missionRepoSnapshot } from '../orchestrator.js';
 import { getAiProviderHealth } from '../ai-guard.js';
 import { describeGoogleDataStatus } from '../google-data.js';
 import { getOutsourcingSettings } from '../outsourcing.js';
@@ -411,7 +411,21 @@ export function connectedToolsNote(settings, mission) {
     '- 수치 확인이 필요하면 "서버 지표로 확인" 수준의 작업으로 처리하고, 마일스톤은 검색 노출·색인·콘텐츠·전환처럼 지표를 실제로 움직이는 일에 쓰세요.'
   ].join('\n');
 }
-const digestWithTools = (db, m) => [buildMissionDigest(db, m.id), connectedToolsNote(db.settings, m)].filter(Boolean).join('\n\n');
+/** 연결 저장소의 실제 구조 (계획이 없는 파일·폴더를 지어내지 않게) */
+async function repoStructureNote(m, settings) {
+  if (!m?.githubRepo) return '';
+  const snap = await missionRepoSnapshot(m, settings).catch(() => null);
+  if (!snap) return '';
+  const dirs = [...new Set(snap.files.map((f) => (f.includes('/') ? `${f.split('/')[0]}/` : f)))].slice(0, 40);
+  const main = snap.files.filter((f) => /\.(html|js|mjs|json)$/.test(f) && !/node_modules|\.min\./.test(f)).slice(0, 50);
+  return [
+    `[연결 저장소 실제 구조 — ${snap.repo}@${snap.branch}, 파일 ${snap.files.length}개 · 서버가 직접 조회]`,
+    `- 최상위: ${dirs.join(', ')}`,
+    `- 주요 파일: ${main.join(', ')}`,
+    '- 이 목록에 없는 파일·폴더를 수정 대상으로 계획하지 말고, 수정할 파일은 위 목록에서 고를 것.'
+  ].join('\n');
+}
+const digestWithTools = async (db, m) => [buildMissionDigest(db, m.id), connectedToolsNote(db.settings, m), await repoStructureNote(m, db.settings)].filter(Boolean).join('\n\n');
 
 /** 운영 사이클 1회: 계획 수립(없으면) → 현재 마일스톤 처리 */
 export async function opsCycle(missionId, { depth = 0 } = {}) {
@@ -429,7 +443,7 @@ export async function opsCycle(missionId, { depth = 0 } = {}) {
       saveDb(db);
       let drafted;
       try {
-        drafted = await draftMissionPlan({ mission: m, digest: digestWithTools(db, m), agents: db.agents, settings: db.settings });
+        drafted = await draftMissionPlan({ mission: m, digest: await digestWithTools(db, m), agents: db.agents, settings: db.settings });
       } catch (err) {
         const fresh = loadDb();
         appendLog(fresh, '총괄 팀장', `"${m.title}" 작전 계획 수립 보류(AI 엔진): ${err.message}`.slice(0, 300), 'warning');
@@ -471,7 +485,7 @@ export async function opsCycle(missionId, { depth = 0 } = {}) {
       work = await planMilestoneWork({
         mission: m,
         milestone: ms,
-        digest: digestWithTools(db, m),
+        digest: await digestWithTools(db, m),
         agents: db.agents,
         settings: db.settings,
         teamLoad: `${buildPlanningRoster(db)}\n\n${ASSIGNMENT_RULES}`,

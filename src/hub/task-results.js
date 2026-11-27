@@ -144,6 +144,12 @@ export async function processTaskResult(db, task, agent, mission, res, { skipRev
     const rounds = Number(task.reviewRounds || 0);
     task.review = { verdict: rv.verdict, score: rv.score ?? null, missing: rv.missing || [], feedback: rv.feedback || '', reviewer: rv.reviewer || '', skipped: Boolean(rv.skipped), round: rounds + 1, at: new Date().toISOString() };
     task.acceptance = rv.acceptance || task.acceptance;
+    // 검수 AI가 "없는 파일"이라고 잘못 판정해 쌓인 교훈·피드백은 지움 (실제 저장소에 있는 파일)
+    if (rv.existingFiles?.length) {
+      const wrong = (t) => /(없|존재하지|가상)/.test(String(t || '')) && rv.existingFiles.some((p) => String(t).includes(p));
+      if (mission && Array.isArray(mission.reviewLessons)) mission.reviewLessons = mission.reviewLessons.filter((l) => !wrong(l.text));
+      if (Array.isArray(task.leadNotes)) task.leadNotes = task.leadNotes.filter((n) => !wrong(n.text));
+    }
     if (rv.verdict === 'revise' && rounds < MAX_REVIEW_ROUNDS) {
       task.reviewRounds = rounds + 1;
       task.description = `${task.description || ''}\n\n[팀장 검수 ${rounds + 1}차 — 재작업] 부족한 점: ${(rv.missing || []).join(' / ') || '-'}\n고칠 것: ${rv.feedback}`.slice(0, 6000);
@@ -158,7 +164,22 @@ export async function processTaskResult(db, task, agent, mission, res, { skipRev
     if (rv.verdict === 'escalate') {
       return escalateTask(db, task, agent, mission, rv.feedback || (rv.missing || []).join(', ') || '팀장 검수에서 상위 처리 판단');
     }
-    if (rv.verdict === 'revise') task.review.acceptedWithGaps = true; // 재작업 한도 초과: 부족한 점을 기록하고 진행
+    if (rv.verdict === 'revise') {
+      // 재작업 한도 초과: "완료"로 처리하지 않음 → 더 맞는 팀원에게 한 번 넘기고, 그래도 안 되면 대표님 확인 대기(보류)
+      const reason = `팀장 검수 ${rounds + 1}회 미통과: ${(rv.missing || []).join(' / ') || rv.feedback}`.slice(0, 600);
+      const tried = [...new Set([...(task.triage?.tried || []), agent?.id].filter(Boolean))];
+      const alt = !task.triage?.escalated ? pickAlternateMember(db, task, tried) : null;
+      if (alt) {
+        task.reviewRounds = 0;
+        return escalateTask(db, task, agent, mission, reason);
+      }
+      task.status = 'blocked';
+      task.blockedReason = `검수 미통과(${rounds + 1}회) — 대표님 확인 필요`;
+      task.updatedAt = nowIso;
+      if (mission) leadSay(db, mission, '팀장 검수', `"${task.title}"은(는) 검수를 ${rounds + 1}번 통과하지 못해 완료로 처리하지 않고 보류했습니다. 남은 문제: ${(rv.missing || []).slice(0, 2).join(' / ') || rv.feedback.slice(0, 120)}`);
+      appendLog(db, '총괄 팀장', `"${task.title}" 검수 미통과로 보류 (완료 처리 안 함)`, 'warning');
+      return { handled: true, blocked: true };
+    }
   }
 
   // 3) 결재 판단
