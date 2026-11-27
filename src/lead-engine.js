@@ -708,6 +708,32 @@ const BOT_ROLE_HINTS = [
   { re: /(매일|정기|반복|모니터링|브리핑)/, ids: ['agent_vooy', 'agent_cue'] },
   { re: /(카피|문구|문서|초안|정리|요약|기획|체크리스트|보드|제목|설명란|대본|가이드)/, ids: ['agent_muse', 'agent_cue', 'agent_pickle', 'agent_aside'] }
 ];
+/** 봇 팀원이 지금 일할 수 있는지 (최근 접속 기준) */
+export function botConnected(db, id, hours = 6) {
+  const a = (db.agents || []).find((x) => x.id === id);
+  return Boolean(a?.active && !a.retired && lastSeenHours(db, id) <= hours);
+}
+
+const TWIN_RESEARCH_RE = /(시장|경쟁|수요|사례|가격\s*조사|웹\s*조사|리서치|딥\s*리서치|벤치마크|트렌드|실측|라이브\s*점검|정책|현황\s*조사)/;
+const TWIN_COPY_RE = /(카피|문구|문서|초안|기획|체크리스트|보드|제목|설명란|대본|가이드|점수표)/;
+/** 같은 일을 다른 봇도 동시에: 리서치는 Cue↔피클 교차 조사, 문서·카피·기획은 Muse 대안안(Cue·피클 중 한가한 쪽) */
+export function pickTwinBot(db, task) {
+  const text = `${task?.title || ''} ${task?.description || ''}`;
+  const open = (id) => (db.tasks || []).filter((t) => t.assigneeId === id && !['completed', 'rejected'].includes(t.status)).length;
+  const pairs = { agent_cue: ['agent_pickle'], agent_pickle: ['agent_cue'], agent_aside: ['agent_cue', 'agent_pickle'] };
+  let cands = [];
+  let mode = '';
+  if (TWIN_RESEARCH_RE.test(text) && pairs[task.assigneeId]) {
+    cands = pairs[task.assigneeId];
+    mode = '교차 조사';
+  } else if (TWIN_COPY_RE.test(text) && ['agent_muse', 'agent_cue', 'agent_pickle'].includes(task.assigneeId)) {
+    cands = ['agent_muse', 'agent_cue', 'agent_pickle'].filter((id) => id !== task.assigneeId);
+    mode = '대안안';
+  }
+  const pick = cands.filter((id) => botConnected(db, id, 6)).sort((a, b) => open(a) - open(b))[0];
+  return pick ? { agent: db.agents.find((a) => a.id === pick), mode } : null;
+}
+
 export function pickBotOrDevMember(db, task, triedIds = []) {
   const text = `${task?.title || ''} ${task?.description || ''}`;
   const byId = Object.fromEntries((db.agents || []).map((a) => [a.id, a]));
