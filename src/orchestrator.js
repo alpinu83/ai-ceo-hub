@@ -1465,7 +1465,9 @@ const MilestoneWorkSchema = z.object({
         description: z.string().describe('무엇을 어떤 형태로 만들지 구체적으로'),
         acceptance: z.array(z.string()).min(1).max(5).describe('이 작업의 완료 기준 (검증 가능하게)'),
         assigneeId: z.string().describe('조직도의 id'),
-        isCodeChange: z.boolean()
+        isCodeChange: z.boolean(),
+        codeSize: z.enum(['small', 'large']).optional().describe('코드 작업일 때: small=파일 1~2개·할 일이 분명, large=여러 파일·테스트 필요'),
+        risky: z.boolean().optional().describe('코드 작업일 때: 구조 변경·데이터·보안·돈이 걸리면 true')
       })
     )
     .max(4)

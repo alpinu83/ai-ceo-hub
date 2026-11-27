@@ -485,15 +485,21 @@ export const AGENT_PROFILES = {
   agent_muse: { good: '대표님 취향·제약 기억 정리, 프로젝트 보드·체크리스트, 개인화 기획', bad: '즉시 응답 아님(외부 앱이 가져가 처리)', async: true },
   agent_pickle: { good: '국내 전화 문의·예약 실행(결제 전 대표님 승인)', bad: '문서·분석 업무 불가. 실제 전화가 필요한 일만', async: true, realWorld: true },
   agent_instinct: { good: '문자·전화로 빠른 확인·심부름', bad: '문서·분석 업무 불가', async: true, realWorld: true },
+  agent_agy: { good: '여러 파일 코드 구현·테스트 실행·PR 작성(대표님 PC의 git·npm test), 로컬 실행이 필요한 일', bad: '로그인된 브라우저·계정 작업과 운영 데이터 확인은 못 함. 대표님 PC가 켜져 있을 때 처리', async: true },
+  agent_aside: { good: '설계서·원인 분석, 코드 검수, 작은 코드 수정(파일 1~2개), 로그인된 브라우저로 콘솔·계정 작업, 실제 데이터 확인', bad: '큰 구현은 AGY에게. 대표님 PC가 켜져 있을 때 처리', async: true, web: true },
   agent_vooy: { good: '매일 같은 조건의 뉴스·트렌드·가격 반복 수집·정기 브리핑', bad: '코드·전략 판단·일회성 심층 분석은 맡기지 말 것. 즉시 응답 아님(부이 앱이 수신함에서 가져가 처리)', async: true }
 };
 const COMPLEX_RE = /(분석|전략|설계|조사|리서치|코드|구현|개발|비교|진단|수익|기획안|검증|아키텍처|리스크)/;
 // 실제 웹을 봐야 하는 일 (시장·경쟁·수요·사례·가격 조사)
 const WEB_RE = /(시장\s*(조사|검증)|경쟁|수요|사례|가격\s*조사|웹\s*조사|리서치|벤치마크|트렌드|겹치는지)/;
 
+const SEEN_ALIASES = { agent_agy: ['lead:agy_lead', 'worker:antigravity'], agent_aside: ['worker:aside'] };
 function lastSeenHours(db, id) {
-  const at = db.agentConnections?.[id]?.lastSeenAt;
-  return at ? (Date.now() - Date.parse(at)) / 3600000 : Infinity;
+  const hrs = [id, ...(SEEN_ALIASES[id] || [])]
+    .map((k) => db.agentConnections?.[k]?.lastSeenAt)
+    .filter(Boolean)
+    .map((at) => (Date.now() - Date.parse(at)) / 3600000);
+  return hrs.length ? Math.min(...hrs) : Infinity;
 }
 
 /** 계획용 조직도: 잘하는 일·맡기면 안 되는 일·응답 방식·현재 업무량 */

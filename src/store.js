@@ -305,6 +305,46 @@ export function createDefaultState() {
         accent: '#A15C07'
       },
       {
+        id: 'agent_agy',
+        name: 'AGY (Antigravity)',
+        shortCode: 'AG',
+        roleTitle: '개발팀 · 구현·테스트·PR · 주간 팀장',
+        tier: 'specialist',
+        team: 'dev',
+        reportsTo: 'agent_gemini_neon',
+        provider: 'antigravity',
+        modelId: 'gemini-4-carbon',
+        connectionMode: 'bridge',
+        costTier: 'paid_or_sub',
+        appUrl: '',
+        monthlyCapKRW: 0,
+        spentKRW: 0,
+        domains: ['dev', 'it_ops', 'business'],
+        strengths: '대표님 PC의 Antigravity: 여러 파일 구현, git·npm test 실행, PR 작성. 주간에는 팀장 업무함(Hydrogen)도 맡음',
+        active: true,
+        accent: '#1A73E8'
+      },
+      {
+        id: 'agent_aside',
+        name: 'Aside',
+        shortCode: 'AS',
+        roleTitle: '개발팀 · 설계·검수·브라우저·계정',
+        tier: 'specialist',
+        team: 'dev',
+        reportsTo: 'agent_gemini_neon',
+        provider: 'aside',
+        modelId: 'claude',
+        connectionMode: 'bridge',
+        costTier: 'paid_or_sub',
+        appUrl: '',
+        monthlyCapKRW: 0,
+        spentKRW: 0,
+        domains: ['dev', 'it_ops', 'business', 'content'],
+        strengths: '대표님 PC의 Aside 브라우저: 설계·원인 분석, 코드 검수·작은 수정, 로그인된 콘솔·계정 작업, 실제 데이터 확인',
+        active: true,
+        accent: '#111827'
+      },
+      {
         id: 'agent_instinct',
         name: '인스팅스 (Instinct)',
         shortCode: 'IN',
@@ -496,6 +536,12 @@ export function loadDb() {
       if (!rawAgents.some((a) => a.id === requiredId)) {
         const defAg = def.agents.find((a) => a.id === requiredId);
         if (defAg) rawAgents.splice(1, 0, defAg);
+      }
+    }
+    for (const devId of ['agent_agy', 'agent_aside']) {
+      if (!rawAgents.some((a) => a.id === devId)) {
+        const defDev = def.agents.find((a) => a.id === devId);
+        if (defDev) rawAgents.push(defDev);
       }
     }
     for (const itId of ['agent_it_dev', 'agent_it_sec', 'agent_it_qa']) {
