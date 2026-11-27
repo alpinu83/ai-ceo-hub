@@ -1,7 +1,7 @@
 // hub/missions.js: server.js에서 분리 (공유 로직)
 import { DEV_TEAM, dispatchDevTeamTask } from './dev-policy.js';
 import { kickShortsFactory, queueShortsJob } from './shorts.js';
-import { ASSIGNMENT_RULES, buildPlanningRoster, isStandingOrder, markCeoActivity, rebalanceAssignments, rememberFact, addLeadNote, isAgentExhausted, pickQuotaSubstitute } from '../lead-engine.js';
+import { pickBotOrDevMember, ASSIGNMENT_RULES, buildPlanningRoster, isStandingOrder, markCeoActivity, rebalanceAssignments, rememberFact, addLeadNote, isAgentExhausted, pickQuotaSubstitute } from '../lead-engine.js';
 import { appendLog, appendMessage, applyInferredMissionBindings, flushCloudBackup, loadDb, saveDb, uid } from '../store.js';
 import { assessFeasibility, getOutsourcingSettings } from '../outsourcing.js';
 import { buildDispatchPrompt, decomposeDirective, executeAgentTask, synthesizeMissionReport } from '../orchestrator.js';
@@ -231,7 +231,8 @@ export async function autoStartLiveMissionTasks(missionId, { priorRunTaskIds = [
   autoTargets = autoTargets.filter((t) => {
     const ag = agentMap[t.assigneeId];
     if (!ag || !isAgentExhausted(ag, db.settings)) return true;
-    const sub = pickQuotaSubstitute(db, t, ag, t.triage?.tried || [], quotaLoad);
+    // 같은 일을 할 API 팀원이 없으면 성격에 맞는 접속 중인 봇 팀원 → 개발팀 Aside
+    const sub = pickQuotaSubstitute(db, t, ag, t.triage?.tried || [], quotaLoad) || pickBotOrDevMember(db, t, [ag.id, ...(t.triage?.tried || [])]);
     if (!sub) {
       if (!t.quotaHold) appendLog(db, '총괄 팀장', `"${t.title}" 담당 ${ag.name} 오늘 한도 소진 · 대체 가능한 팀원 없음 → 자정 이후 재개`, 'warning');
       t.quotaHold = true;
@@ -243,6 +244,12 @@ export async function autoStartLiveMissionTasks(missionId, { priorRunTaskIds = [
     t.assigneeId = sub.id;
     t.dispatchPrompt = buildDispatchPrompt(sub, t, mission);
     appendLog(db, '총괄 팀장', `"${t.title}" 담당 ${ag.name} 오늘 사용 한도 소진 → ${sub.name}이(가) 대신 처리 (자정까지 ${ag.name} 제외)`, 'info');
+    if (sub.connectionMode === 'bridge') {
+      // 봇·개발팀은 API로 바로 실행하지 않고 각자 앱·감시기가 가져가게
+      t.status = 'awaiting_bridge';
+      if (DEV_TEAM[sub.id]) dispatchDevTeamTask(db, t);
+      return false;
+    }
     return true;
   });
 

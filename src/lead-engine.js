@@ -486,7 +486,7 @@ export const AGENT_PROFILES = {
   agent_pickle: { good: '국내 전화 문의·예약 실행(결제 전 대표님 승인)', bad: '문서·분석 업무 불가. 실제 전화가 필요한 일만', async: true, realWorld: true },
   agent_instinct: { good: '문자·전화로 빠른 확인·심부름', bad: '문서·분석 업무 불가', async: true, realWorld: true },
   agent_agy: { good: '여러 파일 코드 구현·테스트 실행·PR 작성(대표님 PC의 git·npm test), 로컬 실행이 필요한 일', bad: '로그인된 브라우저·계정 작업과 운영 데이터 확인은 못 함. 대표님 PC가 켜져 있을 때 처리', async: true },
-  agent_aside: { good: '설계서·원인 분석, 코드 검수, 작은 코드 수정(파일 1~2개), 로그인된 브라우저로 콘솔·계정 작업, 실제 데이터 확인', bad: '큰 구현은 AGY에게. 대표님 PC가 켜져 있을 때 처리', async: true, web: true },
+  agent_aside: { good: '설계서·원인 분석, 코드 검수, 작은 코드 수정(파일 1~2개), 로그인된 브라우저로 콘솔·계정 작업, 실제 데이터 확인', bad: '일반 리서치·문서·카피는 봇 팀원(Cue·Muse·부이)에게 먼저. 큰 구현은 AGY에게. 대표님 PC가 켜져 있을 때 처리', async: true, web: true },
   agent_vooy: { good: '매일 같은 조건의 뉴스·트렌드·가격 반복 수집·정기 브리핑', bad: '코드·전략 판단·일회성 심층 분석은 맡기지 말 것. 즉시 응답 아님(부이 앱이 수신함에서 가져가 처리)', async: true }
 };
 const COMPLEX_RE = /(분석|전략|설계|조사|리서치|코드|구현|개발|비교|진단|수익|기획안|검증|아키텍처|리스크)/;
@@ -526,7 +526,9 @@ export const ASSIGNMENT_RULES = [
   '배정 원칙(적재적소):',
   '- 위 조직도의 "잘함/주의"를 보고 업무 성격에 가장 맞는 사람에게 배정하세요. 한 사람에게 몰지 말고, 한 단계에서 한 팀원은 최대 2건까지.',
   '- "대기 중, 우선 배정" 팀원을 먼저 쓰세요. 같은 팀원만 반복해서 쓰지 마세요.',
-  '- 실제 웹 조사(시장·경쟁·가격·사례)가 필요한 일은 웹 조사가 되는 팀원(Manus Cue)에게 맡기세요. 웹을 못 보는 API 팀원에게 맡기면 근거를 지어냅니다.',
+  '- 리서치·문서·카피·기획 정리 같은 일반 실무는 봇 팀원에게 먼저 나눠 맡기세요: 웹 조사·근거 수집은 Manus Cue, 기획 정리·보드·체크리스트·카피는 Meta Muse, 매일 반복 수집·브리핑은 부이. 각자 개성을 살려 같은 주제를 다른 관점으로 맡겨도 됩니다. 팀장은 결과를 취합해 하나로 정리합니다.',
+  '- 개발팀 Aside·AGY는 코드 작업, 로그인이 필요한 계정·콘솔 작업, 실제 운영 데이터 확인처럼 봇이 못 하는 일에 쓰세요. 봇이 접속하지 않을 때만 일반 실무를 Aside에게 맡기세요.',
+  '- 실제 웹 조사(시장·경쟁·가격·사례)가 필요한 일은 웹 조사가 되는 팀원(Manus Cue, Aside)에게 맡기세요. 웹을 못 보는 API 팀원에게 맡기면 근거를 지어냅니다.',
   '- 실제 전화·예약·문자처럼 현실 행동이 필요한 일만 피클·인스팅스에게 맡기세요(결제·확정은 대표님 승인).',
   '- LG EXAONE에게는 짧은 요약·정리·번역 같은 단순 작업만 맡기세요.',
   '- "최근 접속 없음" 외부 앱 팀원에게는 배정하지 마세요.',
@@ -695,6 +697,28 @@ export function isAgentExhausted(agent, settings = {}) {
 }
 
 /** 한도 소진 팀원의 작업을 대신할 팀원: 같은 역할 힌트 → 다른 엔진 → 일이 적은 사람 순 */
+/** 봇 팀원 우선 대체자: 성격에 맞는 접속 중인 봇 → 없으면 개발팀 Aside (전화·문자 봇은 현실 행동일 때만) */
+const BOT_ROLE_HINTS = [
+  { re: /(전화|예약|문자|연락)/, ids: ['agent_pickle', 'agent_instinct'] },
+  { re: /(시장|경쟁|수요|사례|가격\s*조사|웹\s*조사|리서치|딥\s*리서치|벤치마크|트렌드|뉴스|근거|출처)/, ids: ['agent_cue', 'agent_aside'] },
+  { re: /(매일|정기|반복|모니터링|브리핑)/, ids: ['agent_vooy', 'agent_cue'] },
+  { re: /(카피|문구|문서|초안|정리|요약|기획|체크리스트|보드|제목|설명란|대본|가이드)/, ids: ['agent_muse', 'agent_cue', 'agent_aside'] }
+];
+export function pickBotOrDevMember(db, task, triedIds = []) {
+  const text = `${task?.title || ''} ${task?.description || ''}`;
+  const byId = Object.fromEntries((db.agents || []).map((a) => [a.id, a]));
+  const realWorld = /(전화|예약|문자|연락)/.test(text);
+  const order = [...new Set([...BOT_ROLE_HINTS.filter((h) => h.re.test(text)).flatMap((h) => h.ids), 'agent_muse', 'agent_cue', 'agent_aside'])];
+  for (const id of order) {
+    const a = byId[id];
+    if (!a?.active || a.retired || triedIds.includes(id)) continue;
+    if (AGENT_PROFILES[id]?.realWorld && !realWorld) continue;
+    if (lastSeenHours(db, id) > 3) continue;
+    return a;
+  }
+  return null;
+}
+
 export function pickQuotaSubstitute(db, task, exhaustedAgent, triedIds = [], planLoad = {}) {
   const tried = [...new Set([exhaustedAgent?.id, ...triedIds].filter(Boolean))];
   return pickAlternateMember(db, task, tried, planLoad);
