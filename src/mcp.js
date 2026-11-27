@@ -8,6 +8,7 @@ import { sendTelegramApprovalCard } from './telegram.js';
 import { sendWebPushNotification } from './push.js';
 import { buildCompanyContext } from './lead-engine.js';
 import { enrichApprovalDeliverables } from './hub/deliverables.js';
+import { LEAD_WORKERS, buildLeadPacket, claimLeadJob, leadDeskStatus, listLeadJobs, submitLeadJob, summarizeLeadJob, touchLeadWorker } from './lead-desk.js';
 import { listRequests, summarizeRequest, claimRequest, findRequest, buildPacket, submitResult, requestCeoAction, resolveTarget, describeRouting, passRequest } from './outsourcing.js';
 
 export const MCP_TOOL_CATALOG = [
@@ -32,7 +33,10 @@ export const MCP_TOOL_CATALOG = [
   { name: 'get_outsourcing_request', description: '외주 요청서 전문 조회' },
   { name: 'submit_outsourcing_result', description: '외주 결과 문서·PR 제출' },
   { name: 'request_ceo_action', description: '로그인 등 대표님 개입이 필요할 때 멈추고 알림' },
-  { name: 'pass_outsourcing_request', description: '내가 못 하는 외주를 다른 작업자에게 넘기기' }
+  { name: 'pass_outsourcing_request', description: '내가 못 하는 외주를 다른 작업자에게 넘기기' },
+  { name: 'list_lead_jobs', description: '팀장 업무함: 대기 중인 팀장 판단(검수·작전 계획) 목록' },
+  { name: 'claim_lead_job', description: '팀장 판단 요청을 잡고 판단 자료·답안 형식 받기' },
+  { name: 'submit_lead_job', description: '팀장 판단 결과(JSON) 제출' }
 ];
 
 /**
@@ -399,6 +403,60 @@ export function createCeoMcpServer() {
       try {
         const req = await requestCeoAction(request_id, { worker, action, detail });
         return { content: [{ type: 'text', text: `대표님께 알렸습니다: ${req.id} — ${action}. 이 요청은 재개될 때까지 멈춥니다. 다른 요청을 처리하세요.` }] };
+      } catch (err) {
+        return { isError: true, content: [{ type: 'text', text: err.message }] };
+      }
+    }
+  );
+
+  // ---- 팀장 업무함 (주간: AGY 팀장 감시기 · 야간 당직: Gemini 앱 예약 작업) ----
+  server.tool(
+    'list_lead_jobs',
+    '팀장 업무함에서 지금 내가 처리할 팀장 판단(결과물 검수, 작전 계획, 마일스톤 판정) 목록을 봅니다. 호출하면 근무 신호로 기록됩니다.',
+    { worker: z.string().describe('gemini_app (Gemini 앱 당직 팀장) 또는 agy_lead (AGY 팀장)') },
+    async ({ worker }) => {
+      const db = loadDb();
+      const w = LEAD_WORKERS[worker] ? worker : 'gemini_app';
+      touchLeadWorker(db, w, 'mcp list');
+      const list = listLeadJobs(db, w);
+      saveDb(db);
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({ count: list.length, status: leadDeskStatus(db), jobs: list.map(summarizeLeadJob), next: '오래된 것부터 claim_lead_job으로 잡고, 받은 자료의 답안 형식대로 JSON을 만들어 submit_lead_job으로 제출' }, null, 2)
+          }
+        ]
+      };
+    }
+  );
+
+  server.tool(
+    'claim_lead_job',
+    '팀장 판단 요청을 잡고 판단 자료(역할·원칙, 자료, 답안 형식)를 받습니다.',
+    { job_id: z.string().describe('요청 ID (예: ldj_xxx)'), worker: z.string().describe('gemini_app 또는 agy_lead') },
+    async ({ job_id, worker }) => {
+      try {
+        const j = claimLeadJob(job_id, LEAD_WORKERS[worker] ? worker : 'gemini_app');
+        return { content: [{ type: 'text', text: buildLeadPacket(j) }] };
+      } catch (err) {
+        return { isError: true, content: [{ type: 'text', text: err.message }] };
+      }
+    }
+  );
+
+  server.tool(
+    'submit_lead_job',
+    '팀장 판단 결과를 제출합니다. result_json에는 답안 형식의 키를 그대로 쓴 JSON 하나만 넣으세요.',
+    {
+      job_id: z.string().describe('요청 ID'),
+      worker: z.string().describe('gemini_app 또는 agy_lead'),
+      result_json: z.string().describe('답안 형식대로 작성한 JSON 문자열')
+    },
+    async ({ job_id, worker, result_json }) => {
+      try {
+        const j = await submitLeadJob(job_id, { worker: LEAD_WORKERS[worker] ? worker : 'gemini_app', result: result_json });
+        return { content: [{ type: 'text', text: `제출 완료: ${j.id}. 다음 팀장 판단이 있으면 이어서 처리하세요.` }] };
       } catch (err) {
         return { isError: true, content: [{ type: 'text', text: err.message }] };
       }
