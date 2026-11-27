@@ -1,9 +1,18 @@
 // hub/agent-inbox.js: server.js에서 분리 (공유 로직)
 import { appendLog, appendMessage, flushCloudBackup, loadDb, recordAgentHeartbeat, saveDb, uid } from '../store.js';
+import { addLeadNote } from '../lead-engine.js';
 import { sendWebPushNotification } from '../push.js';
 import { autoStartLiveMissionTasks, updateMissionStatus } from './missions.js';
 import { notifyAllApprovalChannels } from './notify.js';
 import { processTaskResult } from './task-results.js';
+
+function normalizeStringList(val, maxItems = 8, maxLen = 280) {
+  const arr = Array.isArray(val) ? val : typeof val === 'string' && val.trim() ? [val] : [];
+  return arr
+    .map((x) => String(x || '').replace(/\s+/g, ' ').trim().slice(0, maxLen))
+    .filter(Boolean)
+    .slice(0, maxItems);
+}
 
 // ==================== ASYNC AGENT INBOX HTTPS API (Pickle / Cue / Vooy / Instinct) ====================
 export function resolveInboxAgent(db, rawKey) {
@@ -90,6 +99,10 @@ export async function handleAgentInboxReply(c) {
   const deliverable = String(body.deliverable || body.result || body.content || message).trim();
   const requestApproval = Boolean(body.requestApproval || body.requiresApproval || body.request_approval);
   const estimatedCostKRW = Number(body.estimatedCostKRW || body.estimated_cost_krw || 0) || 0;
+  const limitations = normalizeStringList(body.limitations ?? body.limitation ?? body.unverifiedItems ?? body.unverified_items ?? body.partialReason ?? body.partial_reason);
+  const blockers = normalizeStringList(body.blockers ?? body.blocker);
+  const questions = normalizeStringList(body.questions ?? body.question);
+  const hasBotReport = Boolean(limitations.length || blockers.length || questions.length);
   const now = new Date().toISOString();
 
   const requestedTaskId = String(body.taskId || body.task_id || '').trim();
@@ -134,6 +147,15 @@ export async function handleAgentInboxReply(c) {
     }
   }
 
+  const reportSummaryParts = [];
+  if (limitations.length) reportSummaryParts.push(`도구 한계·미확인: ${limitations.join(' / ')}`);
+  if (blockers.length) reportSummaryParts.push(`차단 요인: ${blockers.join(' / ')}`);
+  if (questions.length) reportSummaryParts.push(`팀장 질문: ${questions.join(' / ')}`);
+  const roomText =
+    reportSummaryParts.length && !message.includes(limitations[0] || blockers[0] || questions[0] || '__none__')
+      ? `${message}\n[한계·피드백 요청] ${reportSummaryParts.join(' · ')}`
+      : message;
+
   const postedMsg = appendMessage(db, {
     missionId: requestedMissionId || task?.missionId || db.missions[0]?.id || '',
     senderId: agent.id,
@@ -141,10 +163,10 @@ export async function handleAgentInboxReply(c) {
     senderRole: `${agent.roleTitle} · 실제 앱 보고`,
     senderShortCode: agent.shortCode,
     senderAccent: agent.accent,
-    targetAgentId: 'ceo',
-    statusText: requestApproval ? '실제 앱 결재 상신' : '실제 앱 보고 (LIVE)',
+    targetAgentId: hasBotReport ? 'agent_gemini_neon' : 'ceo',
+    statusText: requestApproval ? '실제 앱 결재 상신' : hasBotReport ? '한계·부분 결과 보고' : '실제 앱 보고 (LIVE)',
     type: requestApproval ? 'approval' : 'reply',
-    text: message
+    text: roomText
   });
 
   let approvalId = null;
@@ -157,15 +179,35 @@ export async function handleAgentInboxReply(c) {
     if (requestApproval) task.requiresApproval = true;
     if (body.approvalTitle) task.pendingApprovalTitle = String(body.approvalTitle).trim();
     if (message) task.pendingApprovalReason = message.slice(0, 320);
+    if (hasBotReport) {
+      task.botReport = {
+        agentId: agent.id,
+        agentName: agent.name,
+        limitations,
+        blockers,
+        questions,
+        reportedAt: now
+      };
+      addLeadNote(task, 'bot_report', `[담당 봇(${agent.name}) 한계·질문 보고] ${reportSummaryParts.join(' · ')}`);
+    } else if (task.botReport) {
+      delete task.botReport;
+    }
 
     // 결재가 필요한 업무도 반드시 팀장 검수·재가공(processTaskResult)을 거쳐 대표님 결재함으로 상신
     const missionX = db.missions.find((m) => m.id === task.missionId);
-    const outX = await processTaskResult(db, task, agent, missionX, { output: deliverable, executionModeUsed: 'external_agent_https' }, { message: false });
+    const outX = await processTaskResult(
+      db,
+      task,
+      agent,
+      missionX,
+      { output: deliverable, executionModeUsed: 'external_agent_https' },
+      { message: false, hasLimitations: hasBotReport }
+    );
     approvalId = outX?.approvalId || db.approvals.find((a) => a.taskId === task.id && a.status === 'pending')?.id || null;
     if (outX?.needsRevision || (task.status === 'awaiting_bridge' && task.review?.verdict === 'revise')) {
       revisionInfo = {
         needsRevision: true,
-        revisionReason: outX?.revisionReason || task.review?.feedback || '팀장 검토 결과 보완이 필요합니다.'
+        revisionReason: outX?.revisionReason || task.review?.botReply || task.review?.feedback || '팀장 검토 결과 보완이 필요합니다.'
       };
     }
     const statusText =
@@ -174,7 +216,9 @@ export async function handleAgentInboxReply(c) {
         : task.status === 'awaiting_approval'
           ? '팀장 검토 후 CEO 결재 상신'
           : task.status === 'completed'
-            ? '검수 통과'
+            ? task.review?.acceptedWithGaps
+              ? '검수 통과(한계 반영)'
+              : '검수 통과'
             : task.status === 'queued' || task.status === 'awaiting_bridge'
               ? '보완 요청'
               : task.status;
@@ -215,6 +259,13 @@ export async function handleAgentInboxReply(c) {
 
   saveDb(db);
   await flushCloudBackup(db);
+  const leadBotReply = String(task?.leadFeedback?.botReply || task?.review?.botReply || '').trim();
+  const nextStep =
+    task?.status === 'review_pending'
+      ? '팀장이 보고(및 한계 사항)를 검토 중입니다. 중복 제출하지 말고 다음 수신함 조회 시 recentFeedback에서 팀장 답장을 확인하세요.'
+      : leadBotReply
+        ? `팀장 답장: ${leadBotReply}`
+        : '';
   return c.json({
     ok: true,
     agent: agent.name,
@@ -222,6 +273,11 @@ export async function handleAgentInboxReply(c) {
     taskId: task?.id || null,
     taskStatus: task?.status || null,
     approvalId,
+    botReportRecorded: Boolean(task && hasBotReport),
+    leadVerdict: task?.review?.verdict || null,
+    acceptedWithGaps: Boolean(task?.review?.acceptedWithGaps),
+    ...(leadBotReply ? { leadBotReply } : {}),
+    ...(nextStep ? { nextStep } : {}),
     ...(revisionInfo || {}),
     ...(taskWarning ? { taskAutoMatchSkipped: true, warning: taskWarning, openTasks: openTasksHint } : {})
   });

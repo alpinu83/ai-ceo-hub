@@ -128,11 +128,15 @@ export function createCeoMcpServer() {
             dispatchPrompt: t.dispatchPrompt,
             ceoFeedback: fb.ceoFeedback,
             rejectionReason: fb.rejectionReason,
+            leadFeedback: fb.leadFeedback,
+            leadVerdict: fb.leadVerdict,
+            acceptedWithGaps: fb.acceptedWithGaps,
+            botReport: fb.botReport,
             leadNotes: fb.leadNotes,
             lastDecision: fb.lastDecision
           };
         }),
-        ...(agent_id ? { recentFeedback: buildAgentRecentFeedback(db, agent_id, 10) } : {})
+        ...(agent_id ? { recentFeedback: buildAgentRecentFeedback(db, agent_id, 12) } : {})
       };
       return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
     }
@@ -140,10 +144,13 @@ export function createCeoMcpServer() {
 
   server.tool(
     'submit_task_result',
-    '배정받은 업무의 결과물을 CEO Hub에 보고합니다. 결제·예약·외부 발송 전이라면 requires_ceo_approval을 true로 설정하세요.',
+    '배정받은 업무의 결과물을 CEO Hub에 보고합니다. 도구 제약으로 일부 항목을 확인하지 못했다면 추정하지 말고 미확인으로 남긴 뒤 limitations/blockers/questions에 사유를 적어 보내세요.',
     {
       task_id: z.string().describe('업무 ID (예: tsk_...)'),
       deliverable: z.string().describe('작업 결과 본문 (마크다운)'),
+      limitations: z.array(z.string()).optional().describe('도구 제약으로 확인 불가·미확인 처리한 항목과 사유 목록'),
+      blockers: z.array(z.string()).optional().describe('진행을 막는 차단 요인(로그인 필요 등) 목록'),
+      questions: z.array(z.string()).optional().describe('팀장에게 확인·피드백이 필요한 질문 목록'),
       requires_ceo_approval: z.boolean().optional().describe('실행 전 CEO 결재 필요 여부'),
       approval_reason: z.string().optional().describe('CEO 결재 요청 사유'),
       estimated_cost_krw: z.number().optional().describe('예상 비용 (원)')
@@ -151,6 +158,9 @@ export function createCeoMcpServer() {
     async ({
       task_id,
       deliverable,
+      limitations = [],
+      blockers = [],
+      questions = [],
       requires_ceo_approval = false,
       approval_reason = '',
       estimated_cost_krw
@@ -171,6 +181,23 @@ export function createCeoMcpServer() {
       task.updatedAt = now;
       if (typeof estimated_cost_krw === 'number') {
         task.estimatedCostKRW = estimated_cost_krw;
+      }
+
+      const cleanList = (arr) => (Array.isArray(arr) ? arr.map((x) => String(x || '').trim().slice(0, 280)).filter(Boolean).slice(0, 8) : []);
+      const lims = cleanList(limitations);
+      const blks = cleanList(blockers);
+      const qs = cleanList(questions);
+      if (lims.length || blks.length || qs.length) {
+        task.botReport = {
+          agentId: agent?.id || task.assigneeId || '',
+          agentName: agent?.name || task.assigneeId || '',
+          limitations: lims,
+          blockers: blks,
+          questions: qs,
+          reportedAt: now
+        };
+      } else if (task.botReport) {
+        delete task.botReport;
       }
 
       const shouldPause = requires_ceo_approval || task.requiresApproval;
@@ -196,12 +223,13 @@ export function createCeoMcpServer() {
                   status: handled.status,
                   approval_id: handled.approvalId || null,
                   review: handled.review || null,
+                  lead_feedback: handled.leadFeedback || null,
                   note:
                     handled.status === 'review_pending'
-                      ? '총괄 팀장이 결과물을 검수·재가공한 뒤 CEO 결재함으로 상신합니다.'
+                      ? '총괄 팀장이 결과물과 보고된 한계 사항을 검토 중입니다. 다음 list_my_tasks 호출 시 recentFeedback에서 팀장 답장을 확인하세요.'
                       : handled.status === 'queued' || handled.status === 'awaiting_bridge'
-                        ? '팀장 검수에서 보완 요청: review.feedback을 반영해 다시 제출하세요.'
-                        : ''
+                        ? '팀장 검수에서 보완 요청: lead_feedback.botReply 또는 review.feedback을 반영해 다시 제출하세요.'
+                        : handled.leadFeedback?.botReply || ''
                 },
                 null,
                 2

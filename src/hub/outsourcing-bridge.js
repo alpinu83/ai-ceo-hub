@@ -351,13 +351,14 @@ setTaskResultHandler(async (taskId, output, mode) => {
   if (!task) return { status: 'error', error: '업무 없음' };
   const agent = db.agents.find((a) => a.id === task.assigneeId);
   const mission = db.missions.find((m) => m.id === task.missionId);
-  const out = await processTaskResult(db, task, agent, mission, { output, executionModeUsed: mode });
+  const hasLimitations = Boolean(task.botReport?.limitations?.length || task.botReport?.blockers?.length || task.botReport?.questions?.length);
+  const out = await processTaskResult(db, task, agent, mission, { output, executionModeUsed: mode }, { hasLimitations });
   updateMissionStatus(db, task.missionId);
   saveDb(db);
   await flushCloudBackup(db);
   if (out.requeued) setTimeout(() => autoStartLiveMissionTasks(task.missionId).catch(() => {}), 1500);
   const approvalId = out?.approvalId || db.approvals.find((a) => a.taskId === task.id && a.status === 'pending')?.id || null;
-  return { status: task.status, approvalId, review: task.review || null };
+  return { status: task.status, approvalId, review: task.review || null, leadFeedback: task.leadFeedback || null };
 });
 
 export function updateOutsourceRouting(db, { routing, awayHours, officeHours, leaseMinutes, roles, geminiWaitMinutes, priorities, waitMinutes, codeWorkflow } = {}) {

@@ -11,7 +11,7 @@ import { isProviderCooling } from './ai-guard.js';
 import { selectSkills, renderSkills, skillBlock, shouldReview, buildReviewRubric, getSkillSettings } from './skills.js';
 import { getRepoSnapshot, buildCodeEvidence, factCheckOutput } from './grounding.js';
 import { buildAnalyticsContext } from './google-data.js';
-import { buildComplianceChecklist, deriveAcceptance, buildMissionBrief, buildTaskWorkOrder, buildTaskRecap, baseTaskDescription, extractChecklistItems } from './lead-engine.js';
+import { AGENT_PROFILES, buildComplianceChecklist, deriveAcceptance, buildMissionBrief, buildTaskWorkOrder, buildTaskRecap, baseTaskDescription, extractChecklistItems } from './lead-engine.js';
 
 function repoTokenFrom(settings) {
   return String(settings?.providers?.githubRepo?.apiKey || process.env.GITHUB_REPO_TOKEN || '').trim();
@@ -1322,11 +1322,13 @@ export function createApprovalForTask(task, agent, mission, reason, proposedActi
 }
 
 const LeadReviewSchema = z.object({
-  verdict: z.enum(['accept', 'revise', 'escalate']).describe('accept: 완료 기준을 모두 충족하고 품질이 충분해 대표님 보고 가능 / revise: 품질 미흡·핵심 누락·초안 수준이라 보완 필요 / escalate: 이 팀원·도구로는 불가(실제 웹 조사·로그인·실행 필요 등)'),
+  verdict: z.enum(['accept', 'revise', 'escalate']).describe('accept: 완료 기준을 충족하고 품질이 충분해 대표님 보고 가능(도구 제약으로 일부 미확인 항목을 솔직히 남겼더라도 핵심 산출물이 충족되면 acceptedWithGaps=true로 통과) / revise: 같은 봇이 실제로 보완·우회할 수 있는 품질 미흡·핵심 누락이 있을 때만 / escalate: 이 팀원·도구로는 불가해 다른 팀원·개발팀 이관 필요'),
   score: z.number().describe('0~10 (품질·근거·실행력 종합 점수)'),
-  missing: z.array(z.string()).max(6).describe('충족하지 못한 완료 기준이나 빠진 것 (구체적으로)'),
+  missing: z.array(z.string()).max(6).describe('충족하지 못한 완료 기준이나 도구 제약으로 미확인 남은 항목 (구체적으로)'),
   feedback: z.string().describe('revise/escalate일 때 다음 작업자가 바로 고칠 수 있는 구체적 지시 (무엇을, 어떻게). accept면 간단한 검토 메모 또는 빈 문자열'),
-  executiveSummary: z.string().optional().describe('accept일 때 필수: 대표님이 10초 안에 핵심을 파악하고 결정할 수 있도록 팀장이 직접 재가공한 임원 보고 요약(핵심 결론·근거 수치·주의점 포함 3~5문장. 봇 원문 복붙·형식적 문구 금지)'),
+  acceptedWithGaps: z.boolean().optional().describe('봇의 도구 제약(유튜브 영상 재생·자막 추출 불가, 로그인 차단 등)으로 확인 불가 항목을 추정 없이 미확인으로 남겼고, 핵심 산출물은 충족돼 한계를 명시한 채 통과시키는 경우 true'),
+  botReply: z.string().optional().describe('담당 봇에게 직접 보내는 팀장 피드백 답장(1~3문장): 봇이 보고한 한계·질문을 어떻게 반영했는지(미확인 인정 통과 / 우회 기준 재작업 / 가능한 팀원으로 이관 종료) 명확히 안내해 대표님이 직접 중계하지 않게 함'),
+  executiveSummary: z.string().optional().describe('accept일 때 필수: 대표님이 10초 안에 핵심을 파악하고 결정할 수 있도록 팀장이 직접 재가공한 임원 보고 요약(핵심 결론·근거 수치·주의점·미확인 한계 포함 3~5문장. 봇 원문 복붙·형식적 문구 금지)'),
   refinedReport: z.string().optional().describe('accept일 때 필수: 팀원 원문을 대표님 보고용 양질의 마크다운 보고서(## 핵심 결론 / ## 정리된 본문·안건 / ## 리스크 및 검토 의견 / ## 팀장 권고)로 재가공한 본문. 쇼츠 대본처럼 JSON 코드 블록이 포함된 경우 사람이 읽기 좋게 대본을 정리하고 JSON 원문은 건드리지 말 것'),
   recommendedAction: z.string().optional().describe('accept일 때 권장: 대표님께 권고하는 결정(승인/조건부 승인/수정 요청)과 그 이유 1~2문장')
 });
@@ -1346,20 +1348,28 @@ export function isFalseMissingClaim(text = '', fileSet = null) {
 
 export async function leadReviewDeliverable({ task, output, mission, agents, settings }) {
   const leadAgent = agents.find((a) => a.id === (mission?.leadAgentId || 'agent_gemini_neon')) || agents.find((a) => a.tier === 'lead') || agents[0];
+  const workerAgent = agents.find((a) => a.id === task?.assigneeId) || null;
+  const workerProfile = workerAgent ? AGENT_PROFILES[workerAgent.id] : null;
   const chain = buildLeadModelChain(leadAgent, settings, agents);
   const acceptance = deriveAcceptance(task);
   if (!chain.length && !hasLeadDeskWorker()) return { verdict: 'accept', skipped: true, reason: 'AI 엔진 없음', acceptance };
   const system = `당신은 총괄 팀장(${leadAgent?.name || '팀장'})입니다.
-당신의 의무는 단순히 "규정 위반만 없으면 통과시키는 전달자"가 아니라, ① 엄격한 품질 검증 후 ② 대표님이 바로 의사결정할 수 있는 **양질의 임원 보고서로 재가공**해 올리는 것입니다.
+당신의 의무는 단순히 "규정 위반만 없으면 통과시키는 전달자"가 아니라, ① 엄격한 품질 검증 후 ② 대표님이 바로 의사결정할 수 있는 **양질의 임원 보고서로 재가공**해 올리고, ③ 봇 팀원이 도구 제약·차단을 보고했을 때 **직접 피드백을 주고받아 대표님이 중계하지 않게 해결**하는 것입니다.
 
 판정 및 재가공 원칙:
-- accept: 완료 기준을 모두 충족하고, 사실 근거·구체성·실행력이 충분할 때만.
-- revise: 규정 위반이 없더라도 내용이 빈약하거나, 두서없는 메모·날것 JSON·복붙 초안 수준이거나, 핵심 수치·근거가 빠졌으면 반드시 revise로 돌려보내세요. feedback에 무엇을 어떻게 보완할지 구체적으로 지시하세요.
-- escalate: 이 팀원과 무료 도구로는 불가능할 때(실제 웹 조사, 로그인, 현실 행동 필요 등). feedback에 무엇이 필요한지.
+- accept: 완료 기준을 모두 충족하고, 사실 근거·구체성·실행력이 충분할 때.
+- **봇 도구 제약 및 2방향 피드백 원칙 (매우 중요)**:
+  1) 봇이 도구 제약(예: 유튜브 영상 직접 재생·자막 추출 불가, 비공개 스튜디오/GSC/GA4 로그인 불가 등)을 솔직히 보고하고 확인 불가 항목을 추정 없이 '미확인'으로 남겼다면, 같은 봇에게 불가능한 작업을 반복 revise하지 마세요.
+  2) 핵심 산출물(예: 조회수 기준 사례 수집·출처 URL·비교표 등)이 충족됐다면 \`verdict: "accept"\` + \`acceptedWithGaps: true\`로 통과시키고, \`missing\`과 \`executiveSummary\`/\`refinedReport\`에 "도구 제약으로 미확인 처리된 항목과 사유"를 투명하게 기록하세요.
+  3) 그 미확인 항목이 반드시 필요하고 다른 팀원(예: 로그인 브라우저가 있는 개발팀 Aside)이 처리해야 한다면 \`verdict: "escalate"\`로 넘기세요.
+  4) 같은 봇이 실행 가능한 우회 기준(예: 영상 자막 대신 공개 제목·설명란·기사 기준 보완)이 분명할 때만 \`revise\`로 구체적 우회 방법을 지시하세요.
+  5) **botReply 필수 작성**: 봇이 한계·차단·질문을 보고했거나, \`revise\`/\`escalate\`/\`acceptedWithGaps\` 판정을 내릴 때는 반드시 \`botReply\`(1~3문장)에 담당 봇이 다음 행동(한계 인정 통과 종료 / 어떤 우회 기준으로 재작업 / 타 팀원 이관으로 종료)을 바로 이해하도록 직접 답장하세요.
+- revise: 규정 위반이 없더라도 해당 봇이 실제로 보완할 수 있는 내용이 빈약하거나, 두서없는 메모·날것 JSON·복붙 초안 수준이거나, 확인 가능한 핵심 수치·근거가 빠졌으면 revise로 돌려보내세요. feedback과 botReply에 무엇을 어떻게 보완할지 구체적으로 지시하세요.
+- escalate: 이 팀원과 도구로는 불가능할 때(실제 웹 조사, 로그인, 영상 재생·스튜디오 접속, 코드 실행 필요 등). feedback에 무엇이 필요한지, botReply에 담당 이관 안내를 적으세요.
 - 계획·목차·"정보를 주세요"·"~하겠습니다"만 있는 결과는 accept 금지.
 - 근거 없는 수치를 사실처럼 쓴 경우, 브리핑의 금지 사항을 어긴 경우 accept 금지.
 - **임원 보고 재가공 의무(accept 시 필수)**:
-  1) executiveSummary: 대표님이 10초 안에 핵심 결론·주요 수치·주의점을 파악할 수 있는 3~5문장 요약(단순 "사전 준비를 마치고 승인 요청합니다" 같은 형식적 문구 절대 금지).
+  1) executiveSummary: 대표님이 10초 안에 핵심 결론·주요 수치·주의점(도구 제약으로 미확인 남은 항목 포함)을 파악할 수 있는 3~5문장 요약(단순 "사전 준비를 마치고 승인 요청합니다" 같은 형식적 문구 절대 금지).
   2) refinedReport: 팀원 원문을 그대로 복붙하지 말고, 대표님이 원문을 뒤지지 않아도 바로 판단할 수 있게 **## 핵심 결론 / ## 정리된 내용 / ## 리스크·확인 포인트 / ## 팀장 검토 의견** 구조의 양질의 한국어 마크다운 보고서로 재가공하세요. (쇼츠 대본이라면 장면별 자막·핵심 포인트·논조·사실/의견 구분을 사람이 읽기 좋게 정리)
   3) recommendedAction: 승인/조건부 승인/수정 요청 중 팀장 권고안과 근거 1~2문장.
 - 판정 범위는 이 작업의 [요구사항]과 [완료 기준]뿐입니다. 프로젝트 전체 목표나 다른 작업의 일(예: 분석 작업에 코드 수정·PR·배포·색인 요청)을 이 결과물에 요구하지 마세요. 필요한 후속 일은 feedback에 "후속 작업 제안"으로만 적고 판정에는 반영하지 마세요.
@@ -1384,14 +1394,28 @@ ${mission ? `\n${buildMissionBrief(mission)}` : ''}`;
       .join('\n');
   }
   const priorNotes = (Array.isArray(task.leadNotes) ? task.leadNotes.slice(0, 3) : []).filter((n) => !isFalseMissingClaim(n.text, snapshot?.fileSet));
+  const botReportLines = [];
+  if (task?.botReport) {
+    const br = task.botReport;
+    if (Array.isArray(br.limitations) && br.limitations.length) botReportLines.push(`- 도구 한계·미확인 사유: ${br.limitations.join(' / ')}`);
+    if (Array.isArray(br.blockers) && br.blockers.length) botReportLines.push(`- 진행 차단 요인: ${br.blockers.join(' / ')}`);
+    if (Array.isArray(br.questions) && br.questions.length) botReportLines.push(`- 팀장에게 남긴 질문: ${br.questions.join(' / ')}`);
+  }
+  const workerInfoLine = workerAgent
+    ? `[담당 팀원 및 도구 제약] ${workerAgent.name} (${workerAgent.roleTitle})${workerProfile?.bad ? ` — 불가/주의: ${workerProfile.bad}` : ''}`
+    : '';
   const prompt = `[업무] ${task.title}
-[CEO 결재 상신 여부] ${task.requiresApproval ? '예 — 통과 시 대표님 결재함에 바로 올라갑니다. executiveSummary·refinedReport·recommendedAction을 대표님 보고 품질로 반드시 작성하세요.' : '아니오 — 통과 시 완료 보고로 기록됩니다. executiveSummary와 refinedReport로 핵심을 깔끔히 정리하세요.'}
+${workerInfoLine ? `${workerInfoLine}\n` : ''}[CEO 결재 상신 여부] ${task.requiresApproval ? '예 — 통과 시 대표님 결재함에 바로 올라갑니다. executiveSummary·refinedReport·recommendedAction을 대표님 보고 품질로 반드시 작성하세요.' : '아니오 — 통과 시 완료 보고로 기록됩니다. executiveSummary와 refinedReport로 핵심을 깔끔히 정리하세요.'}
 [요구사항] ${baseTaskDescription(task).slice(0, 1500)}
 [완료 기준]
 ${acceptance.map((x, i) => `${i + 1}. ${x}`).join('\n')}
 ${
+  botReportLines.length
+    ? `\n[담당 봇이 함께 보고한 한계·차단·질문 — 반드시 검토하고 botReply로 직접 답장하세요]\n${botReportLines.join('\n')}\n`
+    : ''
+}${
   priorNotes.length
-    ? `\n[이전에 준 팀장 피드백 — 반영됐는지 확인, 같은 문제가 남아 있으면 accept 금지]\n${priorNotes.map((n) => `- ${String(n.text).slice(0, 400)}`).join('\n')}\n`
+    ? `\n[이전에 준 팀장 피드백 — 반영됐는지 확인, 단 해당 봇 도구로 불가능한 항목이라면 revise 반복 대신 acceptedWithGaps 또는 escalate 판단]\n${priorNotes.map((n) => `- ${String(n.text).slice(0, 400)}`).join('\n')}\n`
     : ''
 }
 ${repoFacts ? `\n${repoFacts}\n` : ''}
@@ -1417,6 +1441,8 @@ ${String(output || '').slice(0, 8000)}`;
       score: Math.max(0, Math.min(10, Number(object.score) || 0)),
       missing,
       feedback,
+      acceptedWithGaps: Boolean(object.acceptedWithGaps),
+      botReply: String(object.botReply || '').trim().slice(0, 800),
       executiveSummary: String(object.executiveSummary || '').trim().slice(0, 1200),
       refinedReport: String(object.refinedReport || '').trim().slice(0, 8000),
       recommendedAction: String(object.recommendedAction || '').trim().slice(0, 600),

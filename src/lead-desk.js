@@ -89,12 +89,12 @@ export function hasLeadDeskWorker(db = loadDb()) {
 }
 
 // ---------- zod 스키마 → 답안 형식 안내 ----------
-function describeZod(s, depth = 0) {
+function describeZod(s, depth = 0, outerDesc = '') {
   const def = s?._def || {};
-  const desc = s?.description || def.description || '';
+  const desc = s?.description || def.description || outerDesc || '';
   const t = def.typeName;
-  if (t === 'ZodOptional' || t === 'ZodNullable' || t === 'ZodDefault') return describeZod(def.innerType, depth);
-  if (t === 'ZodEffects') return describeZod(def.schema, depth);
+  if (t === 'ZodOptional' || t === 'ZodNullable' || t === 'ZodDefault') return describeZod(def.innerType, depth, desc);
+  if (t === 'ZodEffects') return describeZod(def.schema, depth, desc);
   if (t === 'ZodObject') {
     const shape = typeof def.shape === 'function' ? def.shape() : def.shape || {};
     const out = {};
