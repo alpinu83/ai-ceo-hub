@@ -18,7 +18,37 @@ export function ensureShorts(db) {
   db.shorts = db.shorts && typeof db.shorts === 'object' ? db.shorts : {};
   db.shorts.candidates = Array.isArray(db.shorts.candidates) ? db.shorts.candidates : [];
   db.shorts.jobs = Array.isArray(db.shorts.jobs) ? db.shorts.jobs : [];
+  const cutoff = Date.now() - 48 * 3600000;
+  for (const c of db.shorts.candidates) {
+    newsFirst(c);
+    // 최근 1~2일 기사만 후보로 (지난 뉴스는 자동으로 빠짐)
+    const at = Date.parse(c.publishedAt || '') || Date.parse(c.createdAt || '') || 0;
+    if (c.status === 'new' && at && at < cutoff) c.status = 'expired';
+  }
   return db.shorts;
+}
+
+const isYoutubeUrl = (u = '') => /(?:youtube\.com|youtu\.be)\//i.test(String(u));
+/**
+ * 다른 채널 영상은 쓰지 않음: 유튜브 인기 영상은 "화제도" 신호로만 남기고,
+ * 후보의 제목·링크·출처는 같은 이슈를 다룬 언론 기사로 바꿈. 기사가 없으면 후보에서 뺌.
+ */
+export function newsFirst(c) {
+  if (!c || c.newsFirst) return c;
+  c.newsFirst = true;
+  if (c.kind !== 'youtube' && !isYoutubeUrl(c.url)) return c;
+  const article = (c.related || []).find((x) => x?.url && !isYoutubeUrl(x.url));
+  c.signal = { youtubeViews: c.views || null, channel: c.source || '', videoTitle: c.title, videoUrl: c.url };
+  if (!article) {
+    if (c.status === 'new') c.status = 'dropped';
+    c.dropReason = '같은 이슈를 다룬 언론 기사를 찾지 못함 (유튜브 영상만으로는 후보로 쓰지 않음)';
+    return c;
+  }
+  c.title = clip(String(article.title || '').replace(/\s*-\s*[^-]{1,30}$/, ''), 160) || c.title;
+  c.url = article.url;
+  c.source = article.source || '언론 기사';
+  c.related = (c.related || []).filter((x) => x !== article && !isYoutubeUrl(x?.url));
+  return c;
 }
 
 /** 쇼츠 프로젝트: 설정에 지정된 것, 없으면 이름에 "쇼츠"가 들어간 진행 중 프로젝트 */
@@ -60,13 +90,17 @@ export function ingestCandidates(db, items = [], batchLabel = '') {
       views: Number(raw.views || 0) || null,
       coverage: Number(raw.coverage || 0) || null,
       related: (Array.isArray(raw.related) ? raw.related : []).slice(0, 5).map((r) => ({ title: clip(r?.title, 160), url: clip(r?.url, 500), source: clip(r?.source, 80) })),
+      trends: raw.trends && raw.trends.volume ? { query: clip(raw.trends.query, 60), volume: Number(raw.trends.volume) || 0 } : null,
+      signal: raw.signal && raw.signal.youtubeViews ? { youtubeViews: Number(raw.signal.youtubeViews) || 0 } : null,
+      score: Number(raw.score || 0) || null,
       publishedAt: clip(raw.publishedAt, 40),
       batch: clip(batchLabel, 40),
       status: 'new',
       createdAt: now,
       seenAt: now
     };
-    added.push(cand);
+    newsFirst(cand);
+    if (cand.status === 'new') added.push(cand);
   }
   // 제작기가 보낸 순서(조회수·보도량 순)를 그대로 맨 위에
   sh.candidates = [...added, ...sh.candidates].slice(0, MAX_CANDIDATES);
@@ -82,10 +116,10 @@ export async function notifyCandidates(db, cands = []) {
   if (!tg.botToken || !tg.chatId || !cands.length) return { ok: false };
   const top = cands.slice(0, 8);
   const lines = [
-    `<b>쇼츠 후보 뉴스 ${top.length}건</b> (조회수·보도량 순)`,
+    `<b>쇼츠 후보: 최근 1~2일 국내 정치 기사 ${top.length}건</b> (관심도 순)`,
     '만들 이슈를 고르면 팀이 출처 확인된 대본을 써서 결재로 올립니다.',
     '',
-    ...top.map((c, i) => `${i + 1}. ${esc(clip(c.title, 70))}${c.views ? ` · 👁 ${fmtViews(c.views)}` : c.coverage ? ` · 보도 ${c.coverage}건` : ''}${c.source ? ` · ${esc(c.source)}` : ''}`)
+    ...top.map((c, i) => `${i + 1}. ${esc(clip(c.title, 70))}${c.coverage ? ` · 보도 ${c.coverage}곳` : ''}${c.trends?.volume ? ` · 검색 ${fmtViews(c.trends.volume).replace('회', '')}+` : ''}${c.signal?.youtubeViews ? ` · 화제 👁 ${fmtViews(c.signal.youtubeViews)}` : ''}${c.source ? ` · ${esc(c.source)}` : ''}`)
   ];
   const keyboard = top.map((c, i) => [{ text: `🎬 ${i + 1}. ${clip(c.title, 28)}`, callback_data: `sh:pick:${c.id}` }]);
   try {
@@ -133,7 +167,8 @@ export function pickCandidate(db, candId) {
     title: `쇼츠 대본: ${clip(cand.title, 60)}`,
     description: [
       `대표님이 고른 이슈로 구국열사 채널 쇼츠 대본(30~50초)을 쓰세요. 시각: 우파 성향의 차분하지만 단호한 분석형 해설.`,
-      `이슈: ${cand.title}${cand.views ? ` (유튜브 조회수 ${fmtViews(cand.views)})` : ''}${cand.summary ? `\n요약: ${cand.summary}` : ''}`,
+      `이슈: ${cand.title}${cand.signal?.youtubeViews ? ` (유튜브 화제도: 관련 영상 조회 ${fmtViews(cand.signal.youtubeViews)})` : ''}${cand.summary ? `\n요약: ${cand.summary}` : ''}`,
+      '※ 다른 유튜브 채널 영상의 화면·음성·자막·대사·구성은 절대 가져오지 마세요(저작권 신고 = 채널 경고). 화제도 참고만 하고, 사실은 아래 언론 기사로만 확인해 직접 쓰세요.',
       srcLines.length ? `참고 출처:\n${srcLines.join('\n')}` : '참고 출처: 없음 → 확인 가능한 기사만 쓰고 sources에 URL을 넣을 것',
       '',
       SCRIPT_FORMAT
