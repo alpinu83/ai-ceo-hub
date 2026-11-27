@@ -1,4 +1,5 @@
 // hub/lead-ops.js: server.js에서 분리 (공유 로직)
+import { ensureShorts, findShortsMission } from './shorts.js';
 import { ASSIGNMENT_RULES, buildCompletionReport, buildMissionDigest, buildPlanningRoster, collectFollowUps, ensureLeadDefaults, findScopeViolations, getLeadSettings, getMissionGoal, isForbiddenCodeTask, markCeoActivity, missionLeadState, rebalanceAssignments, rememberFact } from '../lead-engine.js';
 import { appendLog, appendMessage, flushCloudBackup, loadDb, saveDb, uid } from '../store.js';
 import { buildDispatchPrompt, draftMissionPlan, planLeadFollowUp, planMilestoneWork, missionRepoSnapshot } from '../orchestrator.js';
@@ -425,7 +426,21 @@ async function repoStructureNote(m, settings) {
     '- 이 목록에 없는 파일·폴더를 수정 대상으로 계획하지 말고, 수정할 파일은 위 목록에서 고를 것.'
   ].join('\n');
 }
-const digestWithTools = async (db, m) => [buildMissionDigest(db, m.id), connectedToolsNote(db.settings, m), await repoStructureNote(m, db.settings)].filter(Boolean).join('\n\n');
+/** 쇼츠 프로젝트: 자동 수집된 최신 뉴스 후보(링크 포함)를 계획에 제공 — AI 기억으로 지난 뉴스를 지어내지 않게 */
+export function shortsCandidatesNote(db, m) {
+  const sm = findShortsMission(db);
+  if (!sm || sm.id !== m?.id) return '';
+  const sh = ensureShorts(db);
+  const fresh = sh.candidates.filter((c) => c.status === 'new').slice(0, 10);
+  const lines = [
+    `[쇼츠 뉴스 후보 — 자동 수집기(매일 07시·18시)가 가져온 최신 후보${sh.lastCollectedAt ? `, 마지막 수집 ${sh.lastCollectedAt.slice(0, 16).replace('T', ' ')}` : ''}]`,
+    ...fresh.map((c, i) => `${i + 1}. ${c.title}${c.views ? ` (조회 ${c.views})` : ''} — ${c.url || '링크 없음'}`),
+    '- 뉴스 후보는 이 목록만 씁니다. 팀이 뉴스를 따로 조사하거나 AI 기억으로 뉴스를 쓰지 마세요(지난 뉴스가 섞임). 후보 선정·고르기는 대표님이 이 목록에서 합니다.',
+    '- 채널: 구국열사 https://www.youtube.com/channel/UCVz53WEz_cvd5fJl3rs1Uww (@구국열사). 다른 주소를 짐작해서 쓰지 마세요.'
+  ];
+  return fresh.length ? lines.join('\n') : lines.slice(-2).join('\n');
+}
+const digestWithTools = async (db, m) => [buildMissionDigest(db, m.id), connectedToolsNote(db.settings, m), shortsCandidatesNote(db, m), await repoStructureNote(m, db.settings)].filter(Boolean).join('\n\n');
 
 /** 운영 사이클 1회: 계획 수립(없으면) → 현재 마일스톤 처리 */
 export async function opsCycle(missionId, { depth = 0 } = {}) {
