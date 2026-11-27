@@ -69,7 +69,9 @@ export function wantsTwoStage(settings, req = {}) {
   if (req.kind !== 'code' || req.reviewStage) return false;
   if (req.codeWorkflow === 'agy_then_aside') return true;
   const cfg = getOutsourcingSettings(settings);
-  return cfg.routing === 'auto' && !req.pinnedWorker && cfg.codeWorkflow === 'agy_then_aside';
+  // 지정 없는 코드 요청은 개발 지침의 "큰 구현" 방식을 따름 (기본 AGY 구현 → Aside 검수)
+  const large = settings?.devPolicy?.large || 'agy_aside';
+  return cfg.routing === 'auto' && !req.pinnedWorker && (cfg.codeWorkflow === 'agy_then_aside' || large === 'agy_aside');
 }
 export const CODE_WORKFLOW_LABELS = {
   single: '단독 처리 (우선순위대로)',
@@ -196,7 +198,11 @@ export function priorityChain(settings, req = {}) {
   const cfg = getOutsourcingSettings(settings);
   const kind = OUTSOURCE_KIND_LABELS[req.kind] ? req.kind : 'task';
   let chain = [...cfg.priorities[kind]];
-  if (cfg.awayUntil && chain.length > 1) chain = chain.filter((w) => w !== 'aside');
+  // PC 자리비움: PC에서 도는 Aside·AGY를 건너뜀 (남는 작업자가 있을 때만)
+  if (cfg.awayUntil && chain.length > 1) {
+    const rest = chain.filter((w) => w !== 'aside' && w !== 'antigravity');
+    if (rest.length) chain = rest;
+  }
   const skip = Array.isArray(req.skipWorkers) ? req.skipWorkers : [];
   const rest = chain.filter((w) => !skip.includes(w));
   return rest.length ? rest : chain;

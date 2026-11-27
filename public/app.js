@@ -1950,6 +1950,7 @@ function renderOutsourcingSettings(force = false) {
   const prio = cfg.priorities;
   const codeTwoStage = cfg.codeWorkflow === 'agy_then_aside';
   const roleRows = Object.keys(OUT_DEFAULT_PRIORITIES)
+    .filter((kind) => kind !== 'code') // 코드는 개발 지침이 정함
     .map((kind) => {
       const capable = ['gemini', 'aside', 'antigravity'].filter((w) => OUT_WORKER_CAPS[w].includes(kind));
       const cur = prio[kind] || OUT_DEFAULT_PRIORITIES[kind];
@@ -1978,6 +1979,12 @@ function renderOutsourcingSettings(force = false) {
         </tr>`;
     })
     .join('');
+  const connAgo = (...keys) => {
+    const at = keys.map((k) => state?.agentConnections?.[k]?.lastSeenAt).filter(Boolean).sort().pop();
+    if (!at) return '접속 기록 없음';
+    const min = Math.round((Date.now() - Date.parse(at)) / 60000);
+    return min < 3 ? `연결됨 (${min < 1 ? '방금' : `${min}분 전`})` : `마지막 접속 ${formatTime(at)} (${min < 60 ? `${min}분` : `${Math.round(min / 60)}시간`} 전)`;
+  };
   const devPol = { small: 'aside', large: 'agy_aside', risky: 'design_first', incident: 'aside', ...(state.settings?.devPolicy || {}) };
   const DEV_ROUTE_LABELS = { aside: 'Aside 혼자 (수정·자체 검수)', agy: 'AGY 혼자 (구현·테스트·PR)', agy_aside: 'AGY 구현 → Aside 검수', design_first: 'Aside 설계 → 대표님 확인 → AGY 구현 → Aside 검수' };
   const DEV_CASE_LABELS = { small: '작은 수정 (파일 1~2개, 할 일이 분명)', large: '보통~큰 구현 (여러 파일, 테스트 필요)', risky: '애매하거나 위험한 일 (구조 변경·데이터·보안·돈)', incident: '운영 중 문제 (배포 후 오류·데이터 이상)' };
@@ -1992,8 +1999,8 @@ function renderOutsourcingSettings(force = false) {
       <div class="routine-form-actions"><button type="button" class="btn btn-primary btn-sm" data-dev-policy-save="1">개발 지침 저장</button></div>
     </div>
     <div class="card out-route">
-      <div class="card-head"><h3 class="card-title">역할 분담 (우선순위)</h3></div>
-      <p class="routine-desc" style="margin-top:0;">일의 종류마다 맡길 순서를 정합니다. 1순위가 정해진 시간 안에 안 가져가면 2순위, 그래도 안 되면 3순위로 자동으로 넘어갑니다(Gemini 앱은 예약 주기 때문에 최소 60분). 코드 수정에서 <strong>AGY 수정 + Aside 검수·보완</strong>을 고르면 Antigravity가 1차 수정·PR을 만든 직후 Aside가 자동으로 같은 PR을 검수·보완한 뒤 대표님 결재로 올립니다.</p>
+      <div class="card-head"><h3 class="card-title">코드 외 일의 담당 순서</h3></div>
+      <p class="routine-desc" style="margin-top:0;">팀장이 직접 배정하지 않고 시스템이 넘기는 일(결재 전 검토, 반복 실패한 작업, 계정·콘솔 작업)을 누가 먼저 맡을지 정합니다. 1순위가 정해진 시간 안에 안 가져가면 다음 순위로 넘어갑니다(Gemini 앱은 예약이 대략 1시간마다라 최소 60분). 코드 작업은 위 개발 지침을 따릅니다.</p>
       <div style="overflow-x:auto;"><table class="out-role-table" style="width:100%;border-collapse:collapse;font-size:13px;">
         <thead><tr><th style="text-align:left;padding:6px 4px;">일의 종류</th><th style="text-align:left;padding:6px 4px;">1순위</th><th style="text-align:left;padding:6px 4px;">2순위</th><th style="text-align:left;padding:6px 4px;">3순위</th><th style="text-align:left;padding:6px 4px;">현재</th></tr></thead>
         <tbody>${roleRows}</tbody>
@@ -2006,19 +2013,19 @@ function renderOutsourcingSettings(force = false) {
         </label>
         <label class="out-check">한 곳에 몰기
           <select id="out-route-mode">
-            <option value="auto" ${cfg.routing === 'auto' ? 'selected' : ''}>안 함 (우선순위대로)</option>
+            <option value="auto" ${cfg.routing === 'auto' ? 'selected' : ''}>안 함 (순서대로)</option>
             <option value="gemini" ${cfg.routing === 'gemini' ? 'selected' : ''}>Gemini 앱에 몰기</option>
             <option value="aside" ${cfg.routing === 'aside' ? 'selected' : ''}>Aside에 몰기</option>
-            <option value="antigravity" ${cfg.routing === 'antigravity' ? 'selected' : ''}>Antigravity에 몰기</option>
+            <option value="antigravity" ${cfg.routing === 'antigravity' ? 'selected' : ''}>AGY에 몰기</option>
           </select>
         </label>
         <span class="routine-sub" id="out-route-dirty" style="display:none;color:var(--accent-amber);font-weight:600;">바꾼 내용이 아직 저장되지 않았습니다</span>
-        <button type="button" class="btn btn-primary btn-sm" data-out-route-save="1">역할 분담 저장</button>
+        <button type="button" class="btn btn-primary btn-sm" data-out-route-save="1">담당 순서 저장</button>
       </div>
       <div class="out-route-now" style="margin-top:12px;">
         <div>
-          <div class="routine-sub">PC 자리비움 (Aside를 기다리지 않고 바로 건너뜀)</div>
-          <div class="routine-sub">${cfg.awayUntil ? `${esc(new Date(cfg.awayUntil).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }))}까지 Aside 건너뛰는 중` : '꺼짐'}</div>
+          <div class="routine-sub">PC 자리비움 (PC에서 도는 Aside·AGY를 기다리지 않고 건너뜀)</div>
+          <div class="routine-sub">${cfg.awayUntil ? `${esc(new Date(cfg.awayUntil).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }))}까지 Aside·AGY 건너뛰는 중` : '꺼짐'}</div>
         </div>
         <div class="out-away">
           <button type="button" class="btn btn-ghost btn-sm" data-out-away="1">1시간</button>
@@ -2027,16 +2034,16 @@ function renderOutsourcingSettings(force = false) {
           ${cfg.awayUntil ? `<button type="button" class="btn btn-primary btn-sm" data-out-away="0">해제</button>` : ''}
         </div>
       </div>
-      <p class="routine-sub" style="margin:8px 0 0;">한 곳에 몰아도 그 작업자가 못 하는 일은 우선순위대로 갑니다. 작업자가 하다가 못 하는 일이면 스스로 다음 순위로 넘깁니다. 텔레그램: /route (분담 보기) · /route gemini · /away 3 (PC 자리비움) · /office · /out 요청ID aside</p>
+      <p class="routine-sub" style="margin:8px 0 0;">텔레그램: /route (순서 보기) · /away 3 (PC 자리비움) · /out 요청ID aside (요청 하나만 담당 바꾸기)</p>
     </div>
 
     <div class="card out-guide">
-      <div class="card-head"><h3 class="card-title">자동 외주 · 외부 자문</h3></div>
+      <div class="card-head"><h3 class="card-title">자동 넘김 · 결재 전 검토</h3></div>
       <div class="out-settings" style="border-top:none;margin-top:0;padding-top:0;">
-        <label class="out-check"><input type="checkbox" id="out-cfg-enabled" ${cfg.enabled ? 'checked' : ''} /> 외부 협업 사용</label>
-        <label class="out-check"><input type="checkbox" id="out-cfg-browser" ${cfg.autoForBrowser ? 'checked' : ''} /> 계정·콘솔 작업은 자동 외주</label>
-        <label class="out-check"><input type="checkbox" id="out-cfg-failure" ${cfg.autoOnFailure ? 'checked' : ''} /> 반복 실패·코드 변경 실패 시 자동 외주</label>
-        <label class="out-check">외부 자문
+        <label class="out-check"><input type="checkbox" id="out-cfg-enabled" ${cfg.enabled ? 'checked' : ''} /> 협업 큐 사용</label>
+        <label class="out-check"><input type="checkbox" id="out-cfg-browser" ${cfg.autoForBrowser ? 'checked' : ''} /> 로그인이 필요한 계정·콘솔 작업은 Aside에게 자동으로</label>
+        <label class="out-check"><input type="checkbox" id="out-cfg-failure" ${cfg.autoOnFailure ? 'checked' : ''} /> 팀원이 반복 실패한 작업은 위 담당 순서대로 넘김</label>
+        <label class="out-check">결재 전 검토 의견
           <select id="out-cfg-consult">
             <option value="off" ${cfg.consultMode === 'off' ? 'selected' : ''}>끄기</option>
             <option value="proposals" ${cfg.consultMode === 'proposals' ? 'selected' : ''}>관문 결재만</option>
@@ -2045,31 +2052,36 @@ function renderOutsourcingSettings(force = false) {
         </label>
         <button type="button" class="btn btn-primary btn-sm" data-out-settings-save="1">설정 저장</button>
       </div>
-      <p class="routine-desc">무료 API 팀이 못 하는 일(로그인이 필요한 콘솔 작업, 큰 코드 수정, 3번 실패한 작업, 팀원이 [외주 필요]라고 표시한 일)과 결재안 자문을 요청서로 올립니다. 로그인·인증처럼 대표님 손이 필요하면 작업이 멈추고 텔레그램으로 알립니다.</p>
+      <p class="routine-desc">결재 전 검토는 팀장이 올린 관문 결재·완료 보고를 다른 AI(기본 Gemini 앱)가 한 번 더 비판적으로 보고, 의견을 결재 카드에 붙입니다. 로그인·인증처럼 대표님 손이 필요한 순간에는 작업이 멈추고 텔레그램으로 알립니다.</p>
     </div>
 
     <div class="card out-guide">
-      <div class="card-head"><h3 class="card-title">작업자 연결</h3></div>
+      <div class="card-head"><h3 class="card-title">개발팀 · 당직 팀장 연결</h3></div>
       <div class="out-guide-grid">
         <div>
-          <h4>Gemini 앱 (자문·리서치·문서)</h4>
-          <p class="routine-desc">gemini.google.com → 설정 → Personal Intelligence → Connected Apps → Custom → "연결 주소 복사" 내용을 붙여넣고 이름을 "CEO Office 외주창구"로 저장. 그다음 Gemini의 Scheduled(예약) 화면에서 새 작업을 만들고 "예약 지시문 복사" 내용을 넣은 뒤 매시간으로 저장하세요. 이 화면에서 만든 예약은 Hydrogen으로 돌아 사용량 한도가 넉넉합니다(Neon은 금방 5시간 한도에 걸림). 모델은 예약을 만들 때 정해지며, 바꾸려면 Aside에 "Gemini 모델 바꿔줘"라고 하세요. Gemini 차례는 예약 주기에 맞춰 최소 60분 기다린 뒤 다음 순위로 넘어갑니다.</p>
+          <h4>AGY (Antigravity) · 구현 · 주간 팀장</h4>
+          <p class="routine-desc">코딩 감시기: ${esc(connAgo('worker:antigravity'))}<br />팀장 감시기: ${esc(connAgo('lead:agy_lead'))}</p>
+          <p class="routine-desc">대표님 PC에서 감시기 2개가 돕니다. 코딩 감시기는 1분마다 AGY 몫 작업을, 팀장 감시기는 30초마다 팀장 판단(Hydrogen)을 가져갑니다. 처음 설치하거나 업데이트할 때 아래 명령을 PowerShell에 붙여 넣으세요.</p>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <button type="button" class="btn btn-primary btn-sm" data-copy-cmd="irm https://raw.githubusercontent.com/alpinu83/ai-ceo-hub/main/scripts/windows/install-agy-watcher.ps1 | iex">코딩 감시기 설치 명령</button>
+            <button type="button" class="btn btn-primary btn-sm" data-copy-cmd="irm https://raw.githubusercontent.com/alpinu83/ai-ceo-hub/main/scripts/windows/install-agy-lead-watcher.ps1 | iex">팀장 감시기 설치 명령</button>
+            <button type="button" class="btn btn-ghost btn-sm" data-out-copy-setup="1">AGY 설정 프롬프트</button>
+            <button type="button" class="btn btn-ghost btn-sm" data-out-copy-mcp="1">MCP 설정</button>
+          </div>
+        </div>
+        <div>
+          <h4>Aside · 설계 · 검수 · 브라우저·계정</h4>
+          <p class="routine-desc">감시기: ${esc(connAgo('worker:aside'))}</p>
+          <p class="routine-desc">대표님 PC의 Aside 감시기가 1분마다 Aside 몫 작업을 확인해 바로 처리합니다(설계·검수·작은 코드 수정·계정 작업). 감시기가 꺼져 있어도 Aside 정기 루틴이 매일 9:20·13:20·17:20에 남은 일을 처리합니다. PC와 Aside가 켜져 있어야 합니다.</p>
+        </div>
+        <div>
+          <h4>Gemini 앱 · 야간 당직 팀장 · 검토·리서치</h4>
+          <p class="routine-desc">마지막 실행: ${esc(connAgo('lead:gemini_app', 'worker:gemini'))}</p>
+          <p class="routine-desc">Gemini 앱 예약 작업(매시간, 실제 간격은 대략 1시간으로 들쭉날쭉)이 AGY가 없을 때 팀장 판단을 처리하고, 결재 전 검토·리서치를 맡습니다. 처음 연결할 때: gemini.google.com → 설정 → Connected Apps → Custom에 "연결 주소"를 "CEO Office 외주창구"로 저장 → Scheduled에서 새 작업에 "예약 지시문"을 넣고 매시간으로 저장.</p>
           <div style="display:flex;gap:6px;flex-wrap:wrap;">
             <button type="button" class="btn btn-primary btn-sm" data-out-copy-gemini-url="1">연결 주소 복사</button>
             <button type="button" class="btn btn-ghost btn-sm" data-out-copy-gemini-prompt="1">예약 지시문 복사</button>
           </div>
-        </div>
-        <div>
-          <h4>Antigravity (코드 수정 · Carbon > Neon > Hydrogen)</h4>
-          <p class="routine-desc">모델 계층: Carbon이 계획·판단·최종 검토, Neon 하위 에이전트가 여러 파일 구현·디버깅, Hydrogen이 조사·검색·단순 수정·테스트. Settings > Models > Orchestrator Settings에서 Orchestrator=Carbon, Executor=Hydrogen으로 두세요. 설정 프롬프트에 이 내용과 자동 실행 지시가 들어 있으니, 이미 연결했어도 한 번 다시 보내 주세요. "설정 프롬프트 복사"를 Antigravity 에이전트에게 그대로 보내면 MCP 서버 등록·스킬 설치·30분 자동 실행까지 합니다. 직접 하려면 App은 왼쪽 Customizations → MCP Servers, IDE는 에이전트 패널 … → MCP Servers에 "MCP 설정 복사" 내용을 넣으세요.</p>
-          <div style="display:flex;gap:6px;flex-wrap:wrap;">
-            <button type="button" class="btn btn-primary btn-sm" data-out-copy-setup="1">설정 프롬프트 복사</button>
-            <button type="button" class="btn btn-ghost btn-sm" data-out-copy-mcp="1">MCP 설정 복사</button>
-          </div>
-        </div>
-        <div>
-          <h4>Aside (회사 PC · 계정 작업)</h4>
-          <p class="routine-desc">Aside 정기 루틴이 매일 9~21시 30분마다(매시 20분·50분) Aside 차례인 요청만 처리합니다. 코드 수정은 Antigravity 다음 순위로, GitHub 웹에서 PR을 엽니다. PC와 Aside가 켜져 있어야 합니다. 바로 시키려면 Aside에 "CEO Office 외주 처리해줘"라고 하세요.</p>
         </div>
       </div>
     </div>`;
@@ -3303,6 +3315,10 @@ function bindEvents() {
       }
       return;
     }
+    if (target.dataset.copyCmd) {
+      await copyText(target.dataset.copyCmd, '설치 명령을 복사했습니다. PC PowerShell에 붙여 넣으세요.');
+      return;
+    }
     if (target.dataset.devPolicySave) {
       const devPolicy = {};
       document.querySelectorAll('[data-dev-policy]').forEach((el) => {
@@ -3343,7 +3359,7 @@ function bindEvents() {
           body: JSON.stringify({
             routing: document.getElementById('out-route-mode')?.value || 'auto',
             priorities,
-            codeWorkflow,
+            ...(document.querySelector('[data-out-prio="code"]') ? { codeWorkflow } : {}),
             waitMinutes: Number(document.getElementById('out-wait-min')?.value || 30)
           })
         });
@@ -3472,7 +3488,7 @@ function bindEvents() {
         renderAll();
         refreshIcons();
         renderOutsourcingSettings(true);
-        toast('외부 협업 설정을 저장했습니다.');
+        toast('협업 설정을 저장했습니다.');
       } catch (err) {
         toast(err.message, true);
       }
