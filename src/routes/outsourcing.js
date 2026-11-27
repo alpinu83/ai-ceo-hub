@@ -56,20 +56,27 @@ export function registerOutsourcingRoutes(app) {
       const task = db.tasks.find((t) => t.id === body.taskId);
       if (!task) return c.json({ error: '업무를 찾을 수 없습니다.' }, 404);
       const mission = db.missions.find((m) => m.id === task.missionId);
-      const kind = ['task', 'code', 'browser', 'research'].includes(body.kind) ? body.kind : mission && getMissionRepoCfg(db.settings, mission) && isCodeTask(task, db.agents.find((a) => a.id === task.assigneeId)) ? 'code' : 'task';
+      const collab = body.worker === 'agy_aside';
+      const kind = collab ? 'code' : ['task', 'code', 'browser', 'research'].includes(body.kind) ? body.kind : mission && getMissionRepoCfg(db.settings, mission) && isCodeTask(task, db.agents.find((a) => a.id === task.assigneeId)) ? 'code' : 'task';
       req = outsourceTask(db, task, {
         kind,
-        worker: ['antigravity', 'aside', 'gemini', 'any'].includes(body.worker) ? body.worker : kind === 'code' ? 'antigravity' : kind === 'browser' ? 'aside' : 'any',
+        worker: collab ? 'antigravity' : ['antigravity', 'aside', 'gemini', 'any'].includes(body.worker) ? body.worker : kind === 'code' ? 'antigravity' : kind === 'browser' ? 'aside' : 'any',
         reason: String(body.reason || '대표님이 외부 AI에 직접 맡김').slice(0, 400),
         createdBy: 'CEO'
       });
+      if (collab && req) {
+        req.pinnedWorker = 'antigravity';
+        req.codeWorkflow = 'agy_then_aside';
+      }
     } else {
       const title = String(body.title || '').trim();
       const goal = String(body.goal || '').trim();
       if (!title || goal.length < 10) return c.json({ error: '제목과 해야 할 일(10자 이상)을 입력해 주세요.' }, 400);
       const mission = body.missionId ? db.missions.find((m) => m.id === body.missionId) : null;
       const repoCfg = mission ? getMissionRepoCfg(db.settings, mission) : null;
-      const kind = ['task', 'code', 'consult', 'browser', 'research'].includes(body.kind) ? body.kind : 'task';
+      // "AGY 수정 + Aside 검수" 협업은 코드 수정 요청으로 만듦
+      const collab = body.worker === 'agy_aside';
+      const kind = collab ? 'code' : ['task', 'code', 'consult', 'browser', 'research'].includes(body.kind) ? body.kind : 'task';
       const made = createOutsourcingRequest(db, {
         kind,
         title,
@@ -77,7 +84,9 @@ export function registerOutsourcingRoutes(app) {
         deliverable: body.deliverable || '',
         missionId: mission?.id || '',
         reason: String(body.reason || '대표님 직접 요청').slice(0, 400),
-        worker: ['antigravity', 'aside', 'gemini', 'any'].includes(body.worker) ? body.worker : 'any',
+        worker: collab ? 'antigravity' : ['antigravity', 'aside', 'gemini', 'any'].includes(body.worker) ? body.worker : 'any',
+        pinnedWorker: collab ? 'antigravity' : '',
+        codeWorkflow: collab ? 'agy_then_aside' : '',
         repo: kind === 'code' || kind === 'task' ? repoCfg?.repo || '' : '',
         branch: repoCfg?.branch || 'main',
         siteUrl: mission?.siteUrl || '',

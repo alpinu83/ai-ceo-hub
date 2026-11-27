@@ -3,14 +3,14 @@ import { appendLog, appendMessage, flushCloudBackup, loadDb, sanitizeStateForCli
 import { buildDispatchPrompt, createApprovalForTask, executeAgentTask, synthesizeMissionReport } from '../orchestrator.js';
 import { buildMissionLiveContext } from '../live-context.js';
 import { getGithubRepoConfig } from '../it-devops.js';
-import { getMissionGoal, getMissionScope, rememberFact } from '../lead-engine.js';
+import { addLeadNote, getMissionGoal, getMissionScope, rememberFact } from '../lead-engine.js';
 import { applyApprovalDecisionInDb, autoStartLiveMissionTasks, createMissionInDb, updateMissionStatus } from '../hub/missions.js';
 import { handleCodeDecision, isCodeApproval, triggerItPrForMission } from '../hub/code-pipeline.js';
 import { handleDeliverableReviewDecision, handleStageGateDecision, isOpsMission, opsCycle, replanMission } from '../hub/lead-ops.js';
 import { buildApprovalDeliverable } from '../hub/deliverables.js';
 import { isCeoRequest } from '../hub/outsourcing-bridge.js';
 import { notifyAllApprovalChannels } from '../hub/notify.js';
-import { processTaskResult } from '../hub/task-results.js';
+import { processTaskResult, registerDeliverable } from '../hub/task-results.js';
 
 
 export function registerMissionsRoutes(app) {
@@ -626,6 +626,95 @@ export function registerMissionsRoutes(app) {
     task.updatedAt = new Date().toISOString();
     saveDb(db);
     return c.json({ task, state: sanitizeStateForClient(db) });
+  });
+
+  // 홈 "대표님이 하실 일"에서 보류된 작업에 바로 결정 (여러 건 한 번에 가능)
+  //  - retry: 피드백(선택)·담당 변경(선택)을 반영해 다시 맡김 → 대기열로 돌려 자동 실행
+  //  - accept: 지금 결과물 그대로 완료 처리 (결과물이 있을 때만)
+  //  - drop: 작업 접기 (반려, 다시 진행하지 않음)
+  app.post('/api/tasks/ceo-decision', async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const action = String(body.action || '');
+    if (!['retry', 'accept', 'drop'].includes(action)) return c.json({ error: '올바른 결정이 아닙니다 (retry · accept · drop).' }, 400);
+    const rawIds = Array.isArray(body.taskIds) ? body.taskIds : [body.taskId];
+    const ids = [...new Set(rawIds.map((x) => String(x || '').trim()).filter(Boolean))].slice(0, 50);
+    if (!ids.length) return c.json({ error: '결정할 작업을 골라 주세요.' }, 400);
+    const feedback = String(body.feedback || '').trim().slice(0, 1500);
+    const db = loadDb();
+    const nextAgent = body.assigneeId ? db.agents.find((a) => a.id === body.assigneeId) : null;
+    if (body.assigneeId && !nextAgent) return c.json({ error: '담당 AI를 찾을 수 없습니다.' }, 400);
+    const now = new Date().toISOString();
+    const stamp = new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' });
+    const done = [];
+    const skipped = [];
+    const touched = new Map();
+    for (const id of ids) {
+      const task = db.tasks.find((t) => t.id === id);
+      if (!task) {
+        skipped.push({ id, reason: '없는 작업' });
+        continue;
+      }
+      if (task.status !== 'blocked') {
+        skipped.push({ id, reason: `보류 상태가 아님 (${task.status})` });
+        continue;
+      }
+      const mission = db.missions.find((m) => m.id === task.missionId);
+      if (action === 'retry') {
+        const agent = nextAgent || db.agents.find((a) => a.id === task.assigneeId) || db.agents[0];
+        if (agent.id !== task.assigneeId) appendLog(db, 'CEO', `"${task.title}" 담당자를 ${agent.name}(으)로 바꿔 다시 맡겼습니다.`, 'info');
+        task.assigneeId = agent.id;
+        if (feedback) {
+          task.description = `${task.description || ''}\n[CEO 피드백] ${feedback}`.slice(0, 6000);
+          addLeadNote(task, 'ceo', `대표님 피드백(보류 해제): ${feedback}`);
+        }
+        task.previousOutput = String(task.output || '').slice(0, 1500);
+        task.output = '';
+        delete task.blockedReason;
+        task.reviewRounds = 0;
+        if (task.triage) task.triage = { ...task.triage, retries: 0, scopeRetries: 0 };
+        task.status = agent.connectionMode === 'bridge' ? 'awaiting_bridge' : 'queued';
+        if (mission) task.dispatchPrompt = buildDispatchPrompt(agent, task, mission);
+      } else if (action === 'accept') {
+        if (!String(task.output || '').trim()) {
+          skipped.push({ id, reason: '결과물이 없어 완료 처리할 수 없음' });
+          continue;
+        }
+        task.status = 'completed';
+        task.output = `${task.output}\n\n---\n**대표님 확인 후 완료 처리** (${stamp})${feedback ? `\n- 대표님 메모: ${feedback}` : ''}`;
+        delete task.blockedReason;
+        registerDeliverable(db, mission, task, db.agents.find((a) => a.id === task.assigneeId));
+      } else {
+        task.status = 'rejected';
+        task.output = `${task.output || ''}\n\n---\n**대표님이 작업을 접음** (${stamp})${feedback ? `\n- 사유: ${feedback}` : ''}`.trim();
+        delete task.blockedReason;
+      }
+      task.ceoDecision = { action, feedback, at: now };
+      task.updatedAt = now;
+      done.push(id);
+      if (mission) {
+        if (!touched.has(mission.id)) touched.set(mission.id, []);
+        touched.get(mission.id).push(task.title);
+      }
+    }
+    if (done.length) {
+      const label = { retry: '피드백 주고 다시 맡김', accept: '이대로 완료', drop: '작업 접음' }[action];
+      appendLog(db, 'CEO', `보류 작업 ${done.length}건 결정: ${label}${feedback ? ` — "${feedback.slice(0, 120)}"` : ''}`, action === 'drop' ? 'warning' : 'info');
+      for (const [missionId, titles] of touched) {
+        updateMissionStatus(db, missionId);
+        rememberFact(db, {
+          kind: 'decision',
+          missionId,
+          text: `보류 작업 ${label}: ${titles.slice(0, 3).join(', ')}${titles.length > 3 ? ` 외 ${titles.length - 3}건` : ''}${feedback ? ` — 대표님 피드백: ${feedback}` : ''}`,
+          source: 'ceo_todo'
+        });
+      }
+      saveDb(db);
+      await flushCloudBackup(db);
+      if (action === 'retry') {
+        for (const missionId of touched.keys()) setTimeout(() => autoStartLiveMissionTasks(missionId).catch(() => {}), 1500);
+      }
+    }
+    return c.json({ ok: true, action, done, skipped, state: sanitizeStateForClient(db) });
   });
 
   // Approval Deliverable (.md) download / preview
