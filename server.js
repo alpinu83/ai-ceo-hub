@@ -1,7 +1,9 @@
 import { importQuotaState } from './src/ai-guard.js';
 import { Hono } from 'hono';
 import { buildCompanyContext, ensureLeadDefaults } from './src/lead-engine.js';
+import { compress } from 'hono/compress';
 import { cors } from 'hono/cors';
+import crypto from 'node:crypto';
 import { ensureVapidKeys } from './src/push.js';
 import fs from 'node:fs';
 import { getRequestListener } from '@hono/node-server';
@@ -44,8 +46,18 @@ const MIME_TYPES = {
   '.yaml': 'text/yaml; charset=utf-8'
 };
 
+function matchesIfNoneMatch(headerVal, etagVal) {
+  if (!headerVal || !etagVal) return false;
+  const norm = (s) => String(s || '').trim().replace(/^W\//i, '');
+  const target = norm(etagVal);
+  return String(headerVal)
+    .split(',')
+    .some((part) => part.trim() === '*' || norm(part) === target);
+}
+
 const app = new Hono();
-app.use('*', cors());
+app.use('*', cors({ exposeHeaders: ['ETag'] }));
+app.use('*', compress());
 registerAuthRoutes(app);
 registerSystemRoutes(app);
 registerChatRoutes(app);
@@ -58,7 +70,7 @@ registerShortsRoutes(app);
 registerLeadDeskRoutes(app);
 registerUsageRoutes(app);
 
-// Static Frontend Assets
+// Static Frontend Assets (ETag + 304 revalidation to avoid re-sending unchanged bundles)
 app.get('*', (c) => {
   const pathname = new URL(c.req.url).pathname;
   const relPath = pathname === '/' ? '/index.html' : pathname;
@@ -68,16 +80,27 @@ app.get('*', (c) => {
   if (fullPath.startsWith(PUBLIC_DIR) && fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
     const ext = path.extname(fullPath);
     const content = fs.readFileSync(fullPath);
-    const headers = { 'Content-Type': MIME_TYPES[ext] || 'application/octet-stream' };
+    const etag = `W/"${crypto.createHash('sha256').update(content).digest('hex').slice(0, 16)}"`;
+    const headers = { 'Content-Type': MIME_TYPES[ext] || 'application/octet-stream', ETag: etag };
     if (ext === '.html' || ext === '.js' || ext === '.css' || ext === '.webmanifest') {
-      headers['Cache-Control'] = 'no-cache, no-store, must-revalidate';
+      headers['Cache-Control'] = 'no-cache, must-revalidate';
+    } else {
+      headers['Cache-Control'] = 'public, max-age=86400';
+    }
+    if (matchesIfNoneMatch(c.req.header('if-none-match'), etag)) {
+      return c.body(null, 304, { ETag: etag, 'Cache-Control': headers['Cache-Control'] });
     }
     return c.body(content, 200, headers);
   }
   const indexHtml = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
+  const indexEtag = `W/"${crypto.createHash('sha256').update(indexHtml).digest('hex').slice(0, 16)}"`;
+  if (matchesIfNoneMatch(c.req.header('if-none-match'), indexEtag)) {
+    return c.body(null, 304, { ETag: indexEtag, 'Cache-Control': 'no-cache, must-revalidate' });
+  }
   return c.body(indexHtml, 200, {
     'Content-Type': 'text/html; charset=utf-8',
-    'Cache-Control': 'no-cache, no-store, must-revalidate'
+    'Cache-Control': 'no-cache, must-revalidate',
+    ETag: indexEtag
   });
 });
 
