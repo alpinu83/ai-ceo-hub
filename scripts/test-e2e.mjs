@@ -1464,6 +1464,83 @@ async function runTests() {
       assert.equal(auditInspect.lastSystemAudit?.healthStatus, 'action_needed', 'lastSystemAudit must reflect completed audit');
     }
 
+    // 20. 결재 승인 의견(ceoNote)이 고정 기억·회의실·같은 업무의 대기 중인 봇 업무·팀장 컨텍스트에 바로 반영되는지 검증
+    {
+      const { isStandingOrder, buildCompanyContext } = await import('../src/lead-engine.js');
+      assert.equal(isStandingOrder('콘솔 등록은 이미 해놨어'), true, 'status decision (이미 해놨어) must be a standing order');
+      assert.equal(isStandingOrder('정산은 나중에 등록한다'), true, 'deferral decision (나중에 등록) must be a standing order');
+      assert.equal(isStandingOrder('Aside가 후속 진행하면 돼'), true, 'follow-up decision (후속 진행) must be a standing order');
+      assert.equal(isStandingOrder('콘솔 등록 이미 했어?'), false, 'questions are not standing orders');
+
+      const noteMission = await (
+        await fetch(`${BASE}/api/missions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: 'CI 결재 의견 반영 미션',
+            domain: 'business',
+            costPolicy: 'balanced',
+            directive: '제안서 초안을 만들고 매일 아침 경쟁사 브리핑 세팅하고 식당 예약 준비해줘'
+          })
+        })
+      ).json();
+      const noteMissionId = noteMission.mission.id;
+      assert.ok(noteMission.tasks.length >= 2, 'note mission needs an approval task and at least one other pending task');
+      const noteTaskId = noteMission.tasks[0].id;
+
+      const noteAprRes = await (
+        await fetch(`${BASE}/api/mcp`, {
+          method: 'POST',
+          headers: mcpHeaders,
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 120,
+            method: 'tools/call',
+            params: { name: 'request_ceo_approval', arguments: { task_id: noteTaskId, title: 'CI 콘솔 등록 결재', summary: '콘솔 등록 진행 여부', proposed_action: '승인 시 후속 진행' } }
+          })
+        })
+      ).json();
+      const noteAprId = JSON.parse(noteAprRes.result.content[0].text).approval_id;
+      assert.ok(noteAprId, 'approval for note test must be created');
+
+      const approvalNote = '콘솔 등록은 이미 완료해서 Aside가 후속 진행 가능, 정산은 나중에 등록';
+      const noteDecide = await (
+        await fetch(`${BASE}/api/approvals/${encodeURIComponent(noteAprId)}/decide`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ decision: 'approved', ceoNote: approvalNote })
+        })
+      ).json();
+      assert.equal(noteDecide.approval?.status, 'approved', 'approval with CEO note should succeed');
+      assert.equal(noteDecide.approval?.missionId, noteMissionId, 'approval must belong to the note mission');
+      const noteState = noteDecide.state;
+
+      // 1) 고정 기억(pinned: true)
+      const noteFact = (noteState.memory?.facts || []).find((f) => f.source === 'approval_note' && f.missionId === noteMissionId && String(f.text || '').includes(approvalNote));
+      assert.ok(noteFact && noteFact.pinned === true, 'approved CEO note must be saved as a pinned company memory');
+      assert.ok(noteFact.text.startsWith('[대표님 결재 의견]'), 'pinned CEO note must be labeled');
+
+      // 2) 회의실 + 미완료 봇 업무(leadNotes·dispatchPrompt)
+      assert.ok(
+        (noteState.messages || []).some((m) => m.missionId === noteMissionId && m.statusText === '대표님 결재 의견 반영' && String(m.text || '').includes(approvalNote)),
+        'approved CEO note must be posted to the meeting room'
+      );
+      const pendingNoteTasks = (noteState.tasks || []).filter((t) => t.missionId === noteMissionId && t.id !== noteTaskId && ['awaiting_bridge', 'queued'].includes(t.status));
+      assert.ok(pendingNoteTasks.length >= 1, 'note mission must keep at least one pending task');
+      for (const t of pendingNoteTasks) {
+        assert.ok((t.leadNotes || []).some((n) => n.kind === 'ceo_memo' && n.text.includes(approvalNote)), `pending task "${t.title}" must get the CEO note in leadNotes`);
+        assert.ok(String(t.dispatchPrompt || '').includes('콘솔 등록은 이미 완료'), `pending task "${t.title}" dispatchPrompt must include the CEO note`);
+      }
+      const decidedTask = noteState.tasks.find((t) => t.id === noteTaskId);
+      assert.equal(decidedTask?.status, 'completed', 'approved task itself is completed');
+      assert.ok(!(decidedTask.leadNotes || []).some((n) => n.kind === 'ceo_memo'), 'approved task itself must not get the propagated memo');
+
+      // 3) 팀장 컨텍스트(compact)의 프로젝트 고정 지침에 포함
+      const compactCtx = buildCompanyContext(structuredClone(noteState), noteMissionId, { compact: true });
+      const pinnedBlock = compactCtx.split('\n\n').find((p) => p.includes('업무에 대한 대표님 고정 지침')) || '';
+      assert.ok(pinnedBlock.includes(approvalNote), 'compact company context must include the pinned CEO approval note');
+    }
+
     // Clean reset after tests
     await fetch(`${BASE}/api/reset`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: 'RESET-ALL-DATA' }) });
     console.log('✅ All AI CEO Hub E2E tests (REST + Continuous Project Loop + Team Lead Chat + Official MCP SDK + Async Pickle HTTPS Inbox + Heartbeat + Cascade Delete + Web Push + Telegram) passed!');
