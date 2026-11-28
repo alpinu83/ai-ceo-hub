@@ -17,7 +17,7 @@
 | `routines.js` | 루틴 업무, 정기 점검, 워치독 |
 
 ## HTTP 라우트 `src/routes/`
-`auth`(관리자 키·텔레그램 로그인), `system`(상태·헬스·푸시·내보내기), `chat`, `agent-inbox`, `missions`(프로젝트·작업·결재), `routines`, `outsourcing`, `settings`(팀원·설정·스킬·기억).
+`auth`(관리자 키·텔레그램 로그인), `system`(상태·헬스·푸시·내보내기), `chat`, `agent-inbox`, `missions`(프로젝트·작업·결재), `routines`, `outsourcing`, `settings`(팀원·설정·스킬·기억), `usage`(AI 사용량·한도 위젯).
 등록 순서는 `server.js`에 있으며, 인증 미들웨어가 가장 먼저 등록되어야 합니다.
 
 ## 운영 방식
@@ -40,3 +40,12 @@
 - 코드 작업은 `routeCodeTask`가 개발 지침(`settings.devPolicy`, 설정 → 협업·개발 지침)대로 보냄. 팀장 계획의 `codeSize`(small/large)·`risky`와 제목 키워드로 분류.
   - 기본: 작은 수정 → Aside / 큰 구현 → AGY 구현 + Aside 검수(`agy_then_aside`) / 위험·애매 → Aside 설계(`design_first`) → 결재(`kind: dev_design`) → AGY 구현 + Aside 검수 / 운영 장애 → Aside
 - IT 유지보수팀(무료 API)은 폐지(`retired`). 활성 IT 팀원이 없으면 코드 결재·IT PR 버튼도 AGY+Aside로(`itTeamAvailable`, `outsourceCodeToAgy`).
+
+## AI 사용량·한도 위젯 (좌측 메뉴 하단)
+- `src/subscription-usage.js`: 구독형 AI 3종(Aside·Claude / AGY / Gemini 앱) 사용량 집계. import 없는 순수 함수라 `store.js`의 `sanitizeStateForClient`가 `state.subscriptionUsage`로 바로 붙인다.
+  - 자동 집계: `db.outsourcing[].history`(submitted · needs_ceo · passed · review_rework · escalated) + `db.leadJobs`(doneAt, agy_lead → AGY, gemini_app → Gemini 앱). 최근 5시간 / 오늘(KST 0시~) 건수.
+  - 목표 상한: `db.settings.subscriptionLimits` (기본 Aside 5시간 40건 · AGY 하루 15건 · Gemini 앱 하루 30건). 80% 이상 주황, 100% 또는 한도 도달 빨강.
+  - 잔여량 스냅샷(선택): `db.subscriptionSnapshots[worker]` = { remainingPercent, resetAt, limited, note, at }. 리셋 시각 전(없으면 지금 집계 구간 안)만 유효하고, 이후 Hub 처리 건수만큼 `100/상한`%씩 빼서 추정 잔여를 보여 준다.
+  - 접속 상태: `agentConnections`의 `worker:aside` · `worker:antigravity`/`lead:agy_lead` · `worker:gemini`/`lead:gemini_app` (5분 안 접속 = 접속 중).
+- HTTP (`src/routes/usage.js`): `GET /api/ops/usage`, `POST /api/ops/usage-limits`(CEO), `POST /api/ops/usage-snapshot`(CEO 키 또는 MCP 토큰 — `auth.js` ADMIN_OPEN_PATHS에 이 경로만 열고 라우트에서 직접 인증).
+- 화면: `public/index.html` `#ai-usage-widget`(`</nav>`와 `.sidebar-footer` 사이) + `#usage-modal-backdrop` 팝업, `public/app.js` `renderUsageWidget`·`bindUsageWidget`.
