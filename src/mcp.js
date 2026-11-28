@@ -36,6 +36,7 @@ export const MCP_TOOL_CATALOG = [
   { name: 'request_ceo_action', description: '로그인 등 대표님 개입이 필요할 때 멈추고 알림' },
   { name: 'pass_outsourcing_request', description: '내가 못 하는 외주를 다른 작업자에게 넘기기' },
   { name: 'request_aside_review', description: '대표님 지시 시 열려 있는 GitHub PR을 사내 개발팀 Aside 검수 큐로 바로 넘기기' },
+  { name: 'request_aside_task', description: '대표님 지시 시 코드 구현·로그인 브라우저 작업·설계·리서치 요청을 사내 개발팀 Aside 작업 큐로 바로 넘기기' },
   { name: 'list_lead_jobs', description: '팀장 업무함: 대기 중인 팀장 판단(검수·작전 계획) 목록' },
   { name: 'claim_lead_job', description: '팀장 판단 요청을 잡고 판단 자료·답안 형식 받기' },
   { name: 'submit_lead_job', description: '팀장 판단 결과(JSON) 제출' }
@@ -623,6 +624,133 @@ export function createCeoMcpServer() {
                 target: 'aside',
                 review_stage: 'aside_review',
                 note: `Aside 검수 큐에 등록했습니다 (${req.id}). Aside 워처가 자동으로 가져가 검수한 뒤 통과 시 결재함에 올리고, 수정 필요 시 AGY로 반려합니다.`
+              },
+              null,
+              2
+            )
+          }
+        ]
+      };
+    }
+  );
+
+  server.tool(
+    'request_aside_task',
+    '대표님이 지시한 코드 수정·기능 구현·로그인 브라우저 작업·설계·리서치를 사내 개발팀 Aside 작업 큐로 바로 넘깁니다(온디맨드). Aside가 처리 후 결과를 제출하면 결재함/회의실로 전달됩니다.',
+    {
+      kind: z.enum(['code', 'browser', 'task', 'research']).describe('작업 유형: code(코드 수정·PR) / browser(로그인·콘솔·실측) / task(설계·원인 분석·일반 개발) / research(심층 조사)'),
+      title: z.string().describe('작업 제목 (간결하고 명확하게)'),
+      goal: z.string().describe('구체적인 요구사항, 수정 범위, 완료 기준 (최소 10자 이상)'),
+      repo: z.string().optional().describe('code 작업일 때 대상 GitHub 저장소 (예: alpinu83/ai-ceo-hub, alpinu83/kr-calc-hub)'),
+      branch: z.string().optional().describe('기준 브랜치 (기본: main)'),
+      site_url: z.string().optional().describe('browser/실측 작업일 때 대상 URL'),
+      deliverable: z.string().optional().describe('기대 산출물 형식 (예: PR + 테스트 결과, 설계 마크다운 문서, 실측 표)'),
+      context: z.string().optional().describe('배경 맥락·참고 파일·제약 사항'),
+      mission_id: z.string().optional().describe('연결할 프로젝트(missionId), 생략 시 저장소 기준으로 자동 매칭')
+    },
+    async ({ kind, title, goal, repo = '', branch = 'main', site_url = '', deliverable = '', context = '', mission_id = '' }) => {
+      const cleanTitle = String(title || '').trim().slice(0, 120);
+      const cleanGoal = String(goal || '').trim().slice(0, 5000);
+      if (!cleanTitle || cleanGoal.length < 10) {
+        return { isError: true, content: [{ type: 'text', text: 'title과 goal(10자 이상)을 구체적으로 입력해 주세요.' }] };
+      }
+      const db = loadDb();
+      let cleanRepo = String(repo || '').trim();
+      if (kind === 'code') {
+        if (!cleanRepo) cleanRepo = 'alpinu83/ai-ceo-hub';
+        if (!/^[\w.-]+\/[\w.-]+$/.test(cleanRepo)) {
+          return { isError: true, content: [{ type: 'text', text: `올바른 저장소 형식이 아닙니다(owner/repo): ${cleanRepo}` }] };
+        }
+        const cfg = getGithubRepoConfig(db.settings, { repo: cleanRepo });
+        if (Array.isArray(cfg.allowedRepos) && cfg.allowedRepos.length > 0 && !cfg.allowedRepos.includes(cleanRepo)) {
+          return { isError: true, content: [{ type: 'text', text: `허용 목록에 없는 저장소입니다: ${cleanRepo}` }] };
+        }
+      }
+
+      const normTitle = cleanTitle.toLowerCase().replace(/\s+/g, '');
+      const existing = (db.outsourcing || []).find(
+        (r) =>
+          r.pinnedWorker === 'aside' &&
+          r.kind === kind &&
+          ['open', 'claimed'].includes(r.status) &&
+          String(r.title || '').toLowerCase().replace(/\s+/g, '') === normTitle
+      );
+      if (existing) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(
+                {
+                  ok: true,
+                  created: false,
+                  alreadyQueued: true,
+                  request_id: existing.id,
+                  kind: existing.kind,
+                  target: 'aside',
+                  status: existing.status,
+                  note: `동일한 Aside 요청이 이미 대기 중입니다 (${existing.id}).`
+                },
+                null,
+                2
+              )
+            }
+          ]
+        };
+      }
+
+      const mission =
+        (mission_id ? (db.missions || []).find((m) => m.id === mission_id) : null) ||
+        (cleanRepo ? (db.missions || []).find((m) => String(m.githubRepo || '').toLowerCase() === cleanRepo.toLowerCase()) : null) ||
+        (db.missions || []).find((m) => m.mode === 'project' && !m.isRoutineHub) ||
+        null;
+
+      const defaultDeliverable =
+        kind === 'code'
+          ? '브랜치 작업 + 테스트 통과 + PR 생성 후 PR 주소(prUrl)와 변경 요약을 submit (main 직접 푸시·보호 파일 수정 금지)'
+          : kind === 'browser'
+            ? '실제 확인한 화면/지표 사실 정리(확인 시각·출처 포함, 확인 불가 항목은 미확인 표기)'
+            : '바로 활용할 수 있는 마크다운 결과 문서';
+
+      const made = createOutsourcingRequest(db, {
+        kind,
+        worker: 'aside',
+        pinnedWorker: 'aside',
+        missionId: mission?.id || '',
+        repo: kind === 'code' ? cleanRepo : '',
+        branch: String(branch || 'main').trim() || 'main',
+        siteUrl: String(site_url || mission?.siteUrl || '').trim(),
+        title: cleanTitle,
+        goal: cleanGoal,
+        deliverable: String(deliverable || '').trim().slice(0, 1200) || defaultDeliverable,
+        context: String(context || '').trim().slice(0, 4000),
+        reason: `대표님 지시 Aside 직접 위임 (${kind})`,
+        createdBy: 'antigravity'
+      });
+      const req = made.request;
+      appendLog(db, '개발팀 (Aside 위임)', `[${kind}] "${cleanTitle}" → Aside 작업 큐 등록 (${req.id})`, 'info');
+      saveDb(db);
+      await flushCloudBackup(db);
+      sendTelegramReport(
+        db.settings,
+        `Aside 작업 위임 ${req.id}`,
+        `[${kind}] "${cleanTitle}"${cleanRepo ? `\n저장소: ${cleanRepo}` : ''}\n→ Aside 작업 큐에 자동 등록했습니다.`,
+        `asidetask:${req.id}`
+      ).catch(() => {});
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              {
+                ok: true,
+                created: made.created,
+                request_id: req.id,
+                kind: req.kind,
+                repo: req.repo || '',
+                target: 'aside',
+                note: `Aside 작업 큐에 등록했습니다 (${req.id}). Aside 워처가 자동으로 가져가 처리한 뒤 결과를 Hub에 제출합니다.`
               },
               null,
               2
