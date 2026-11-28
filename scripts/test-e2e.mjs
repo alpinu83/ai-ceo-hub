@@ -1763,6 +1763,47 @@ async function runTests() {
       );
     }
 
+    // 23. Bandwidth Optimization: Gzip Compression + ETag/304 Conditional Polling + Vendor Cache-Control
+    {
+      const stateRes1 = await fetch(`${BASE}/api/state`, { headers: { 'Accept-Encoding': 'gzip' } });
+      assert.equal(stateRes1.status, 200, 'initial /api/state returns 200');
+      assert.equal(stateRes1.headers.get('content-encoding'), 'gzip', '/api/state must be gzip-compressed');
+      const etag1 = stateRes1.headers.get('etag');
+      assert.ok(etag1 && etag1.startsWith('W/"'), '/api/state must include weak ETag');
+      assert.ok(String(stateRes1.headers.get('access-control-expose-headers') || '').toLowerCase().includes('etag'), 'CORS must expose ETag header');
+      await stateRes1.json();
+
+      // Unchanged poll with If-None-Match -> 304 Not Modified (0 bytes)
+      const stateRes304 = await fetch(`${BASE}/api/state`, { headers: { 'If-None-Match': etag1 } });
+      assert.equal(stateRes304.status, 304, 'unchanged /api/state must return 304 Not Modified');
+      assert.equal(await stateRes304.text(), '', '304 response body must be empty');
+
+      // Mutate state -> old ETag must return 200 with a fresh ETag
+      const mutRes = await fetch(`${BASE}/api/ops/usage-limits`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ aside: { limit: 42 } })
+      });
+      assert.equal(mutRes.status, 200, 'usage limit mutation succeeds');
+      const stateRes2 = await fetch(`${BASE}/api/state`, { headers: { 'If-None-Match': etag1 } });
+      assert.equal(stateRes2.status, 200, 'mutated /api/state must return 200');
+      const etag2 = stateRes2.headers.get('etag');
+      assert.ok(etag2 && etag2 !== etag1, 'mutated /api/state must emit a new ETag');
+
+      // Static asset ETag/304 + vendor bundle Cache-Control
+      const jsRes1 = await fetch(`${BASE}/app.js`, { headers: { 'Accept-Encoding': 'gzip' } });
+      assert.equal(jsRes1.status, 200, '/app.js returns 200');
+      assert.equal(jsRes1.headers.get('content-encoding'), 'gzip', '/app.js must be gzip-compressed');
+      const jsEtag = jsRes1.headers.get('etag');
+      assert.ok(jsEtag, '/app.js must include ETag');
+      const jsRes304 = await fetch(`${BASE}/app.js`, { headers: { 'If-None-Match': jsEtag } });
+      assert.equal(jsRes304.status, 304, 'unchanged /app.js must return 304 Not Modified');
+
+      const vendorRes = await fetch(`${BASE}/vendor/lucide.min.js`, { headers: { 'Accept-Encoding': 'gzip' } });
+      assert.equal(vendorRes.status, 200, '/vendor/lucide.min.js returns 200');
+      assert.ok(String(vendorRes.headers.get('cache-control') || '').includes('max-age='), 'vendor bundle must set long-term Cache-Control');
+    }
+
     // Clean reset after tests
     await fetch(`${BASE}/api/reset`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: 'RESET-ALL-DATA' }) });
     console.log('✅ All AI CEO Hub E2E tests (REST + Continuous Project Loop + Team Lead Chat + Official MCP SDK + Async Pickle HTTPS Inbox + Heartbeat + Cascade Delete + Web Push + Telegram) passed!');

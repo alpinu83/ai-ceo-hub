@@ -470,6 +470,8 @@ async function detectRuntime() {
   apiBase = '';
 }
 
+let lastStateEtag = '';
+
 async function api(url, options = {}) {
   if (runtimeMode === 'standalone') {
     return standaloneApi(url, options);
@@ -488,6 +490,11 @@ async function api(url, options = {}) {
       ...(options.headers || {})
     }
   });
+  if (res.status === 304) return null;
+  if (url === '/api/state' && (!options.method || String(options.method).toUpperCase() === 'GET')) {
+    const etag = res.headers.get('etag');
+    if (etag) lastStateEtag = etag;
+  }
   const ct = res.headers.get('content-type') || '';
   const data = ct.includes('application/json') ? await res.json().catch(() => ({})) : await res.text();
   if (res.status === 401 && typeof data === 'object' && data.code === 'CEO_KEY_REQUIRED' && !options._keyRetried) {
@@ -5414,14 +5421,15 @@ async function init() {
     if (policyEl) policyEl.value = state.settings.defaultCostPolicy || 'free_first';
     renderAll();
 
-    // Auto-sync live server state (auto-running EXAONE tasks, Pickle/Cue/Muse reports, PC↔Mobile changes)
+    // Auto-sync live server state (ETag 304 conditional polling — 0 bytes when unchanged)
     if (runtimeMode === 'server') {
-      setInterval(async () => {
+      const syncState = async () => {
         if (isPlayingLiveSession || document.hidden || isVoiceListening()) return;
         const activeTag = document.activeElement?.tagName;
         if (activeTag === 'INPUT' || activeTag === 'TEXTAREA' || activeTag === 'SELECT') return;
         try {
-          const fresh = await api('/api/state');
+          const fresh = await api('/api/state', lastStateEtag ? { headers: { 'If-None-Match': lastStateEtag } } : {});
+          if (!fresh) return; // HTTP 304 Not Modified
           const prevSig = `${(state?.messages || []).length}|${(state?.tasks || []).map((t) => t.status).join(',')}|${(state?.approvals || []).filter((a) => a.status === 'pending').length}|${(state?.logs || []).length}|${(state?.missions || []).map((m) => (m.finalReport || '').length).join(',')}`;
           const newSig = `${(fresh?.messages || []).length}|${(fresh?.tasks || []).map((t) => t.status).join(',')}|${(fresh?.approvals || []).filter((a) => a.status === 'pending').length}|${(fresh?.logs || []).length}|${(fresh?.missions || []).map((m) => (m.finalReport || '').length).join(',')}`;
           if (newSig !== prevSig) {
@@ -5434,14 +5442,18 @@ async function init() {
               toast(`${latest.senderName} 님의 새 보고가 도착했습니다.`);
             }
           } else if (fresh?.subscriptionUsage && state) {
-            // 다른 변화가 없어도 AI 사용량 위젯(접속·건수)은 매번 갱신
+            // 다른 변화가 없어도 AI 사용량 위젯(접속·건수)은 변경된 200 응답에서 갱신
             state.subscriptionUsage = fresh.subscriptionUsage;
             renderUsageWidget();
           }
         } catch {
           // ignore transient network glitches
         }
-      }, 5000);
+      };
+      setInterval(syncState, 15000);
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) syncState();
+      });
     }
   } catch (err) {
     toast(`초기 데이터 로드 실패: ${err.message}`, true);

@@ -4,6 +4,7 @@ import { MCP_TOOL_CATALOG } from '../mcp.js';
 import { allowDataWipeOnce, listBackupRevisions, restoreBackupRevision, createDefaultState, flushCloudBackup, getCloudPersistenceStatus, loadDb, sanitizeStateForClient, saveDb } from '../store.js';
 import { describeRouting } from '../outsourcing.js';
 import { ensureVapidKeys, sendWebPushNotification } from '../push.js';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { getAiProviderHealth } from '../ai-guard.js';
 import { handleTelegramUpdate, isTelegramPollingActive, syncTelegramPolling, testTelegramBot } from '../telegram.js';
@@ -97,12 +98,18 @@ export function registerSystemRoutes(app) {
   // Open-source vendor bundles served directly from node_modules
   app.get('/vendor/marked.umd.js', (c) => {
     const file = fs.readFileSync(path.join(ROOT_DIR, 'node_modules/marked/lib/marked.umd.js'), 'utf8');
-    return c.body(file, 200, { 'Content-Type': 'application/javascript; charset=utf-8' });
+    return c.body(file, 200, {
+      'Content-Type': 'application/javascript; charset=utf-8',
+      'Cache-Control': 'public, max-age=604800'
+    });
   });
 
   app.get('/vendor/lucide.min.js', (c) => {
     const file = fs.readFileSync(path.join(ROOT_DIR, 'node_modules/lucide/dist/umd/lucide.min.js'), 'utf8');
-    return c.body(file, 200, { 'Content-Type': 'application/javascript; charset=utf-8' });
+    return c.body(file, 200, {
+      'Content-Type': 'application/javascript; charset=utf-8',
+      'Cache-Control': 'public, max-age=604800'
+    });
   });
 
   // State & Open-Source Stack Info
@@ -116,7 +123,20 @@ export function registerSystemRoutes(app) {
   app.get('/api/state', (c) => {
     const db = loadDb();
     if (ensureRoutines(db)) saveDb(db);
-    return c.json({ ...sanitizeStateForClient(db), aiHealth: getAiProviderHealth(), outsourcingRouting: describeRouting(db.settings) });
+    const payload = { ...sanitizeStateForClient(db), aiHealth: getAiProviderHealth(), outsourcingRouting: describeRouting(db.settings) };
+    // subscriptionUsage.updatedAt은 호출 시각마다 달라지므로 ETag 해시에서만 제외 (실제 상태·사용량·접속 변화는 즉시 반영)
+    const hashInput = payload.subscriptionUsage
+      ? { ...payload, subscriptionUsage: { ...payload.subscriptionUsage, updatedAt: '' } }
+      : payload;
+    const etag = `W/"${crypto.createHash('sha256').update(JSON.stringify(hashInput)).digest('hex').slice(0, 16)}"`;
+    const inm = c.req.header('if-none-match') || '';
+    const norm = (s) => String(s || '').trim().replace(/^W\//i, '');
+    if (inm && inm.split(',').some((p) => p.trim() === '*' || norm(p) === norm(etag))) {
+      return c.body(null, 304, { ETag: etag, 'Cache-Control': 'no-cache' });
+    }
+    c.header('ETag', etag);
+    c.header('Cache-Control', 'no-cache');
+    return c.json(payload);
   });
 
   app.get('/api/oss-stack', (c) => {
