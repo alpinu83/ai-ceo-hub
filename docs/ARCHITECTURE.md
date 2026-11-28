@@ -49,3 +49,7 @@
   - 접속 상태: `agentConnections`의 `worker:aside` · `worker:antigravity`/`lead:agy_lead` · `worker:gemini`/`lead:gemini_app` (5분 안 접속 = 접속 중).
 - HTTP (`src/routes/usage.js`): `GET /api/ops/usage`, `POST /api/ops/usage-limits`(CEO), `POST /api/ops/usage-snapshot`(CEO 키 또는 MCP 토큰 — `auth.js` ADMIN_OPEN_PATHS에 이 경로만 열고 라우트에서 직접 인증).
 - 화면: `public/index.html` `#ai-usage-widget`(`</nav>`와 `.sidebar-footer` 사이) + `#usage-modal-backdrop` 팝업, `public/app.js` `renderUsageWidget`·`bindUsageWidget`.
+- 대표님 PC 자동 스냅샷 (`scripts/windows/`, 서버 변경 없음):
+  - `ceo-hub-usage-reporter.ps1`(Aside·Claude): 5분마다 Claude Code 로컬 세션 기록(`%USERPROFILE%\.claude\projects\**\*.jsonl`)으로 현재 5시간 블록의 리셋 시각을 계산하고, 그 기록이나 Aside 감시기 작업 로그(`%LOCALAPPDATA%\CeoHubWatcher\task-*.log`)에 사용 한도 도달·429 문구가 있으면 `limited: true`로 보낸다. 상태가 바뀔 때(또는 60분마다)만 전송. `remainingPercent`는 `config.json`의 `claudeTokenBudget5h`(대표님이 정한 예산)를 넣었을 때만 추정해 보낸다. `-Worker <id> -Limited -ResetAt ...`로 수동·훅 1회 전송도 된다.
+  - `ceo-hub-agy-watcher.ps1` · `ceo-hub-agy-lead-watcher.ps1`(AGY): agy.exe 실행 결과 stderr(또는 비정상 종료 시 stdout 끝부분)에 quota·rate-limit·429·RESOURCE_EXHAUSTED가 있으면 `worker: 'agy', limited: true`(재시도 시각이 있으면 `resetAt`)로 보고하고, 다음 정상 완료 때 `limited: false`로 해제한다. 해제는 감시기가 올린 한도만 풀어 대표님의 수동 남은 % 스냅샷을 덮지 않는다. 두 감시기는 `%LOCALAPPDATA%\CeoHubAgyWatcher\usage-state.json`을 같이 쓴다. GitHub rate-limit 문구는 제외하며, 보고 실패는 로그만 남기고 감시기를 멈추지 않는다.
+  - Gemini 앱은 로컬에서 남은 %를 읽을 방법이 없어 Hub 처리 건수 + 수동 스냅샷 기준을 유지한다.
