@@ -486,13 +486,24 @@ const AI_FAIL_RE = /(AI\s*(모델|엔진)?\s*호출\s*(실패|오류)|모델\s*�
 const CANNOT_RE = /(접근(이|할 수)?\s*(불가|없)|확인할 수 없|실행할 수 없|진행할 수 없|작성할 수 없|생성(이|할 수)?\s*(불가|없)|제공해\s*주(세요|십시오|시면)|알려\s*주(세요|십시오|시면)|미지정|지정되지 않|권한(이)?\s*(없|필요)|토큰(이)?\s*(없|필요)|정보가 (없|부족)|자료가 (없|부족))/;
 const LOGIN_RE = /(로그인|콘솔|계정 (설정|접속|등록)|애드센스|adsense|서치\s*콘솔|search\s*console|\bGSC\b|\bGA4\b|유튜브\s*스튜디오|youtube\s*studio|비공개\s*업로드|2단계|본인\s*인증|결제 수단)/i;
 const REPO_RE = /(저장소|repo|github|깃허브|\bPR\b|풀\s*리퀘|브랜치|커밋|파일 구조|기존 코드)/i;
+// 지시 상충·모순·중단/종료 확인 요청: 정보 부족이 아니라 대표님(팀장) 결정이 필요한 보고 → "가정 세워 끝까지" 자동 반려 금지
+const CONFLICT_RE = /(상충|정반대|모순|지시[가이]?\s*(서로\s*)?(충돌|엇갈)|어느\s*(쪽|것|지시)[이가]?\s*(유효|맞|우선)|(중단|종료)\s*(여부|인지|할지|하라는)|확정(된)?\s*지시|지시[를가]?\s*확정|(대표님|CEO)[^\n]{0,40}(중단|종료)|(중단|종료)\s*(지시|결정|요청)|(중단|종료)[^\n]{0,30}확정)/i;
+
+/** 지시 상충·중단 확인 보고면 근거 문구(짧게)를, 아니면 '' */
+export function detectDirectiveConflict(text = '') {
+  const t = String(text || '').replace(/[*#>]+/g, ' ').replace(/\s+/g, ' ').slice(0, 1500);
+  const m = t.match(CONFLICT_RE);
+  if (!m) return '';
+  const idx = Math.max(0, m.index - 60);
+  return t.slice(idx, idx + 160).trim();
+}
 
 /**
  * 팀원 결과가 "실제 결과물"이 아니라 못 한다는 말·정보 요청뿐인지 판단
  * osFlag: 팀원이 [외주 필요: 사유]를 단 경우 그 사유
  * opts.hasLimitations: 봇이 구조화된 limitations/blockers와 함께 부분 결과물을 제출한 경우
  */
-export function detectNonResult(output = '', osFlag = '', { hasLimitations = false } = {}) {
+export function detectNonResult(output = '', osFlag = '', { hasLimitations = false, reportText = '' } = {}) {
   const text = String(output || '');
   if (osFlag) return { nonResult: true, reason: osFlag };
   // AI 호출이 실패했다는 문구가 들어간 결과는 길이와 상관없이 결과물로 인정하지 않음 (실패를 완료로 보고하는 것 방지)
@@ -514,13 +525,17 @@ export function detectNonResult(output = '', osFlag = '', { hasLimitations = fal
   if (hasLimitations && substantive >= 400 && (hasTable || listCount >= 2 || urlCount >= 1)) {
     return { nonResult: false, reason: '' };
   }
+  // 지시 상충·중단 확인 보고는 빈 거절이 아님 → conflict로 표시해 "가정 지어내기" 반려 대신 확인 대기로 보냄
+  const conflict = detectDirectiveConflict(`${text}\n${reportText || ''}`);
+  if (conflict) return { nonResult: true, conflict: true, reason: `지시 상충·중단 확인 요청: ${conflict}` };
   const idx = Math.max(0, head.indexOf(m[0]) - 60);
   return { nonResult: true, reason: head.slice(idx, idx + 160).trim() };
 }
 
-/** 막힌 이유 분류: login(실제 계정 작업 → 외주) / repo(저장소 필요) / info(정보 부족) / capability(능력 부족) */
+/** 막힌 이유 분류: conflict(지시 상충·중단 확인 → 확인 대기) / login(실제 계정 작업 → 외주) / repo(저장소 필요) / info(정보 부족) / capability(능력 부족) */
 export function classifyBlocker(reason = '', { repoLinked = false } = {}) {
   const t = String(reason || '');
+  if (CONFLICT_RE.test(t)) return 'conflict';
   if (LOGIN_RE.test(t)) return 'login';
   if (REPO_RE.test(t)) return repoLinked ? 'capability' : 'repo';
   if (CANNOT_RE.test(t)) return 'info';
@@ -534,6 +549,9 @@ export function triageGuidance(blocker, { repoLinked = false, violations = [] } 
   }
   if (blocker === 'repo') {
     return '이 업무에는 연결된 저장소가 없습니다. 저장소·PR을 기다리지 말고, 바로 쓸 수 있는 결과물(새로 만들 파일의 경로와 전체 내용을 코드 블록으로, 또는 완성된 문서)을 만드세요. 저장소 연결은 팀장이 대표님께 따로 요청합니다.';
+  }
+  if (blocker === 'conflict') {
+    return '지시 상충·중단 여부 확인 요청을 접수했습니다. 가정으로 결과물을 지어내지 말고, 팀장·대표님의 확정 지시가 내려올 때까지 이 업무를 보류하세요. 추가 재시도하지 않아도 됩니다.';
   }
   if (blocker === 'info') {
     return '모르는 값은 합리적인 가정을 세우고 "가정:"으로 표시한 뒤 결과물을 끝까지 만드세요. 확인이 필요한 항목은 맨 끝에 "확인 필요" 목록으로 모으세요. 정보를 달라는 답만 쓰면 완료로 인정하지 않습니다.';
