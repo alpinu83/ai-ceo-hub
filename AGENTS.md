@@ -9,7 +9,7 @@
   - `src/outsourcing.js` · `src/hub/outsourcing-bridge.js` · `src/routes/outsourcing.js`: 외부 협업(Antigravity · Aside · Gemini 앱) 라우팅·2단계 코드 검수(`codeWorkflow: 'agy_then_aside'`)
   - `src/mcp.js`: 공식 `@modelcontextprotocol/sdk` Streamable HTTP MCP 서버 (`/api/mcp`)
   - `public/index.html` · `public/app.js` · `public/styles.css`: 프론트엔드 SPA (Render + GitHub Pages 공용)
-  - `scripts/windows/`: Windows 로컬 Antigravity 감시기 — 코딩 외주 (`ceo-hub-agy-watcher.ps1`, `install-agy-watcher.ps1`), 주간 팀장 업무함 (`ceo-hub-agy-lead-watcher.ps1`, `install-agy-lead-watcher.ps1`)
+  - `scripts/windows/`: Windows 로컬 Antigravity 감시기 — 코딩 외주 (`ceo-hub-agy-watcher.ps1`, `install-agy-watcher.ps1`), 주간 팀장 업무함 (`ceo-hub-agy-lead-watcher.ps1`, `install-agy-lead-watcher.ps1`), AI 사용량 자동 보고 (`ceo-hub-usage-reporter.ps1` — Aside·Claude 로컬 기록 → `POST /api/ops/usage-snapshot`; AGY 감시기 2종도 한도 초과·해제를 같은 API로 비차단 보고)
   - `scripts/test-e2e.mjs`: 통합 E2E 테스트 (`npm test`)
 
 ## 2. 절대 깨뜨리지 말아야 할 규칙 (Hard Invariants)
@@ -38,6 +38,7 @@
 3. **테스트 통과 필수**:
    - `node --check <변경된 .js 파일>`
    - `npm test` (통합 E2E — 100% 통과할 때까지 수정, 실패 상태로 PR 금지)
+   - **`npm test` 통과 전에는 어떤 브랜치도 push 금지** (`out/*`·`feat/*`·작업 중 WIP 포함). 실패한 push마다 대표님께 GitHub CI 실패 메일이 간다. 테스트를 통과시키지 못하면 push하지 말고 `request_ceo_action` / `pass_outsourcing_request`로 알린다.
 4. **PR 직전 최신화 & 자가 검수**:
    - `git fetch origin && git merge origin/main` 후 `npm test` 재확인
    - `git diff origin/main...HEAD`를 직접 검토(최근 PR 되돌림, 없는 import, 깨진 API, 캐시 버전, 토큰 노출 여부)
