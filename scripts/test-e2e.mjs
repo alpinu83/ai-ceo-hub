@@ -418,6 +418,53 @@ async function runTests() {
     ].join('\n');
     const extractedCk = extractChecklistItems(sampleShortsOutput);
     assert.equal(extractedCk.length, 3, 'should extract all 3 checklist items');
+
+    // 9-2-1. 대표님 체크리스트 정제: 완료([x])·해당 없음·표 헤더·개발 기술 항목 제외, 대표님 핵심 항목만 최대 5건
+    const { refineChecklistItems, CHECKLIST_CORE_MAX } = await import('../src/lead-engine.js');
+    const noisyOutput = [
+      '## 대표님 확인 · 실행 체크리스트',
+      '- [x] 쇼츠 3편 실측 조회수 수집 완료',
+      '- [X] 채널 기본 정보 확인 완료',
+      '- ✅ 썸네일 시안 2종 제작',
+      '- [ ] 전화/국내 플랫폼 확인 항목: 해당 없음',
+      '- [ ] [대표님/개발팀 확인] 토스 콘솔 앱 등록 정보 최종 확인',
+      '- [ ] [대표님 승인 후 실행] 첫 쇼츠 업로드 일정 확정',
+      '- [ ] SSR 금지 및 CSR/SSG 구성 유지',
+      '- [ ] eval 사용 금지',
+      '',
+      '| 검수 영역 | 필수 준수 항목 요약 |',
+      '| --- | --- |',
+      '| 식별키·보안·안정성 | eval/WebView/SSR 금지 |',
+      '| 업로드 계정 | 유튜브 계정 2단계 인증 로그인 확인 |'
+    ].join('\n');
+    const refinedCk = extractChecklistItems(noisyOutput);
+    const refinedJoined = refinedCk.join('\n');
+    assert.ok(refinedCk.some((c) => c.includes('[대표님/개발팀 확인] 토스 콘솔 앱 등록 정보 최종 확인')), '[대표님/개발팀 확인] item must be kept');
+    assert.ok(refinedCk.some((c) => c.includes('[대표님 승인 후 실행] 첫 쇼츠 업로드 일정 확정')), '[대표님 승인 후 실행] item must be kept');
+    assert.ok(!/실측 조회수|채널 기본 정보|썸네일 시안/.test(refinedJoined), 'completed [x]/✅ items must be excluded');
+    assert.ok(!refinedJoined.includes('해당 없음'), "'해당 없음' items must be excluded");
+    assert.ok(!refinedJoined.includes('검수 영역') && !refinedJoined.includes('필수 준수 항목 요약'), 'table header row must be excluded');
+    assert.ok(!/SSR 금지|eval/.test(refinedJoined), 'dev-team technical rules (SSR 금지, eval) must be excluded');
+    assert.ok(refinedCk.length <= CHECKLIST_CORE_MAX && CHECKLIST_CORE_MAX === 5, 'checklist must show at most 5 core items');
+    assert.ok(refinedCk[0].startsWith('[대표님'), 'CEO decision items must be sorted first');
+    assert.equal(extractChecklistItems('- [x] 끝난 일\n- [X] 이미 처리됨').length, 0, 'all-completed output yields no CEO checklist');
+    const legacyStored = ['검수 영역 — 필수 준수 항목 요약', '전화/국내 플랫폼 확인 항목: 해당 없음', '식별키·보안·안정성 — eval/WebView/SSR 금지', '구분 — 내용', 'N/A', '유튜브 채널 개설 및 업로드 권한 확인'];
+    assert.deepEqual(refineChecklistItems(legacyStored), ['유튜브 채널 개설 및 업로드 권한 확인'], 'legacy stored checklist must be refined with the same rules');
+    const manyCk = Array.from({ length: 9 }, (_, i) => `- [ ] 참고 항목 ${i + 1}번 검토`).join('\n');
+    assert.equal(extractChecklistItems(manyCk, 10).length, 5, 'even large maxItems must cap at 5 core items');
+    const legacyDb = {
+      missions: [{ id: 'msn_l', title: '레거시 결재' }],
+      agents: [],
+      tasks: [{ id: 'tsk_l1', missionId: 'msn_l', title: '실측 결과', status: 'completed', output: '## 체크리스트\n- [x] 쇼츠 3편 실측 조회수 수집 완료\n- [ ] 유튜브 계정 로그인 확인' }],
+      outsourcing: [],
+      approvals: [{ id: 'apr_l1', missionId: 'msn_l', taskId: 'tsk_l1', title: '레거시', summary: 's', status: 'pending', checklist: ['쇼츠 3편 실측 조회수 수집 완료', '검수 영역 — 필수 준수 항목 요약', '전화/국내 플랫폼 확인 항목: 해당 없음', '유튜브 계정 로그인 확인'] }]
+    };
+    const { buildApprovalDeliverable: buildAprDocL, enrichApprovalDeliverables: enrichL } = await import('../src/hub/deliverables.js');
+    const legacyDoc = buildAprDocL(legacyDb, 'apr_l1');
+    assert.deepEqual(legacyDoc.checklist, ['유튜브 계정 로그인 확인'], 'stored legacy checklist must not re-expose completed/N.A./header items in deliverable');
+    const legacyEnrich = enrichL(legacyDb, legacyDb.approvals[0]);
+    assert.ok(legacyEnrich.changed, 'enrich should rewrite a noisy stored checklist');
+    assert.deepEqual(legacyDb.approvals[0].checklist, ['유튜브 계정 로그인 확인'], 'enrich must refine stored apr.checklist consistently');
     const repDb = {
       missions: [{ id: 'msn_s', title: '유튜브 쇼츠', finalReport: '가이드라인 수립이 완료되었습니다.\n실행 환경 확정이 필요합니다.' }],
       agents: [{ id: 'ag_q', name: 'Qwen 3.8 (Groq)' }],
