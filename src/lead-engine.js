@@ -47,11 +47,14 @@ export const LEAD_ENGINE_DEFAULTS = {
 export const STANDING_ORDER_RE =
   /(기억해|기억하고|명심해|앞으로|앛으로|이제부터|지금부터|항상|절대|매번|잊지\s*마|하지\s*마|하지\s*말|하지\s*않|금지|이관|관련\s*없는|말고\s)/;
 
+// 상태 확정·보류 결정("이미 등록했다", "나중에 등록한다", "후속 진행")도 같은 항목을 다시 묻지 않도록 고정 지침으로 봄
+export const STANDING_STATE_RE = /(이미\s*(등록|완료|해|처리|설정)|나중에\s*(등록|진행|결정)|후속\s*(작업|진행))/;
+
 export function isStandingOrder(text = '') {
   const t = String(text || '').trim();
   if (t.length < 6) return false;
   if (/[?？]\s*$/.test(t)) return false;
-  return STANDING_ORDER_RE.test(t);
+  return STANDING_ORDER_RE.test(t) || STANDING_STATE_RE.test(t);
 }
 
 /** 미션 범위: mission.scope = { focus: '집중할 일', exclude: ['하지 말 일 키워드', ...] } */
@@ -931,7 +934,13 @@ export function buildCompanyContext(db, missionId = '', { compact = false } = {}
 
   // 고정 기억(대표님 지침·교훈)은 작은 모델에도 최대한 많이 전달
   // 다른 업무(미션)의 기억은 섞지 않음: 다른 프로젝트 이야기가 들어가면 그 일을 따라 하게 됨
-  const missionPinned = missionId ? facts.filter((f) => f.pinned && f.missionId === missionId).slice(0, compact ? 8 : 12) : [];
+  // 최신 결정(결재 의견 포함)이 먼저: 같은 기억이 다시 저장돼 시각만 갱신돼도 앞쪽에 오도록 시각순 정렬
+  const missionPinned = missionId
+    ? facts
+        .filter((f) => f.pinned && f.missionId === missionId)
+        .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))
+        .slice(0, compact ? 8 : 12)
+    : [];
   const globalPinned = facts.filter((f) => f.pinned && !f.missionId).slice(0, compact ? 6 : 10);
   const usedIds = new Set([...missionPinned, ...globalPinned].map((f) => f.id));
   const own = missionId ? facts.filter((f) => !usedIds.has(f.id) && f.missionId === missionId).slice(0, compact ? 6 : 12) : [];
