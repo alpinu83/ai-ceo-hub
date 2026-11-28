@@ -2177,3 +2177,96 @@ ${skillBlock({ agent: leadAgent, mission, purpose: 'lead_plan', settings, compac
     usedModel: resolved.label || ''
   };
 }
+
+// ======================================================================
+// 총괄 팀장 자율 시스템·운영 회고 (system_audit)
+// ======================================================================
+const SystemAuditSchema = z.object({
+  healthStatus: z.enum(['healthy', 'attention', 'action_needed']).describe('전사 운영 건강도: healthy(양호) / attention(주의·부분 보완 필요) / action_needed(반복 정체·오배정·오류로 개선 조치 필요)'),
+  executiveSummary: z.string().describe('대표님이 10초 안에 읽는 전사 운영 회고 요약 (2~4문장, 확인된 수치·사실만)'),
+  findings: z
+    .array(
+      z.object({
+        area: z.enum(['bot_routing', 'bot_limitation', 'review_loop', 'routine', 'ui_ux', 'code_pipeline', 'other']).describe('문제 영역'),
+        severity: z.enum(['high', 'medium', 'low']).describe('심각도'),
+        title: z.string().describe('발견한 운영·시스템 문제 한 줄'),
+        evidence: z.string().describe('텔레메트리 근거 (업무 ID·봇 이름·건수 등 사실만)'),
+        rootCause: z.string().describe('원인 분석 1~2문장')
+      })
+    )
+    .max(5)
+    .describe('운영 데이터에서 발견한 구조적 문제 목록 (없으면 빈 배열)'),
+  lessonsToRemember: z
+    .array(z.string())
+    .max(4)
+    .describe('앞으로 팀 전체가 지켜야 할 운영 교훈 (회사 기억에 자동 저장됨. 억지로 만들지 말고 실질적인 것만)'),
+  improvementProposals: z
+    .array(
+      z.object({
+        title: z.string().describe('시스템·프로세스 개선 제안 제목'),
+        priority: z.enum(['high', 'medium', 'low']).describe('우선순위'),
+        needsCodeChange: z.boolean().describe('CEO Office(ai-ceo-hub) 코드·UI 수정이 필요하면 true, 운영 규칙/지침 추가만으로 충분하면 false'),
+        targetRepo: z.string().optional().describe('코드 수정 대상 저장소 (기본: alpinu83/ai-ceo-hub)'),
+        rationale: z.string().describe('왜 고쳐야 하는지 (대표님 수동 개입·오류가 어떻게 줄어드는지)'),
+        concretePlan: z.string().describe('구체적 개선 방안 (건드릴 규칙/동작/화면과 완료 기준)'),
+        risk: z.string().optional().describe('주의사항 및 하위 호환성 고려사항')
+      })
+    )
+    .max(3)
+    .describe('대표님께 결재로 올릴 시스템 개선 제안 (뚜렷한 개선점이 없으면 빈 배열 — 억지 안건 금지)')
+});
+
+/**
+ * 총괄 팀장 전사 시스템·운영 회고 실행:
+ * AGY Hydrogen 팀장 업무함(purpose: 'system_audit') 우선 → 야간 당직 Gemini 앱 → Gemini API 폴백
+ */
+export async function leadSystemAudit({ db, telemetry, auditKey, agents, settings }) {
+  const leadAgent = agents.find((a) => a.id === 'agent_gemini_neon') || agents.find((a) => a.tier === 'lead') || agents[0];
+  const chain = buildLeadModelChain(leadAgent, settings, agents);
+  if (!chain.length && !hasLeadDeskWorker(db)) {
+    return { verdict: 'accept', skipped: true, reason: 'AI 엔진 및 팀장 업무함 연결 없음' };
+  }
+  const system = withCompanyContext(
+    `당신은 CEO Office의 총괄 팀장(${leadAgent?.name || '총괄 팀장'})입니다.
+지금은 개별 작업 검수가 아니라 **전사 시스템·운영 회고(System Audit)** 시간입니다.
+목표는 **대표님이 어제처럼 직접 캡처하고 수동으로 오류를 짚어 주지 않아도, 팀장이 먼저 구조적 병목·봇 오배정·반복 반려·도구 한계 충돌을 찾아 스스로 교훈을 학습하고 시스템 개선안을 제안하는 것**입니다.
+
+회고 및 제안 원칙:
+1. 반드시 아래 [전사 운영 텔레메트리]에 실제로 기록된 사실(업무 ID, 봇 이름, 건수, 대표님 메모)만 근거로 삼으세요. 없는 문제를 지어내지 마세요.
+2. 아래 패턴이 보이면 우선적으로 진단하고 개선을 제안하세요:
+   - 특정 봇이 4시간+ 정체되거나 보완 재제출 대기가 쌓여 헛도는 현상
+   - 봇의 도구 한계(영상 재생·자막 불가, 스튜디오/GSC/GA4 로그인 불가)와 충돌하는 업무가 계속 배정되는 현상
+   - 부이(Vooy) 몫인 정기 반복 수집이 다른 봇에 배정되거나, 접속 중인 봇이 노는데 다른 봇에 업무가 몰리는 현상
+   - 대표님이 반복적으로 수동 반려/지시해야 했던 UX·프로세스 불편
+3. 이미 잘 돌아가고 뚜렷한 구조적 문제가 없으면 \`healthStatus: "healthy"\`로 보고하고 \`improvementProposals\`는 빈 배열(\`[]\`)로 두세요. 억지로 개선 안건을 만들지 마세요.
+4. 코드 수정이 필요한 제안(\`needsCodeChange: true\`)은 대표님이 승인 버튼 1번만 누르면 개발팀(AGY 구현 → Aside 검수)에 바로 넘어가므로, \`concretePlan\`에 무엇을 어떻게 바꾸고 어떤 테스트로 검증할지 구체적으로 적으세요.`,
+    '',
+    { compact: true }
+  );
+  const prompt = `[전사 시스템·운영 회고 요청 — ${auditKey}]
+아래 최근 운영 데이터를 검토해 전사 운영 건강도, 발견한 구조적 문제, 회사 기억에 남길 교훈, 대표님께 제안할 시스템 개선안을 JSON으로 보고하세요.
+
+${telemetry?.summaryMarkdown || '(텔레메트리 없음)'}`;
+
+  try {
+    const { object, label } = await generateObjectChain(chain, {
+      schema: SystemAuditSchema,
+      system,
+      prompt,
+      leadDesk: { key: auditKey, purpose: 'system_audit', refs: { auditKey } }
+    });
+    return {
+      verdict: 'done',
+      healthStatus: object.healthStatus || 'healthy',
+      executiveSummary: String(object.executiveSummary || '').trim().slice(0, 1000),
+      findings: Array.isArray(object.findings) ? object.findings.slice(0, 5) : [],
+      lessonsToRemember: (object.lessonsToRemember || []).map((s) => String(s || '').trim()).filter(Boolean).slice(0, 4),
+      improvementProposals: Array.isArray(object.improvementProposals) ? object.improvementProposals.slice(0, 3) : [],
+      reviewer: label
+    };
+  } catch (err) {
+    if (isLeadPending(err)) return { verdict: 'pending', pendingJobId: err.jobId, reason: err.message };
+    return { verdict: 'accept', skipped: true, reason: String(err?.message || err).slice(0, 200) };
+  }
+}
+

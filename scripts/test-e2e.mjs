@@ -1232,6 +1232,131 @@ async function runTests() {
       const dupTaskPayload = JSON.parse(dupTaskRes.result.content[0].text);
       assert.equal(dupTaskPayload.alreadyQueued, true, 'Duplicate request_aside_task must deduplicate');
       assert.equal(dupTaskPayload.request_id, asideCodePayload.request_id);
+
+      // 19. 총괄 팀장 자율 시스템·운영 회고(system_audit) → 교훈 자동 학습 → 개선 제안 결재 카드 → 1클릭 승인 시 개발팀(AGY→Aside) 자동 배정 검증
+      await fetch(`${BASE}/api/lead-jobs?worker=agy_lead&${tokQ}`);
+      const auditTrigger = await (
+        await fetch(`${BASE}/api/ops/system-audit`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ windowHours: 48 })
+        })
+      ).json();
+      assert.equal(auditTrigger.ok, true, 'Manual system-audit trigger should succeed');
+      assert.equal(auditTrigger.status, 'pending', 'System audit should queue into AGY Lead desk when agy_lead is online');
+      assert.ok(auditTrigger.telemetry && typeof auditTrigger.telemetry.anomalyScore === 'number', 'Telemetry must include anomalyScore');
+
+      const auditJobs = await (await fetch(`${BASE}/api/lead-jobs?worker=agy_lead&${tokQ}`)).json();
+      const auditJob = (auditJobs.jobs || []).find((j) => j.purpose === 'system_audit');
+      assert.ok(auditJob, 'Lead desk must expose system_audit job to AGY Lead');
+      const auditClaim = await (
+        await fetch(`${BASE}/api/lead-jobs/${encodeURIComponent(auditJob.id)}/claim?${tokQ}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ worker: 'agy_lead' })
+        })
+      ).json();
+      assert.ok(
+        auditClaim.packet.includes('전사 운영 텔레메트리') && auditClaim.packet.includes('improvementProposals'),
+        'System audit lead packet must include operational telemetry and improvementProposals schema'
+      );
+
+      const auditSubmit = await (
+        await fetch(`${BASE}/api/lead-jobs/${encodeURIComponent(auditJob.id)}/submit?${tokQ}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            worker: 'agy_lead',
+            result: {
+              healthStatus: 'action_needed',
+              executiveSummary: '최근 48시간 동안 부이의 보완 재제출 대기가 누적됐고 일부 로그인 업무가 외부 봇에 남아 있습니다. 자동 재알림 및 규칙 보강을 제안합니다.',
+              findings: [
+                {
+                  area: 'review_loop',
+                  severity: 'high',
+                  title: '외부 봇 보완 재제출 대기 장기화',
+                  evidence: '부이 보완 재제출 대기 1건 확인',
+                  rootCause: '반려 후 봇 폴링 주기와 재제출 안내 불일치'
+                }
+              ],
+              lessonsToRemember: ['로그인 필요 업무는 외부 봇에 절대 배정하지 않고 Aside로 직행한다.'],
+              improvementProposals: [
+                {
+                  title: '장기 정체 보완 요청 자동 리마인드 추가',
+                  priority: 'high',
+                  needsCodeChange: true,
+                  targetRepo: 'alpinu83/ai-ceo-hub',
+                  rationale: '보완 요청이 3시간 이상 미처리되면 대표님이 직접 확인하지 않아도 자동으로 봇 회의실 리마인드를 보냅니다.',
+                  concretePlan: 'src/hub/lead-desk-bridge.js에 보완 재제출 3시간 초과 감지 및 회의실 @멘션 리마인드 추가 후 npm test 검증',
+                  risk: '중복 알림 방지를 위해 업무당 12시간 쿨다운 필요'
+                },
+                {
+                  title: '쇼츠 벤치마크 공개 메타데이터 기준 고정',
+                  priority: 'medium',
+                  needsCodeChange: false,
+                  rationale: '외부 봇이 재생 불가한 영상 훅 문구를 억지로 요구하지 않도록 운영 규칙을 고정합니다.',
+                  concretePlan: '쇼츠 벤치마크 지시 시 공개 제목·조회수·설명란 기준으로만 완료 기준을 설정한다.'
+                }
+              ]
+            }
+          })
+        })
+      ).json();
+      assert.equal(auditSubmit.ok, true, 'System audit submit should succeed');
+
+      let auditAfter = null;
+      let codePropApr = null;
+      let rulePropApr = null;
+      for (let i = 0; i < 15; i += 1) {
+        await new Promise((r) => setTimeout(r, 150));
+        const st = await (await fetch(`${BASE}/api/state`)).json();
+        codePropApr = (st.approvals || []).find((a) => a.kind === 'system_improvement' && a.improvementProposal?.needsCodeChange && a.status === 'pending') || null;
+        rulePropApr = (st.approvals || []).find((a) => a.kind === 'system_improvement' && a.improvementProposal && !a.improvementProposal.needsCodeChange && a.status === 'pending') || null;
+        if (codePropApr && rulePropApr) {
+          auditAfter = st;
+          break;
+        }
+      }
+      assert.ok(codePropApr && rulePropApr, 'System audit must create CEO approval cards for both code and policy proposals');
+      assert.ok((codePropApr.leadBrief || '').includes('구체적 개선 방안'), 'System improvement approval must include structured leadBrief');
+      assert.ok(
+        (auditAfter.memory?.facts || []).some((f) => String(f.text || '').includes('로그인 필요 업무는 외부 봇에 절대 배정하지 않고')),
+        'System audit lessonsToRemember must be saved into company memory'
+      );
+
+      // 19b. 코드 개선 제안 1클릭 승인 → 사내 개발팀(AGY 구현 → Aside 검수) 자동 배정 확인
+      const approveCodeProp = await (
+        await fetch(`${BASE}/api/approvals/${encodeURIComponent(codePropApr.id)}/decide`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ decision: 'approved', ceoNote: '쿨다운 12시간으로 적용해 주세요.' })
+        })
+      ).json();
+      assert.equal(approveCodeProp.approval?.status, 'approved', 'Code improvement approval should succeed');
+      const dispatchedId = approveCodeProp.approval?.dispatchedOutsourceId;
+      assert.ok(/^OUT-/.test(dispatchedId || ''), 'Approved code improvement proposal must auto-dispatch a dev-team outsourcing request');
+      const dispatchedReq = (approveCodeProp.state?.outsourcing || []).find((r) => r.id === dispatchedId);
+      assert.equal(dispatchedReq?.kind, 'code', 'Dispatched improvement request must be kind=code');
+      assert.equal(dispatchedReq?.codeWorkflow, 'agy_then_aside', 'Dispatched improvement request must use 2-stage agy_then_aside review');
+      assert.ok((dispatchedReq?.goal || '').includes('쿨다운 12시간'), 'CEO note must be included in dispatched dev goal');
+
+      // 19c. 운영 규칙 개선 제안 1클릭 승인 → 회사 고정 지침(pinned directive) 반영 확인
+      const approveRuleProp = await (
+        await fetch(`${BASE}/api/approvals/${encodeURIComponent(rulePropApr.id)}/decide`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ decision: 'approved' })
+        })
+      ).json();
+      assert.equal(approveRuleProp.approval?.status, 'approved', 'Policy improvement approval should succeed');
+      assert.ok(
+        (approveRuleProp.state?.memory?.facts || []).some((f) => f.pinned && String(f.text || '').includes('쇼츠 벤치마크 공개 메타데이터 기준 고정')),
+        'Approved policy improvement must be saved as a pinned company directive'
+      );
+
+      const auditInspect = await (await fetch(`${BASE}/api/ops/system-audit`)).json();
+      assert.equal(auditInspect.ok, true, 'GET /api/ops/system-audit should succeed');
+      assert.equal(auditInspect.lastSystemAudit?.healthStatus, 'action_needed', 'lastSystemAudit must reflect completed audit');
     }
 
     // Clean reset after tests

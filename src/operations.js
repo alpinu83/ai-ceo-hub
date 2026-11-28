@@ -103,6 +103,17 @@ export function buildDefaultRoutines(missions = []) {
       times: ['19:00'],
       days: [],
       notify: 'always'
+    },
+    {
+      ...base,
+      id: 'rtn_lead_system_audit',
+      kind: 'system_audit',
+      title: '총괄 팀장 일일 시스템·운영 회고 및 개선 제안',
+      description:
+        '전사 봇 정체·반복 반려·도구 한계·배정 불일치·대표님 수동 개입 이력을 총괄 팀장(AGY Hydrogen)이 스스로 회고해 회사 기억에 교훈을 학습하고, 코드·규칙 개선안을 대표님 결재함으로 선제 제안합니다.',
+      times: ['21:00'],
+      days: [],
+      notify: 'anomaly'
     }
   ];
   if (tax) {

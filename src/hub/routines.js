@@ -16,6 +16,7 @@ import { getMissionRepoCfg, isCodeTask } from './code-pipeline.js';
 import { isOpsMission, opsCycle, runLeadFollowUp } from './lead-ops.js';
 import { outsourceTask } from './task-results.js';
 import { outsourcingWatch } from './outsourcing-bridge.js';
+import { runSystemAudit } from './system-audit.js';
 
 // ================================================================
 // 회사 운영 엔진: 루틴(정기) 업무 · 정기 점검 · 자동 복구(워치독) · 일일 마감 보고
@@ -40,9 +41,18 @@ export function describeRoutineSchedule(r) {
 }
 
 export function ensureRoutines(db) {
-  if (Array.isArray(db.routines)) return false;
-  db.routines = buildDefaultRoutines(db.missions || []);
-  return true;
+  if (!Array.isArray(db.routines)) {
+    db.routines = buildDefaultRoutines(db.missions || []);
+    return true;
+  }
+  if (!db.settings?.systemAuditRoutineDismissed && !db.routines.some((r) => r.id === 'rtn_lead_system_audit' || r.kind === 'system_audit')) {
+    const def = buildDefaultRoutines(db.missions || []).find((r) => r.id === 'rtn_lead_system_audit');
+    if (def) {
+      db.routines.push(def);
+      return true;
+    }
+  }
+  return false;
 }
 
 export function getRoutineHubMission(db) {
@@ -150,7 +160,11 @@ export async function runRoutine(routineId, { slotKeys = [], manual = false } = 
     let result = '';
     let anomalies = [];
     let telegramHtml = '';
-    if (r.kind === 'ops_check' || r.kind === 'briefing') {
+    if (r.kind === 'system_audit') {
+      const auditRes = await runSystemAudit({ manual });
+      status = auditRes.status === 'pending' ? 'pending' : auditRes.ok ? (auditRes.audit?.healthStatus === 'healthy' ? 'ok' : 'warning') : 'error';
+      result = auditRes.result || auditRes.error || '전사 시스템 회고를 요청했습니다.';
+    } else if (r.kind === 'ops_check' || r.kind === 'briefing') {
       const ops = await performOpsCheck(loadDb());
       anomalies = ops.anomalies;
       status = ops.status;
@@ -388,6 +402,6 @@ export function sanitizeRoutineInput(body, existing = {}) {
   if (typeof body.assigneeId === 'string') out.assigneeId = body.assigneeId.trim();
   if (['anomaly', 'always', 'never'].includes(body.notify)) out.notify = body.notify;
   if (typeof body.enabled === 'boolean') out.enabled = body.enabled;
-  if (['task', 'ops_check', 'briefing'].includes(body.kind) && !existing.id) out.kind = body.kind;
+  if (['task', 'ops_check', 'briefing', 'system_audit'].includes(body.kind) && !existing.id) out.kind = body.kind;
   return out;
 }
