@@ -43,3 +43,10 @@
    - `git fetch origin && git merge origin/main` 후 `npm test` 재확인
    - `git diff origin/main...HEAD`를 직접 검토(최근 PR 되돌림, 없는 import, 깨진 API, 캐시 버전, 토큰 노출 여부)
    - PR 본문에 ① 변경 요약 ② 수정 파일 목록 ③ 테스트 명령·결과 ④ 검수 확인 포인트를 남긴다.
+
+## 4. 과잉 설계 방지 원칙 (Ponytail)
+참고: [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail). 필요한 만큼만 짓되, 검증·오류 처리·보안·접근성은 줄이지 않는다.
+1. **재사용 먼저**: 새 파일·새 의존성·새 추상화 레이어를 만들기 전에 기존 코드·유틸(`src/hub/*` 등)로 해결되는지 `rg`로 먼저 확인한다.
+2. **범위 밖 금지**: 요청 범위 밖 리팩터링, 미래 대비 과잉 일반화, 1회용 래퍼, 쓰이지 않는 옵션 플래그를 추가하지 않는다.
+3. **단순화 우선**: 코드를 더하는 것보다 기존 코드를 단순화·정리해서 해결할 수 있으면 그쪽을 택한다.
+4. **diff 자가 점검**: 변경 후 `git diff`(PR 직전엔 `git diff origin/main...HEAD`)에 요청과 무관한 변경이 섞이지 않았는지 확인한다.
