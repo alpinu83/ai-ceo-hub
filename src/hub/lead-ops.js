@@ -229,7 +229,7 @@ export function createLeadTasks(db, mission, specs = [], source = 'lead_followup
       createdAt: now,
       updatedAt: now
     };
-    task.dispatchPrompt = buildDispatchPrompt(ag, task, mission);
+    task.dispatchPrompt = withShortsCandidates(db, task, buildDispatchPrompt(ag, task, mission));
     db.tasks.unshift(task);
     existing.add(task.title);
     // 코드 수정은 개발 지침대로 개발팀(Aside·AGY)에게, 개발팀에 직접 배정한 일반 작업은 작업 큐로 바로
@@ -252,7 +252,7 @@ export function createLeadTasks(db, mission, specs = [], source = 'lead_followup
         };
         delete copy.outsourceId;
         delete copy.agyRequestId;
-        copy.dispatchPrompt = buildDispatchPrompt(twin.agent, copy, mission);
+        copy.dispatchPrompt = withShortsCandidates(db, copy, buildDispatchPrompt(twin.agent, copy, mission));
         db.tasks.unshift(copy);
         existing.add(twinTitle);
         created.push({ task: copy, agent: twin.agent });
@@ -454,19 +454,55 @@ async function repoStructureNote(m, settings) {
     '- 이 목록에 없는 파일·폴더를 수정 대상으로 계획하지 말고, 수정할 파일은 위 목록에서 고를 것.'
   ].join('\n');
 }
+/** 뉴스 후보 블록 머리말 표식 */
+export const SHORTS_CANDIDATES_MARK = '[쇼츠 뉴스 후보';
+// 실제로 붙은 후보 블록(줄 맨 앞의 머리말)만 인정 — 팀장 지시문이 "[쇼츠 뉴스 후보 — 마지막 수집 …] 1~10번"처럼 이름만 인용한 경우는 블록 없음으로 봄
+const SHORTS_BLOCK_RE = /^\[쇼츠 뉴스 후보 — (?:자동 수집기|새 후보 0건)/m;
+const SHORTS_CANDIDATE_STATUS = { new: '새 후보', picked: '선택됨', skipped: '건너뜀', superseded: '지난 후보', expired: '기한 지남' };
 /** 쇼츠 프로젝트: 자동 수집된 최신 뉴스 후보(링크 포함)를 계획에 제공 — AI 기억으로 지난 뉴스를 지어내지 않게 */
 export function shortsCandidatesNote(db, m) {
   const sm = findShortsMission(db);
   if (!sm || sm.id !== m?.id) return '';
   const sh = ensureShorts(db);
+  const collected = sh.lastCollectedAt ? `, 마지막 수집 ${sh.lastCollectedAt.slice(0, 16).replace('T', ' ')}` : '';
   const fresh = sh.candidates.filter((c) => c.status === 'new').slice(0, 10);
-  const lines = [
-    `[쇼츠 뉴스 후보 — 자동 수집기(매일 07시·18시)가 가져온 최신 후보${sh.lastCollectedAt ? `, 마지막 수집 ${sh.lastCollectedAt.slice(0, 16).replace('T', ' ')}` : ''}]`,
-    ...fresh.map((c, i) => `${i + 1}. ${c.title}${c.views ? ` (조회 ${c.views})` : ''} — ${c.url || '링크 없음'}`),
+  // 새 후보가 0건이어도(이미 고르거나 정리된 묶음) 최근 수집본을 상태와 함께 보여줘 봇이 빈 목록을 받지 않게 (기사 없는 유튜브 후보 dropped는 제외)
+  const recent = fresh.length ? [] : sh.candidates.filter((c) => c.status !== 'dropped').slice(0, 10);
+  const rules = [
     '- 뉴스 후보는 이 목록만 씁니다. 팀이 뉴스를 따로 조사하거나 AI 기억으로 뉴스를 쓰지 마세요(지난 뉴스가 섞임). 후보 선정·고르기는 대표님이 이 목록에서 합니다.',
     '- 채널: 구국열사 https://www.youtube.com/channel/UCVz53WEz_cvd5fJl3rs1Uww (@구국열사). 다른 주소를 짐작해서 쓰지 마세요.'
   ];
-  return fresh.length ? lines.join('\n') : lines.slice(-2).join('\n');
+  if (fresh.length) {
+    return [
+      `${SHORTS_CANDIDATES_MARK} — 자동 수집기(매일 07시·18시)가 가져온 최신 후보${collected}]`,
+      ...fresh.map((c, i) => `${i + 1}. ${c.title}${c.views ? ` (조회 ${c.views})` : ''} — ${c.url || '링크 없음'}`),
+      ...rules
+    ].join('\n');
+  }
+  if (recent.length) {
+    return [
+      `${SHORTS_CANDIDATES_MARK} — 새 후보 0건이라 최근 수집본 ${recent.length}건을 상태와 함께 표시${collected}]`,
+      ...recent.map((c, i) => `${i + 1}. [${SHORTS_CANDIDATE_STATUS[c.status] || c.status || '상태 미상'}] ${c.title}${c.views ? ` (조회 ${c.views})` : ''} — ${c.url || '링크 없음'}`),
+      '- "새 후보"가 아닌 항목은 이미 선택·정리된 기사입니다. 새 주제가 필요하면 다음 자동 수집(07시·18시)을 기다리거나 팀장에게 알리세요.',
+      ...rules
+    ].join('\n');
+  }
+  return rules.join('\n');
+}
+/** 쇼츠 프로젝트 업무 지시서에 뉴스 후보 블록이 없으면 덧붙여 반환 (봇 수신함·MCP 응답용이라 저장된 지시서는 바꾸지 않음) */
+export function withShortsCandidates(db, task, prompt = task?.dispatchPrompt) {
+  const sm = task?.missionId ? findShortsMission(db) : null;
+  const text = String(prompt || '');
+  if (!sm || task.missionId !== sm.id || SHORTS_BLOCK_RE.test(text)) return prompt;
+  const note = shortsCandidatesNote(db, sm);
+  if (!note) return prompt;
+  return text ? `${text}\n\n${note}` : note;
+}
+/** 업무 목록에 쇼츠 프로젝트 업무가 있으면 companyContext에 함께 줄 최신 뉴스 후보 블록 (없으면 '') */
+export function shortsContextForTasks(db, tasks = []) {
+  const sm = findShortsMission(db);
+  if (!sm || !tasks.some((t) => t?.missionId === sm.id)) return '';
+  return shortsCandidatesNote(db, sm);
 }
 const digestWithTools = async (db, m) => [buildMissionDigest(db, m.id), connectedToolsNote(db.settings, m), shortsCandidatesNote(db, m), await repoStructureNote(m, db.settings)].filter(Boolean).join('\n\n');
 

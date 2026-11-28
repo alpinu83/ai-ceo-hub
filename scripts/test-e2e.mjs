@@ -617,6 +617,46 @@ async function runTests() {
     // 다른 채널 유튜브 영상만 있는 후보는 쓰지 않음 (기사 없으면 제외)
     const shList = await (await fetch(`${BASE}/api/shorts`)).json();
     assert.equal(shList.missionId, shortsMission.mission.id, 'shorts project is detected by title');
+
+    // 쇼츠 업무가 봇 수신함(Cue·피클)과 MCP list_my_tasks에서 최신 뉴스 후보 블록과 실제 후보 URL을 받는지 (저장된 지시서에 없어도 응답에서 보강)
+    // dryRun=1·agent_id 없는 MCP 호출로 조회해 봇 접속 기록(배정 판단에 쓰임)은 남기지 않음
+    const shTokQ = `token=${encodeURIComponent(mcpToken)}`;
+    const SHORTS_MARK = '[쇼츠 뉴스 후보';
+    const shState0 = await (await fetch(`${BASE}/api/state`)).json();
+    const shortsBotTask = shState0.tasks.find(
+      (t) => t.missionId === shortsMission.mission.id && !['completed', 'rejected'].includes(t.status) && !['agent_agy', 'agent_aside'].includes(t.assigneeId)
+    );
+    assert.ok(shortsBotTask, 'shorts project must have an open task to hand to a bot');
+    const shortsOrigAssignee = shortsBotTask.assigneeId;
+    const patchShortsTask = async (assigneeId, extra = {}) =>
+      (await fetch(`${BASE}/api/tasks/${encodeURIComponent(shortsBotTask.id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ assigneeId, ...extra }) })).json();
+    // 실제 장애 사례(tsk_c60cd43e)처럼 지시문이 블록 이름만 인용하고 링크는 없는 경우
+    const quotedOnlyPrompt = '업무 브리핑의 [쇼츠 뉴스 후보 — 마지막 수집 2026-11-27 18:39] 1~10번 Google News RSS 링크로 양식 A 요약표를 작성하세요.';
+    const toCue = await patchShortsTask('agent_cue', { dispatchPrompt: quotedOnlyPrompt });
+    assert.ok(!String(toCue.task.dispatchPrompt || '').includes('https://example.com/a'), 'stored dispatchPrompt starts without the candidate links');
+    const cueShortsInbox = await (await fetch(`${BASE}/api/agent-inbox/cue?${shTokQ}&dryRun=1`)).json();
+    const cueShortsRow = (cueShortsInbox.myPendingTasks || []).find((t) => t.id === shortsBotTask.id);
+    assert.ok(cueShortsRow, 'shorts task must be in the Cue inbox');
+    assert.ok(cueShortsRow.dispatchPrompt.startsWith(quotedOnlyPrompt) && cueShortsRow.dispatchPrompt.includes('https://example.com/a'), 'Cue inbox dispatchPrompt must carry the shorts news candidates with real URLs even when the prompt only quotes the block name');
+    assert.ok(String(cueShortsInbox.companyContext || '').includes(SHORTS_MARK) && cueShortsInbox.companyContext.includes('https://example.com/a'), 'Cue inbox companyContext must carry the shorts news candidates');
+    assert.ok(!cueShortsRow.dispatchPrompt.includes('youtube.com/watch?v=x'), 'video-only candidates without an article must not be handed to bots');
+    const cueShortsText = await (await fetch(`${BASE}/api/agent-inbox/cue?${shTokQ}&dryRun=1&format=text`)).text();
+    assert.ok(cueShortsText.includes(SHORTS_MARK) && cueShortsText.includes('https://example.com/a'), 'Cue text inbox must carry the shorts news candidates');
+    const mcpShortsRes = await (
+      await fetch(`${BASE}/api/mcp`, {
+        method: 'POST',
+        headers: mcpHeaders,
+        body: JSON.stringify({ jsonrpc: '2.0', id: 61, method: 'tools/call', params: { name: 'list_my_tasks', arguments: {} } })
+      })
+    ).json();
+    const mcpShorts = JSON.parse(mcpShortsRes.result.content[0].text);
+    const mcpShortsRow = (mcpShorts.tasks || []).find((t) => t.id === shortsBotTask.id);
+    assert.ok(mcpShortsRow && mcpShortsRow.dispatchPrompt.includes(SHORTS_MARK) && mcpShortsRow.dispatchPrompt.includes('https://example.com/a'), 'MCP list_my_tasks dispatchPrompt must carry the shorts news candidates');
+    assert.ok(String(mcpShorts.shortsNewsCandidates || '').includes('https://example.com/a'), 'MCP list_my_tasks must expose shortsNewsCandidates when shorts tasks are listed');
+    const shState1 = await (await fetch(`${BASE}/api/state`)).json();
+    assert.ok(!String(shState1.tasks.find((t) => t.id === shortsBotTask.id)?.dispatchPrompt || '').includes('https://example.com/a'), 'inbox/MCP reads must not rewrite the stored dispatchPrompt');
+    await patchShortsTask(shortsOrigAssignee); // 대본 작성자 선정(열린 업무 수 기준)에 영향 없도록 바로 원복
+
     const pick = await (await fetch(`${BASE}/api/shorts/candidates/${shList.candidates[0].id}/pick`, { method: 'POST' })).json();
     assert.ok(pick.taskId, 'picking a candidate creates a script task');
     const scriptOut = '대본\n```json\n{"title":"예산안 30초 정리","scenes":[{"text":"예산안이 또 늦어졌습니다.","keywords":"parliament"},{"text":"보도에 따르면 쟁점은 세 가지입니다.","keywords":"documents"},{"text":"제 생각은 이렇습니다.","keywords":"city night"}],"sources":["https://example.com/a"],"hashtags":["#정치"]}\n```';
@@ -632,6 +672,17 @@ async function runTests() {
     assert.equal(claimAgain.jobs.length, 0, 'a claimed job is not handed out twice');
     const done = await (await fetch(`${BASE}/api/shorts/hook/jobs/${claim.jobs[0].id}/result`, { method: 'POST', headers: SH, body: JSON.stringify({ ok: true, videoId: 'abc123', privacy: 'private' }) })).json();
     assert.equal(done.status, 'uploaded', 'render result is recorded');
+
+    // 새 후보가 0건(유일한 후보를 이미 고름)이어도 최근 수집본을 상태와 함께 피클 수신함에 폴백으로 제공
+    await patchShortsTask('agent_pickle');
+    const pickleShortsInbox = await (await fetch(`${BASE}/api/agent-inbox/pickle?${shTokQ}&dryRun=1`)).json();
+    const pickleShortsRow = (pickleShortsInbox.myPendingTasks || []).find((t) => t.id === shortsBotTask.id);
+    assert.ok(pickleShortsRow, 'shorts task must be in the Pickle inbox');
+    assert.ok(
+      pickleShortsRow.dispatchPrompt.includes(SHORTS_MARK) && pickleShortsRow.dispatchPrompt.includes('https://example.com/a') && pickleShortsRow.dispatchPrompt.includes('[선택됨]'),
+      'with no new candidates the Pickle inbox must fall back to the recent batch with status labels'
+    );
+    await patchShortsTask(shortsOrigAssignee);
 
     // 대표님 할 일: 모든 프로젝트에서 대표님 때문에 멈춘 일
     const ceoInbox = await (await fetch(`${BASE}/api/ceo-inbox`)).json();
