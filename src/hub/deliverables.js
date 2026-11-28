@@ -2,7 +2,7 @@
 // 텔레그램 결재 카드의 [📎 성과품 받기] 버튼과 /doc 명령이 이 문서를 파일로 보내, 대표님이 결재 전에 실제 결과물을 볼 수 있게 합니다.
 // db를 인자로 받는 순수 함수라 저장소(store)를 건드리지 않습니다.
 
-import { CHECKLIST_CORE_MAX, completedChecklistKeys, extractChecklistItems, refineChecklistItems } from '../lead-engine.js';
+import { CHECKLIST_CORE_MAX, checklistKey, completedChecklistKeys, extractChecklistItems, refineChecklistItems } from '../lead-engine.js';
 
 const MAX_SECTION = 12000;
 const MAX_DOC = 60000;
@@ -103,12 +103,74 @@ function refineApprovalChecklist(storedItems, sourceTexts = []) {
   return refineChecklistItems(candidates, { max: CHECKLIST_CORE_MAX, excludeKeys });
 }
 
+/**
+ * 코드 PR·개발 설계·시스템 개선 결재인지.
+ * 이 결재들은 본문·팀장 보고서·PR 정보만으로 판단하므로, 미션의 최근 산출물(예: 쇼츠 대본)을 자동으로 붙이지 않습니다.
+ */
+export function isCodeLikeApproval(apr) {
+  return Boolean(
+    apr &&
+      (apr.prUrl ||
+        apr.prNumber ||
+        apr.codeChange ||
+        apr.kind === 'it_pr_merge' ||
+        apr.kind === 'dev_design' ||
+        apr.kind === 'system_improvement' ||
+        apr.category === 'dev')
+  );
+}
+
+/** 미션·마일스톤 산출물을 자동으로 이어 붙이는 결재 유형: 관문·다음 단계·성과품 확인만 */
+const MISSION_OUTPUT_KINDS = new Set(['stage_gate', 'next_phase', 'deliverable_review']);
+
+/**
+ * 코드 결재에서 "명시적으로 연결된" 업무 ID 목록. 예전 규칙(연결 업무가 없으면 미션 최근 산출물 자동 연결)으로
+ * 잘못 붙어 저장된 taskIds를 걸러낼 때 씁니다.
+ * - 외부 개발팀 PR(outsourceId)·개발 설계·시스템 개선 결재: 원래 외주 요청의 taskId만 명시적 연결로 인정
+ * - 코드 번들 PR(팀 결정 업무 taskIds로 직접 생성, outsourceId 없음)·taskId가 있는 결재: 저장된 값 유지(null 반환)
+ */
+function explicitCodeApprovalTaskIds(db, apr) {
+  if (!isCodeLikeApproval(apr) || apr.taskId) return null;
+  const external = Boolean(apr.outsourceId || apr.designRequestId || apr.kind === 'dev_design' || apr.kind === 'system_improvement');
+  if (!external) return null;
+  const ids = new Set();
+  for (const r of db?.outsourcing || []) {
+    if (!r?.taskId) continue;
+    if ((apr.outsourceId && r.id === apr.outsourceId) || (apr.designRequestId && r.id === apr.designRequestId)) ids.add(r.taskId);
+  }
+  return ids;
+}
+
+/** 결재에 명시적으로 연결된 업무 ID (taskId + taskIds, 코드 결재에 잘못 붙어 저장된 항목은 제외) */
+function linkedApprovalTaskIds(db, apr) {
+  const ids = [];
+  if (apr?.taskId) ids.push(apr.taskId);
+  for (const id of Array.isArray(apr?.taskIds) ? apr.taskIds : []) if (id && !ids.includes(id)) ids.push(id);
+  const explicit = explicitCodeApprovalTaskIds(db, apr);
+  return explicit ? ids.filter((id) => explicit.has(id)) : ids;
+}
+
+/** 저장된 체크리스트에서, 잘못 붙었다가 빠진 업무(무관한 성과품)에서 나온 항목을 제외 */
+function storedChecklistWithoutStale(db, apr) {
+  const stored = Array.isArray(apr?.checklist) ? apr.checklist : [];
+  if (!stored.length) return stored;
+  const kept = new Set(linkedApprovalTaskIds(db, apr));
+  const staleKeys = new Set();
+  for (const id of Array.isArray(apr?.taskIds) ? apr.taskIds : []) {
+    if (!id || kept.has(id)) continue;
+    const t = (db?.tasks || []).find((x) => x.id === id);
+    for (const item of extractChecklistItems(t?.output || '', CHECKLIST_CORE_MAX)) {
+      const k = checklistKey(item);
+      if (k) staleKeys.add(k);
+    }
+  }
+  return staleKeys.size ? stored.filter((c) => !staleKeys.has(checklistKey(c))) : stored;
+}
+
 /** 결재 안건과 연결된 업무 ID들: 단일 업무, 묶음(PR·성과품) 업무, 관문/다음단계 결재면 그 업무의 최근 결과물 */
 export function relatedTaskIds(db, apr) {
-  const ids = new Set();
-  if (apr?.taskId) ids.add(apr.taskId);
-  for (const id of Array.isArray(apr?.taskIds) ? apr.taskIds : []) if (id) ids.add(id);
-  if ((apr?.kind === 'stage_gate' || apr?.kind === 'next_phase') && apr.missionId) {
+  const ids = new Set(linkedApprovalTaskIds(db, apr));
+  if ((apr?.kind === 'stage_gate' || apr?.kind === 'next_phase') && apr.missionId && !isCodeLikeApproval(apr)) {
     const mission = (db.missions || []).find((m) => m.id === apr.missionId);
     for (const d of (mission?.deliverables || []).slice(0, 6)) if (d?.taskId) ids.add(d.taskId);
   }
@@ -118,19 +180,18 @@ export function relatedTaskIds(db, apr) {
 /**
  * 모든 결재 안건에 관련 성과품(taskIds)과 체크리스트(checklist)를 자동 첨부하고 번들 문서를 반환합니다.
  * - 단일 업무 결재, 관문 결재, 다음 단계 제안, 코드 PR, 외주/MCP 결재 등 모든 결재 유형에 공통 적용됩니다.
+ * - 미션 산출물 자동 연결은 관문·다음 단계·성과품 확인 결재에만 합니다. 코드 PR·개발 설계·시스템 개선·일반 단독 결재는
+ *   명시적으로 연결된 업무(taskId/taskIds)만 첨부하고, 예전 규칙으로 코드 결재에 잘못 붙은 업무는 정리합니다.
  */
 export function enrichApprovalDeliverables(db, apr) {
   if (!db || !apr) return { changed: false, deliverable: null };
   let changed = false;
 
-  const idSet = new Set();
-  if (apr.taskId) idSet.add(apr.taskId);
-  for (const id of Array.isArray(apr.taskIds) ? apr.taskIds : []) if (id) idSet.add(id);
+  const storedCk = storedChecklistWithoutStale(db, apr);
+  const idSet = new Set(linkedApprovalTaskIds(db, apr));
 
-  // 관문/다음단계/단독 결재인데 연결된 업무 ID가 비어 있으면, 해당 미션의 최근 산출물(deliverables 또는 완료된 산출물)을 자동 연결
-  const shouldAttachMissionOutputs =
-    apr.missionId &&
-    (apr.kind === 'stage_gate' || apr.kind === 'next_phase' || apr.kind === 'deliverable_review' || idSet.size === 0);
+  // 관문/다음단계/성과품 확인 결재만 해당 마일스톤·미션의 최근 산출물(deliverables 또는 완료된 산출물)을 자동 연결
+  const shouldAttachMissionOutputs = apr.missionId && MISSION_OUTPUT_KINDS.has(apr.kind) && !isCodeLikeApproval(apr);
   if (shouldAttachMissionOutputs) {
     const mission = (db.missions || []).find((m) => m.id === apr.missionId);
     if (mission) {
@@ -161,7 +222,7 @@ export function enrichApprovalDeliverables(db, apr) {
 
   const nextIds = [...idSet];
   const prevIds = Array.isArray(apr.taskIds) ? apr.taskIds : [];
-  if (nextIds.length && (nextIds.length !== prevIds.length || nextIds.some((id, i) => prevIds[i] !== id))) {
+  if ((nextIds.length || prevIds.length) && (nextIds.length !== prevIds.length || nextIds.some((id, i) => prevIds[i] !== id))) {
     apr.taskIds = nextIds;
     changed = true;
   }
@@ -181,7 +242,7 @@ export function enrichApprovalDeliverables(db, apr) {
       ckSources.push(r.result.document || r.result.summary || '');
     }
   }
-  const mergedCk = refineApprovalChecklist(apr.checklist, ckSources);
+  const mergedCk = refineApprovalChecklist(storedCk, ckSources);
 
   const prevCk = Array.isArray(apr.checklist) ? apr.checklist : [];
   if ((mergedCk.length || prevCk.length) && (mergedCk.length !== prevCk.length || mergedCk.some((c, i) => prevCk[i] !== c))) {
@@ -208,7 +269,7 @@ export function buildApprovalDeliverable(db, aprId) {
   // 0) 대표님 확인·실행 체크리스트 (안건 자체 또는 첨부 결과물에서 추출)
   const taskIds = relatedTaskIds(db, apr);
   const checklist = refineApprovalChecklist(
-    apr.checklist,
+    storedChecklistWithoutStale(db, apr),
     taskIds.map((id) => (db.tasks || []).find((x) => x.id === id)?.output || '')
   );
   if (checklist.length) {
