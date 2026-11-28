@@ -62,6 +62,10 @@ export function findRepoMission(db, repo = '') {
   );
 }
 
+// 쇼츠 뉴스 후보 첨부 도우미: lead-ops.js는 outsourcing-bridge.js를 거쳐 이 파일을 다시 import하므로
+// 정적 import 대신 도구 호출 시점에 불러옴 (부팅 시 순환 import로 taskResultHandler가 초기화 전 접근되는 것 방지)
+const loadShortsHelpers = () => import('./hub/lead-ops.js');
+
 // 서버의 업무 처리 엔진(팀장 검수·결과물 등록)으로 결과를 넘기는 훅
 let taskResultHandler = null;
 export function setTaskResultHandler(fn) {
@@ -82,6 +86,8 @@ export function createCeoMcpServer() {
       const db = loadDb();
       recordAgentHeartbeat(db, 'agent_muse', 'MCP brief');
       saveDb(db);
+      const { shortsContextForTasks } = await loadShortsHelpers();
+      const openTasks = db.tasks.filter((t) => t.status !== 'completed' && t.status !== 'rejected');
       const activeMissions = db.missions.filter((m) => m.status !== 'completed');
       const pendingApprovals = db.approvals.filter((a) => a.status === 'pending').length;
       const data = {
@@ -90,7 +96,8 @@ export function createCeoMcpServer() {
         defaultCostPolicy: db.settings.defaultCostPolicy,
         // 모든 외부 에이전트(Claude·Muse·Cue)도 내부 AI와 같은 CEO 전역 지침·회사 기억을 따르도록 공유
         globalDirectives: db.settings.globalDirectives || '',
-        companyContext: buildCompanyContext(db, '', { compact: true }),
+        // 진행 중인 쇼츠 업무가 있으면 최신 쇼츠 뉴스 후보 목록도 함께
+        companyContext: [buildCompanyContext(db, '', { compact: true }), shortsContextForTasks(db, openTasks)].filter(Boolean).join('\n\n'),
         pendingApprovals,
         activeMissions: activeMissions.map((m) => ({
           id: m.id,
@@ -131,6 +138,8 @@ export function createCeoMcpServer() {
         if (!include_completed && t.status === 'completed') return false;
         return true;
       });
+      const { shortsContextForTasks, withShortsCandidates } = await loadShortsHelpers();
+      const shortsNewsCandidates = shortsContextForTasks(db, tasks);
       const data = {
         count: tasks.length,
         tasks: tasks.map((t) => {
@@ -144,7 +153,8 @@ export function createCeoMcpServer() {
             status: t.status,
             requiresApproval: t.requiresApproval,
             estimatedCostKRW: t.estimatedCostKRW,
-            dispatchPrompt: t.dispatchPrompt,
+            // 쇼츠 프로젝트 업무는 지시서에 최신 뉴스 후보(RSS 링크)가 빠져 있으면 응답에 덧붙임
+            dispatchPrompt: withShortsCandidates(db, t),
             needsRevision: fb.needsRevision,
             revisionRound: fb.revisionRound,
             actionRequired: fb.actionRequired,
@@ -159,7 +169,8 @@ export function createCeoMcpServer() {
             lastDecision: fb.lastDecision
           };
         }),
-        ...(agent_id ? { recentFeedback: buildAgentRecentFeedback(db, agent_id, 12) } : {})
+        ...(agent_id ? { recentFeedback: buildAgentRecentFeedback(db, agent_id, 12) } : {}),
+        ...(shortsNewsCandidates ? { shortsNewsCandidates } : {})
       };
       return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
     }
