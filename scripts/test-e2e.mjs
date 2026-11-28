@@ -1656,6 +1656,113 @@ async function runTests() {
       assert.ok(pinnedBlock.includes(approvalNote), 'compact company context must include the pinned CEO approval note');
     }
 
+    // 21. 지시 상충·중단 확인 보고는 "가정:" 자동 반려 없이 대표님 확인 대기로 가고, CEO 중단·종료 결재 의견은 모순된 재지시 없이 업무를 접는지 검증
+    {
+      const { detectNonResult, classifyBlocker, triageGuidance } = await import('../src/lead-engine.js');
+      const conflictReport = '원래 지시(티스토리 병행·개설 안내)와 CEO 수정 지시(티스토리 중단)가 상충합니다. 어느 쪽이 유효한지 대표님 확정 전까지 보류하겠습니다. 확정된 지시를 알려 주세요.';
+      const conflictNr = detectNonResult(conflictReport);
+      assert.equal(conflictNr.nonResult, true, 'conflict report is not a deliverable');
+      assert.equal(conflictNr.conflict, true, 'conflict report must be flagged as a directive conflict');
+      assert.equal(classifyBlocker(conflictNr.reason), 'conflict', 'conflict report must not be classified as info');
+      assert.ok(!triageGuidance('conflict').includes('가정:'), 'conflict guidance must not ask the bot to invent assumptions');
+      // 기존 빈 거절 차단은 그대로 유지
+      const emptyNr = detectNonResult('필요한 자료가 없어 작성할 수 없습니다. 자료를 알려 주세요.');
+      assert.equal(emptyNr.nonResult, true, 'empty refusal is still a non-result');
+      assert.ok(!emptyNr.conflict, 'empty refusal is not a directive conflict');
+      assert.equal(classifyBlocker(emptyNr.reason), 'info', 'empty refusal stays info');
+      assert.ok(triageGuidance('info').includes('가정:'), 'info guidance keeps the assumption rule for empty refusals');
+
+      const cfMission = await (
+        await fetch(`${BASE}/api/missions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: 'CI 지시 상충·중단 미션',
+            domain: 'business',
+            costPolicy: 'balanced',
+            directive: '앱인토스 약관 동의 안내와 티스토리 개설 안내 문구를 정리해줘'
+          })
+        })
+      ).json();
+      assert.ok(cfMission.tasks.length >= 2, 'conflict mission needs at least two tasks');
+      const [cfTask, stopTask] = cfMission.tasks;
+      for (const t of [cfTask, stopTask]) {
+        await fetch(`${BASE}/api/tasks/${encodeURIComponent(t.id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ assigneeId: 'agent_cue' }) });
+      }
+
+      // ① 봇이 "지시 상충으로 확인 전까지 보류"를 제출 → "가정:" 반려 없이 대표님 확인 대기(보류)
+      const cfSubmit = await (
+        await fetch(`${BASE}/api/agent-inbox/cue/reply?${tokQ}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            taskId: cfTask.id,
+            missionId: cfMission.mission.id,
+            message: '지시가 상충해 확인 전까지 보류합니다.',
+            deliverable: conflictReport,
+            questions: ['티스토리 개설 안내를 계속할지, 중단 지시가 유효한지 확정해 주세요.']
+          })
+        })
+      ).json();
+      assert.equal(cfSubmit.ok, true, 'conflict report should submit');
+      assert.equal(cfSubmit.taskStatus, 'blocked', 'conflict report must escalate to CEO/lead confirmation (blocked), not be re-queued');
+      assert.ok(!String(cfSubmit.leadBotReply || '').includes('가정:'), 'bot must not receive the "가정:" auto-rejection');
+      assert.ok(String(cfSubmit.leadBotReply || '').includes('보류'), 'bot must be told to hold until a confirmed directive');
+      const cfState = await (await fetch(`${BASE}/api/state`)).json();
+      const cfTaskState = cfState.tasks.find((t) => t.id === cfTask.id);
+      assert.ok(!(cfTaskState.leadNotes || []).some((n) => String(n.text || '').includes('가정:')), 'no "가정:" triage note on a conflict report');
+      assert.ok(
+        (cfState.messages || []).some((m) => m.missionId === cfMission.mission.id && m.statusText === '대표님 확인 필요' && String(m.text || '').includes(cfTask.title)),
+        'lead must ask the CEO to confirm the conflicting directive'
+      );
+
+      const askApproval = async (taskId, rpcId) => {
+        const res = await (
+          await fetch(`${BASE}/api/mcp`, {
+            method: 'POST',
+            headers: mcpHeaders,
+            body: JSON.stringify({
+              jsonrpc: '2.0',
+              id: rpcId,
+              method: 'tools/call',
+              params: { name: 'request_ceo_approval', arguments: { task_id: taskId, title: 'CI 안내 문구 결재', summary: '안내 문구 확인', proposed_action: '승인 시 게시 준비' } }
+            })
+          })
+        ).json();
+        return JSON.parse(res.result.content[0].text).approval_id;
+      };
+      const decide = async (aprId, decision, ceoNote) =>
+        (
+          await fetch(`${BASE}/api/approvals/${encodeURIComponent(aprId)}/decide`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ decision, ceoNote })
+          })
+        ).json();
+
+      // 일반 수정 지시: 지시서 맨 앞에 최신 대표님 지시 + "최신 지시 최우선" 규칙
+      const reviseNote = '앱인토스 약관 동의 문구를 먼저 확정해서 다시 올려줘';
+      const reviseRes = await decide(await askApproval(stopTask.id, 130), 'revision_requested', reviseNote);
+      const revisedTask = reviseRes.state.tasks.find((t) => t.id === stopTask.id);
+      assert.ok(['queued', 'awaiting_bridge'].includes(revisedTask.status), 'normal revision re-queues the task');
+      assert.ok(String(revisedTask.dispatchPrompt || '').startsWith('[최신 대표님 지시'), 'latest CEO directive must lead the dispatch prompt');
+      assert.ok(String(revisedTask.dispatchPrompt || '').includes('최신 타임스탬프의 CEO 지시가 최우선'), 'dispatch prompt must state the latest-CEO-directive priority rule');
+      assert.ok((revisedTask.leadNotes || [])[0]?.text.includes(reviseNote) && revisedTask.leadNotes[0].text.includes('최우선'), 'latest lead note carries the CEO note and priority rule');
+
+      // ② CEO 결재 의견에 "티스토리 업무 중단/종료" → 원래 본문으로 재지시하지 않고 업무를 접음
+      const stopNote = 'TOSS 광고대행 약관 동의는 완료했고 티스토리 업무는 중단하고 다른 수익모델 찾기 바람';
+      const stopRes = await decide(await askApproval(stopTask.id, 131), 'revision_requested', stopNote);
+      assert.equal(stopRes.approval?.status, 'revision_requested', 'stop note decision is recorded');
+      const stoppedTask = stopRes.state.tasks.find((t) => t.id === stopTask.id);
+      assert.equal(stoppedTask.status, 'rejected', 'CEO stop/terminate note must close the task instead of re-dispatching it');
+      assert.equal(stoppedTask.ceoDecision?.stoppedByCeo, true, 'stopped task is marked as stopped by the CEO');
+      assert.ok(String(stoppedTask.rejectionReason || '').includes('티스토리 업무는 중단'), 'stop reason keeps the CEO note');
+      assert.ok(
+        (stopRes.state.messages || []).some((m) => m.missionId === cfMission.mission.id && m.statusText === '대표님 중단 지시 반영' && String(m.text || '').includes(stopTask.title)),
+        'lead must post that the task was stopped without a contradictory re-dispatch'
+      );
+    }
+
     // Clean reset after tests
     await fetch(`${BASE}/api/reset`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: 'RESET-ALL-DATA' }) });
     console.log('✅ All AI CEO Hub E2E tests (REST + Continuous Project Loop + Team Lead Chat + Official MCP SDK + Async Pickle HTTPS Inbox + Heartbeat + Cascade Delete + Web Push + Telegram) passed!');

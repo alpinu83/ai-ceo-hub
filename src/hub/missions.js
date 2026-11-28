@@ -1,7 +1,7 @@
 // hub/missions.js: server.js에서 분리 (공유 로직)
 import { DEV_TEAM, dispatchDevTeamTask } from './dev-policy.js';
 import { kickShortsFactory, queueShortsJob } from './shorts.js';
-import { pickBotOrDevMember, ASSIGNMENT_RULES, buildPlanningRoster, isStandingOrder, markCeoActivity, rebalanceAssignments, rememberFact, addLeadNote, isAgentExhausted, pickQuotaSubstitute } from '../lead-engine.js';
+import { pickBotOrDevMember, ASSIGNMENT_RULES, buildPlanningRoster, isStandingOrder, markCeoActivity, rebalanceAssignments, rememberFact, addLeadNote, isAgentExhausted, pickQuotaSubstitute, kstShort } from '../lead-engine.js';
 import { appendLog, appendMessage, applyInferredMissionBindings, flushCloudBackup, loadDb, saveDb, uid } from '../store.js';
 import { assessFeasibility, getOutsourcingSettings } from '../outsourcing.js';
 import { leadSpeakerProfile } from '../lead-desk.js';
@@ -399,6 +399,23 @@ export function leadSay(db, mission, statusText, text) {
   return lead;
 }
 
+// 최신 대표님 지시 우선 규칙: 원래 본문·이전 메모와 반대되는 지시가 쌓여도 봇이 가장 최근 CEO 지시를 따르게 함
+export const LATEST_CEO_RULE = '최신 CEO 지시가 이전 본문·이전 메모와 충돌하면 항상 최신 타임스탬프의 CEO 지시가 최우선이며, 이전 반대 내용은 무시한다.';
+// 결재 메모에 이 업무 자체의 중단·종료·취소·폐기 의사가 담겼는지 (예: "티스토리 업무 종료", "이 건은 진행하지 마")
+const CEO_STOP_RE = /((중단|종료|취소|폐기|그만)\s*(하고|해|하세요|하자|합니다|한다|함|하기로|바람|요망|처리|시켜|$|[.!,\n])|(더\s*(는|이상)?|진행|작업|업무|이\s*건)\s*(은|는|을|를)?\s*하지\s*마|(진행|작업|업무)\s*(은|는|을|를)?\s*안\s*함)/;
+// 중단 의사가 아닌 표현(중단하지 말고, 취소 규정, 종료일 등)은 먼저 지우고 판단
+const CEO_STOP_NEGATED_RE = /(중단|종료|취소|폐기|그만)\s*(하지\s*(말|마)|없이|말고|하면\s*안)|취소\s*(규정|정책|수수료|가능|기한)|종료\s*(일|시점|시간)/g;
+export function isCeoStopNote(note = '') {
+  return CEO_STOP_RE.test(String(note || '').replace(CEO_STOP_NEGATED_RE, ' '));
+}
+
+/** 지시서 맨 앞에 최신 대표님 지시와 우선순위 규칙을 둠 (원래 본문이 뒤에 있어도 최신 지시가 먼저 보이게) */
+export function withLatestCeoDirective(prompt = '', note = '', stamp = '') {
+  const n = String(note || '').trim();
+  if (!n) return prompt;
+  return `[최신 대표님 지시${stamp ? ` · ${stamp}` : ''} · 최우선]\n${n}\n※ ${LATEST_CEO_RULE}\n\n${prompt}`;
+}
+
 export function applyApprovalDecisionInDb(aprId, decision, ceoNote = '') {
   if (!['approved', 'revision_requested', 'rejected'].includes(decision)) {
     return { ok: false, status: 400, error: '올바른 결재 결정 값이 아닙니다.' };
@@ -438,19 +455,36 @@ export function applyApprovalDecisionInDb(aprId, decision, ceoNote = '') {
         const job = queueShortsJob(db, task);
         if (job?.status === 'queued') kickShortsFactory(db.settings).catch(() => {});
       }
+    } else if (decision === 'revision_requested' && isCeoStopNote(apr.ceoNote)) {
+      // 대표님이 이 업무 자체의 중단·종료·취소를 지시 → 원래(반대) 본문에 메모만 붙여 봇에게 모순된 재지시를 보내지 않고 업무를 접음
+      const stamp = kstShort(now);
+      task.status = 'rejected';
+      task.ceoFeedback = apr.ceoNote;
+      task.rejectionReason = `대표님 중단·종료 지시: ${apr.ceoNote}`;
+      task.ceoDecision = { action: 'drop', decision: 'rejected', feedback: apr.ceoNote, approvalId: apr.id, at: now, stoppedByCeo: true };
+      task.description = `${task.description}\n[CEO 중단·종료 지시 · ${stamp} · 최우선] ${apr.ceoNote}`;
+      addLeadNote(task, 'ceo', `대표님 중단·종료 지시(${stamp}): ${apr.ceoNote} — 이 업무는 접고 담당 봇에게 다시 지시하지 않음`);
+      const stopMission = db.missions.find((m) => m.id === task.missionId);
+      if (stopMission) {
+        // 남은 일(예: "다른 수익모델 찾기")은 팀장이 작전을 재계획해 새 업무로 배정
+        const ops = isOpsMission(stopMission);
+        if (ops) stopMission.plan = { ...(stopMission.plan || {}), needsReplan: true };
+        leadSay(db, stopMission, '대표님 중단 지시 반영', `대표님 지시("${apr.ceoNote.slice(0, 160)}")에 따라 "${task.title}" 업무를 접었습니다. 이전 본문으로 담당 봇에게 다시 지시하지 않습니다.${ops ? ' 남은 일은 팀장이 작전을 재계획해 새 업무로 배정합니다.' : ''}`);
+      }
     } else if (decision === 'revision_requested') {
       const targetAgent = db.agents.find((a) => a.id === task.assigneeId) || agent;
+      const stamp = kstShort(now);
       task.status = targetAgent?.connectionMode === 'bridge' ? 'awaiting_bridge' : 'queued';
       task.ceoFeedback = apr.ceoNote || '수정 지시 후 재상신 요청';
       task.ceoDecision = { action: 'revision_requested', decision: 'revision_requested', feedback: apr.ceoNote || '', approvalId: apr.id, at: now };
       if (apr.ceoNote) {
-        task.description = `${task.description}\n[CEO 수정 지시] ${apr.ceoNote}`;
-        addLeadNote(task, 'ceo', `대표님 수정 지시: ${apr.ceoNote}`);
+        task.description = `${task.description}\n[CEO 수정 지시 · ${stamp} · 최신 지시 우선] ${apr.ceoNote}`;
+        addLeadNote(task, 'ceo', `대표님 수정 지시(${stamp}, 최신·최우선): ${apr.ceoNote} — ${LATEST_CEO_RULE}`);
       } else {
         addLeadNote(task, 'ceo', '대표님 수정 지시 (상세 메모 없음)');
       }
       const mission = db.missions.find((m) => m.id === task.missionId);
-      if (targetAgent && mission) task.dispatchPrompt = buildDispatchPrompt(targetAgent, task, mission);
+      if (targetAgent && mission) task.dispatchPrompt = withLatestCeoDirective(buildDispatchPrompt(targetAgent, task, mission), apr.ceoNote, stamp);
     } else {
       task.status = 'rejected';
       task.ceoFeedback = apr.ceoNote || '';
@@ -555,7 +589,8 @@ function applyCeoApprovalNote(db, apr, task, decision) {
   if (!missionId) return;
   const decidedIds = new Set([apr.taskId, ...(Array.isArray(apr.taskIds) ? apr.taskIds : [])].filter(Boolean));
   const mission = db.missions.find((m) => m.id === missionId);
-  const memo = `[대표님 결재 의견 반영] ${note}`;
+  const stamp = kstShort(apr.decidedAt);
+  const memo = `[대표님 결재 의견 반영 · ${stamp} · 최신 지시 우선] ${note} — ${LATEST_CEO_RULE}`;
   for (const t of db.tasks) {
     if (t.missionId !== missionId || decidedIds.has(t.id)) continue;
     if (!['awaiting_bridge', 'queued'].includes(t.status)) continue;
@@ -564,9 +599,9 @@ function applyCeoApprovalNote(db, apr, task, decision) {
     const ag = db.agents.find((a) => a.id === t.assigneeId);
     if (ag && mission) {
       const prompt = buildDispatchPrompt(ag, t, mission);
-      // 작업 지시서(팀장 피드백)를 쓰지 않는 봇(피클·인스팅스 등)에도 전달되도록 없으면 끝에 붙임
+      // 작업 지시서(팀장 피드백)를 쓰지 않는 봇(피클·인스팅스 등)에도 전달되도록 없으면 맨 앞에 최신 지시로 붙임
       const probe = note.replace(/\s+/g, ' ').slice(0, 12);
-      t.dispatchPrompt = prompt.includes(probe) ? prompt : `${prompt}\n\n${memo}`;
+      t.dispatchPrompt = prompt.includes(probe) ? prompt : withLatestCeoDirective(prompt, note, stamp);
     }
     t.updatedAt = new Date().toISOString();
   }
