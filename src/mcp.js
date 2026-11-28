@@ -46,6 +46,22 @@ export const MCP_TOOL_CATALOG = [
  * Create a fresh official @modelcontextprotocol/sdk McpServer instance
  * with all CEO Office governance & delegation tools registered via Zod schemas.
  */
+/**
+ * request_aside_review·request_aside_task가 연결할 프로젝트(미션) 찾기.
+ * 저장소가 일치하는 미션 → (ai-ceo-hub면) 제목에 'CEO Office'가 있는 미션 → 없으면 연결하지 않음(missionId '').
+ * 무관한 첫 프로젝트(예: 유튜브 쇼츠)로 폴백하면 코드 PR 결재에 그 프로젝트의 성과품·지침이 딸려오므로 폴백하지 않습니다.
+ */
+export function findRepoMission(db, repo = '') {
+  const slug = String(repo || '').trim().toLowerCase();
+  if (!slug) return null;
+  const missions = db?.missions || [];
+  return (
+    missions.find((m) => String(m.githubRepo || '').trim().toLowerCase() === slug) ||
+    (/(^|\/)ai-ceo-hub$/.test(slug) ? missions.find((m) => /CEO Office/i.test(m.title || '')) : null) ||
+    null
+  );
+}
+
 // 서버의 업무 처리 엔진(팀장 검수·결과물 등록)으로 결과를 넘기는 훅
 let taskResultHandler = null;
 export function setTaskResultHandler(fn) {
@@ -564,10 +580,7 @@ export function createCeoMcpServer() {
         .map((x) => String(x || '').trim().slice(0, 240))
         .filter(Boolean)
         .slice(0, 8);
-      const mission =
-        (db.missions || []).find((m) => String(m.githubRepo || '').toLowerCase() === repo.toLowerCase()) ||
-        (db.missions || []).find((m) => m.mode === 'project' && !m.isRoutineHub) ||
-        null;
+      const mission = findRepoMission(db, repo);
 
       const reviewGoal = [
         `Antigravity가 작성한 PR #${prNum}을 검수하고, 문제가 없으면 승인(제출)하거나 보완 사항을 지적해 주세요.`,
@@ -700,10 +713,7 @@ export function createCeoMcpServer() {
       }
 
       const mission =
-        (mission_id ? (db.missions || []).find((m) => m.id === mission_id) : null) ||
-        (cleanRepo ? (db.missions || []).find((m) => String(m.githubRepo || '').toLowerCase() === cleanRepo.toLowerCase()) : null) ||
-        (db.missions || []).find((m) => m.mode === 'project' && !m.isRoutineHub) ||
-        null;
+        (mission_id ? (db.missions || []).find((m) => m.id === mission_id) : null) || findRepoMission(db, cleanRepo);
 
       const defaultDeliverable =
         kind === 'code'
