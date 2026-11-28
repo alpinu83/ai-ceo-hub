@@ -220,19 +220,93 @@ export function leadLines(markdown, count = 2, max = 160) {
     .slice(0, count);
 }
 
+// ---- 대표님 체크리스트 정제 규칙 (결재함 · 팀장 보고 · 성과품 문서 공용)
+// 대표님이 실제로 결정·실행해야 할 핵심 항목만 남기고, 완료된 AI 작업·'해당 없음'·표 헤더·개발팀 기술 검수 규정은 뺍니다.
+export const CHECKLIST_CORE_MAX = 5;
+const CHECKBOX_OPEN_RE = /^(?:[-*•]\s*)?(?:\[ \]|☐|□)\s+(.+)$/;
+const CHECKBOX_DONE_RE = /^(?:[-*•]\s*)?(?:\[[xX]\]|☑️?|✅|✔️?)\s*(.+)$/;
+const CHECKLIST_NA_RE = /(해당\s*(?:사항\s*)?없음|미해당|(?:^|[:：—–-]\s*)없음\s*[.)]?$|(?:^|[\s(:：—–-])N\s*\/\s*A(?:$|[\s).,])|^N\/?A$)/i;
+const CHECKLIST_TABLE_HEAD_CELL_RE = /^(?:검수\s*)?(?:영역|구분|항목|분류|카테고리|단계|번호|체크\s*항목|확인\s*항목|no\.?|#)$/i;
+const CHECKLIST_DEV_TECH_RE = /(\b(?:CSR|SSG|SSR|eval|WebView|iframe|bridge|CSP|XSS|CORS|innerHTML)\b|웹뷰|아이프레임|브릿지|네비게이션\s*바|내비게이션\s*바|스킴|URL\s*scheme|식별키)/i;
+const CHECKLIST_CEO_KEEP_RE = /\[\s*대표님|대표님\s*(?:확인|승인|선택|결정)/;
+const CHECKLIST_CEO_PRIORITY_RE = /(\[\s*대표님|승인|선택|결정|로그인|콘솔|약관|결제|등록|개설|발송|계정)/;
+
+/** 체크리스트 항목 비교용 키 (기호·공백 제거) */
+export function checklistKey(item = '') {
+  return String(item || '')
+    .toLowerCase()
+    .replace(/[^0-9a-z가-힣]/g, '');
+}
+
+/** 대표님 할 일이 아닌 항목인지: '해당 없음'·표 헤더·개발팀 기술 검수 규정(대표님 명시 항목은 제외) */
+export function isChecklistNoise(item = '') {
+  const s = String(item || '').replace(/\s+/g, ' ').trim();
+  if (!s) return true;
+  if (CHECKBOX_DONE_RE.test(s)) return true;
+  if (CHECKLIST_NA_RE.test(s)) return true;
+  const firstCell = s.split(/\s+[—–]\s+/)[0].trim();
+  if (s.includes('—') && CHECKLIST_TABLE_HEAD_CELL_RE.test(firstCell)) return true;
+  if (/필수\s*준수\s*항목\s*요약/.test(s)) return true;
+  if (CHECKLIST_DEV_TECH_RE.test(s) && !CHECKLIST_CEO_KEEP_RE.test(s)) return true;
+  return false;
+}
+
+function matchesChecklistKey(key, excludeKeys) {
+  if (!key || !excludeKeys || !excludeKeys.size) return false;
+  if (excludeKeys.has(key)) return true;
+  for (const ex of excludeKeys) {
+    if (ex.length >= 8 && key.length >= 8 && (ex.startsWith(key) || key.startsWith(ex))) return true;
+  }
+  return false;
+}
+
+/** 이미 완료 표시([x]·☑·✅)된 체크박스 항목의 키 모음 (저장된 옛 체크리스트 정제용) */
+export function completedChecklistKeys(markdown = '') {
+  const keys = new Set();
+  for (const raw of String(markdown || '').split('\n')) {
+    const m = raw.trim().match(CHECKBOX_DONE_RE);
+    if (!m) continue;
+    const k = checklistKey(cleanSnippet(m[1], 140));
+    if (k.length >= 4) keys.add(k);
+  }
+  return keys;
+}
+
+/**
+ * 체크리스트 문자열 목록을 정제합니다: 불필요 항목 제외 → 중복 제거 → 대표님 결정·외부 실행 항목 우선 정렬 → 최대 max건.
+ * 저장된 apr.checklist를 다시 읽을 때도 같은 규칙을 쓰기 위해 공개합니다.
+ */
+export function refineChecklistItems(items = [], { max = CHECKLIST_CORE_MAX, excludeKeys = null } = {}) {
+  const limit = Math.max(1, Math.min(Number(max) || CHECKLIST_CORE_MAX, CHECKLIST_CORE_MAX));
+  const seen = new Set();
+  const kept = [];
+  for (const raw of Array.isArray(items) ? items : []) {
+    const s = String(raw || '').trim();
+    const key = checklistKey(s);
+    if (!s || !key || seen.has(key)) continue;
+    seen.add(key);
+    if (isChecklistNoise(s) || matchesChecklistKey(key, excludeKeys)) continue;
+    kept.push(s);
+  }
+  const priority = kept.filter((s) => CHECKLIST_CEO_PRIORITY_RE.test(s));
+  const rest = kept.filter((s) => !CHECKLIST_CEO_PRIORITY_RE.test(s));
+  return [...priority, ...rest].slice(0, limit);
+}
+
 /**
  * Extract concrete CEO checklist items from a task's markdown output:
- *  1) Explicit checkboxes (- [ ], * [ ], □, ☐)
+ *  1) Open checkboxes (- [ ], * [ ], □, ☐) — 완료 표시([x]·☑·✅)는 제외
  *  2) Bullet/numbered items under a checklist / CEO action heading
+ * 이후 refineChecklistItems로 '해당 없음'·표 헤더·개발 기술 항목을 빼고 대표님 핵심 항목을 최대 CHECKLIST_CORE_MAX건만 남깁니다.
  */
-export function extractChecklistItems(markdown = '', maxItems = 8) {
+export function extractChecklistItems(markdown = '', maxItems = CHECKLIST_CORE_MAX) {
   const lines = String(markdown || '').split('\n');
   const explicit = [];
   const underHeading = [];
   let inChecklistSection = false;
 
-  for (const raw of lines) {
-    const line = raw.trim();
+  for (let idx = 0; idx < lines.length; idx += 1) {
+    const line = lines[idx].trim();
     if (!line) continue;
 
     // Detect headings (markdown # or bold section headers)
@@ -245,10 +319,13 @@ export function extractChecklistItems(markdown = '', maxItems = 8) {
       continue;
     }
 
-    // 1) Explicit checkbox item anywhere in the document
-    const cb = line.match(/^(?:[-*•]\s*)?(\[[ xX]\]|☐|□|☑️)\s+(.+)$/);
+    // 1-a) 이미 완료된 체크박스는 대표님 할 일이 아님
+    if (CHECKBOX_DONE_RE.test(line) && /^(?:[-*•]\s*)?(?:\[[xX]\]|☑|✅|✔)/.test(line)) continue;
+
+    // 1-b) Open checkbox item anywhere in the document
+    const cb = line.match(CHECKBOX_OPEN_RE);
     if (cb) {
-      const cleaned = cleanSnippet(cb[2], 140);
+      const cleaned = cleanSnippet(cb[1], 140);
       if (cleaned.length >= 4) explicit.push(cleaned);
       continue;
     }
@@ -261,9 +338,11 @@ export function extractChecklistItems(markdown = '', maxItems = 8) {
         if (cleaned.length >= 4 && !BOILERPLATE_RE.test(cleaned)) underHeading.push(cleaned);
       } else if (/^\|/.test(line)) {
         // Table row inside a checklist section (skip separator/header rows)
-        if (!/^\|[\s:-]+\|/.test(line)) {
+        const nextLine = String(lines[idx + 1] || '').trim();
+        const isHeaderRow = /^\|[\s:|-]+\|?\s*$/.test(nextLine) && /-/.test(nextLine);
+        if (!/^\|[\s:-]+\|/.test(line) && !isHeaderRow) {
           const cells = line.split('|').map((c) => c.trim()).filter(Boolean);
-          if (cells.length >= 2 && !/^(항목|번호|구분|단계|no\.?|#)$/i.test(cells[0])) {
+          if (cells.length >= 2 && !CHECKLIST_TABLE_HEAD_CELL_RE.test(cells[0])) {
             const joined = cleanSnippet(cells.slice(0, 2).join(' — '), 140);
             if (joined.length >= 6) underHeading.push(joined);
           }
@@ -272,17 +351,7 @@ export function extractChecklistItems(markdown = '', maxItems = 8) {
     }
   }
 
-  const seen = new Set();
-  const merged = [];
-  for (const item of [...explicit, ...underHeading]) {
-    const key = item.toLowerCase().replace(/\s+/g, '');
-    if (!seen.has(key)) {
-      seen.add(key);
-      merged.push(item);
-      if (merged.length >= maxItems) break;
-    }
-  }
-  return merged;
+  return refineChecklistItems([...explicit, ...underHeading], { max: maxItems });
 }
 
 /**

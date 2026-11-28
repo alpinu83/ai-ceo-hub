@@ -1826,6 +1826,58 @@ function isCodeApprovalClient(apr) {
   return Boolean(apr && (apr.kind === 'it_pr_merge' || apr.prNumber || apr.codeChange?.status));
 }
 
+// ---- 결재함 대표님 체크리스트 정제 (서버 src/lead-engine.js refineChecklistItems 규칙과 동일)
+// 저장된 옛 apr.checklist에 섞인 완료([x])·'해당 없음'·표 헤더·개발 기술 검수 항목을 화면에서 다시 걸러 핵심 최대 5건만 보여 줍니다.
+const CEO_CK_MAX = 5;
+const CEO_CK_DONE_RE = /^(?:[-*•]\s*)?(?:\[[xX]\]|☑️?|✅|✔️?)\s*(.+)$/;
+const CEO_CK_NA_RE = /(해당\s*(?:사항\s*)?없음|미해당|(?:^|[:：—–-]\s*)없음\s*[.)]?$|(?:^|[\s(:：—–-])N\s*\/\s*A(?:$|[\s).,])|^N\/?A$)/i;
+const CEO_CK_HEAD_CELL_RE = /^(?:검수\s*)?(?:영역|구분|항목|분류|카테고리|단계|번호|체크\s*항목|확인\s*항목|no\.?|#)$/i;
+const CEO_CK_TECH_RE = /(\b(?:CSR|SSG|SSR|eval|WebView|iframe|bridge|CSP|XSS|CORS|innerHTML)\b|웹뷰|아이프레임|브릿지|네비게이션\s*바|내비게이션\s*바|스킴|URL\s*scheme|식별키)/i;
+const CEO_CK_KEEP_RE = /\[\s*대표님|대표님\s*(?:확인|승인|선택|결정)/;
+const CEO_CK_PRIORITY_RE = /(\[\s*대표님|승인|선택|결정|로그인|콘솔|약관|결제|등록|개설|발송|계정)/;
+const ceoCkKey = (s) => String(s || '').toLowerCase().replace(/[^0-9a-z가-힣]/g, '');
+
+function isCeoChecklistNoise(item) {
+  const s = String(item || '').replace(/\s+/g, ' ').trim();
+  if (!s) return true;
+  if (CEO_CK_DONE_RE.test(s) || CEO_CK_NA_RE.test(s)) return true;
+  if (s.includes('—') && CEO_CK_HEAD_CELL_RE.test(s.split(/\s+[—–]\s+/)[0].trim())) return true;
+  if (/필수\s*준수\s*항목\s*요약/.test(s)) return true;
+  return CEO_CK_TECH_RE.test(s) && !CEO_CK_KEEP_RE.test(s);
+}
+
+function approvalChecklistForView(apr) {
+  const items = Array.isArray(apr?.checklist) ? apr.checklist : [];
+  if (!items.length) return [];
+  // 연결된 산출물 원문에서 이미 완료 표시된 항목 키 모음
+  const doneKeys = new Set();
+  const ids = new Set([apr.taskId, ...(Array.isArray(apr.taskIds) ? apr.taskIds : [])].filter(Boolean));
+  for (const id of ids) {
+    const t = (state.tasks || []).find((x) => x.id === id);
+    for (const line of String(t?.output || '').split('\n')) {
+      const m = line.trim().match(CEO_CK_DONE_RE);
+      const k = m ? ceoCkKey(m[1].replace(/[*_`]/g, '')) : '';
+      if (k.length >= 4) doneKeys.add(k);
+    }
+  }
+  const isDone = (k) => {
+    if (doneKeys.has(k)) return true;
+    for (const d of doneKeys) if (d.length >= 8 && k.length >= 8 && (d.startsWith(k) || k.startsWith(d))) return true;
+    return false;
+  };
+  const seen = new Set();
+  const kept = [];
+  for (const raw of items) {
+    const s = String(raw || '').trim();
+    const k = ceoCkKey(s);
+    if (!s || !k || seen.has(k)) continue;
+    seen.add(k);
+    if (isCeoChecklistNoise(s) || isDone(k)) continue;
+    kept.push(s);
+  }
+  return [...kept.filter((s) => CEO_CK_PRIORITY_RE.test(s)), ...kept.filter((s) => !CEO_CK_PRIORITY_RE.test(s))].slice(0, CEO_CK_MAX);
+}
+
 function renderApprovalsView() {
   const pending = state.approvals.filter((a) => a.status === 'pending');
   const decided = state.approvals.filter((a) => a.status !== 'pending');
@@ -1930,16 +1982,30 @@ function renderApprovalsView() {
         </div>`;
     })()}
 
-    ${
-      Array.isArray(apr.checklist) && apr.checklist.length
-        ? `<div class="memo-section">
-            <h4>☑️ 대표님 확인 · 실행 체크리스트 (${apr.checklist.length}건)</h4>
-            <ul style="margin:0;padding-left:18px;display:flex;flex-direction:column;gap:6px;font-size:13.5px;line-height:1.55;">
-              ${apr.checklist.map((item) => `<li style="list-style:'☐  ';">${esc(item)}</li>`).join('')}
-            </ul>
-          </div>`
-        : ''
-    }
+    ${(() => {
+      // 대표님 핵심 확인 항목만(완료·해당 없음·표 헤더·개발 기술표 제외, 최대 5건). 4건 이상이면 상위 3건만 펼치고 나머지는 접음
+      const coreCk = approvalChecklistForView(apr);
+      if (!coreCk.length) return '';
+      const listStyle = 'margin:0;padding-left:20px;display:flex;flex-direction:column;gap:6px;font-size:13.5px;line-height:1.55;list-style:decimal;';
+      const shown = coreCk.length >= 4 ? coreCk.slice(0, 3) : coreCk;
+      const folded = coreCk.length >= 4 ? coreCk.slice(3) : [];
+      return `<div class="memo-section">
+            <h4>📋 대표님 확인 · 실행 체크리스트 <span style="font-weight:500;color:var(--ink-muted);font-size:12.5px;">(핵심 확인·참고용 · ${coreCk.length}건)</span></h4>
+            <ol style="${listStyle}">
+              ${shown.map((item) => `<li>${esc(item)}</li>`).join('')}
+            </ol>
+            ${
+              folded.length
+                ? `<details style="margin-top:6px;">
+                    <summary style="cursor:pointer;font-size:12.5px;color:var(--ink-muted);">나머지 ${folded.length}건 더 보기</summary>
+                    <ol start="4" style="${listStyle}margin-top:6px;">
+                      ${folded.map((item) => `<li>${esc(item)}</li>`).join('')}
+                    </ol>
+                  </details>`
+                : ''
+            }
+          </div>`;
+    })()}
 
     <div class="memo-section">
       <h4>팀장 권고 · 승인 시 실행될 작업</h4>

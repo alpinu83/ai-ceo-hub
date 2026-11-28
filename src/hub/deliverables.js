@@ -2,7 +2,7 @@
 // 텔레그램 결재 카드의 [📎 성과품 받기] 버튼과 /doc 명령이 이 문서를 파일로 보내, 대표님이 결재 전에 실제 결과물을 볼 수 있게 합니다.
 // db를 인자로 받는 순수 함수라 저장소(store)를 건드리지 않습니다.
 
-import { extractChecklistItems } from '../lead-engine.js';
+import { CHECKLIST_CORE_MAX, completedChecklistKeys, extractChecklistItems, refineChecklistItems } from '../lead-engine.js';
 
 const MAX_SECTION = 12000;
 const MAX_DOC = 60000;
@@ -87,6 +87,22 @@ export function formatDeliverableOutput(raw = '') {
   return text;
 }
 
+/**
+ * 결재 안건의 대표님 체크리스트를 새 추출 규칙과 같은 기준으로 정제합니다.
+ * - 저장된 apr.checklist(옛 규칙으로 12건씩 쌓인 것 포함)도 다시 걸러, 완료([x])·'해당 없음'·표 헤더·개발 기술 항목이 재노출되지 않게 합니다.
+ * - 완료 여부는 문자열만으로 알 수 없으므로, 연결된 산출물 원문에서 완료 표시된 항목 키를 모아 함께 제외합니다.
+ */
+function refineApprovalChecklist(storedItems, sourceTexts = []) {
+  const excludeKeys = new Set();
+  const candidates = [...(Array.isArray(storedItems) ? storedItems : [])];
+  for (const text of sourceTexts) {
+    if (!String(text || '').trim()) continue;
+    for (const k of completedChecklistKeys(text)) excludeKeys.add(k);
+    candidates.push(...extractChecklistItems(text, CHECKLIST_CORE_MAX));
+  }
+  return refineChecklistItems(candidates, { max: CHECKLIST_CORE_MAX, excludeKeys });
+}
+
 /** 결재 안건과 연결된 업무 ID들: 단일 업무, 묶음(PR·성과품) 업무, 관문/다음단계 결재면 그 업무의 최근 결과물 */
 export function relatedTaskIds(db, apr) {
   const ids = new Set();
@@ -150,23 +166,11 @@ export function enrichApprovalDeliverables(db, apr) {
     changed = true;
   }
 
-  // 연결된 모든 산출물 + 외주 결과에서 체크리스트 항목 자동 추출·병합
-  const ckSeen = new Set();
-  const mergedCk = [];
-  const addCk = (item) => {
-    const s = String(item || '').trim();
-    const k = s.toLowerCase().replace(/\s+/g, '');
-    if (s && !ckSeen.has(k) && mergedCk.length < 12) {
-      ckSeen.add(k);
-      mergedCk.push(s);
-    }
-  };
-  for (const item of Array.isArray(apr.checklist) ? apr.checklist : []) addCk(item);
+  // 연결된 모든 산출물 + 외주 결과에서 체크리스트 항목 자동 추출·병합 (대표님 핵심 항목만, 최대 CHECKLIST_CORE_MAX건)
+  const ckSources = [];
   for (const id of nextIds) {
     const t = (db.tasks || []).find((x) => x.id === id);
-    if (t?.output) {
-      for (const item of extractChecklistItems(t.output, 8)) addCk(item);
-    }
+    if (t?.output) ckSources.push(t.output);
   }
   const consultId = apr.consult?.requestId || apr.consultRequestId || '';
   for (const r of db.outsourcing || []) {
@@ -174,12 +178,13 @@ export function enrichApprovalDeliverables(db, apr) {
       r?.result &&
       (r.approvalId === apr.id || (r.taskId && idSet.has(r.taskId)) || (apr.outsourceId && r.id === apr.outsourceId) || (consultId && r.id === consultId))
     ) {
-      for (const item of extractChecklistItems(r.result.document || r.result.summary || '', 6)) addCk(item);
+      ckSources.push(r.result.document || r.result.summary || '');
     }
   }
+  const mergedCk = refineApprovalChecklist(apr.checklist, ckSources);
 
   const prevCk = Array.isArray(apr.checklist) ? apr.checklist : [];
-  if (mergedCk.length && (mergedCk.length !== prevCk.length || mergedCk.some((c, i) => prevCk[i] !== c))) {
+  if ((mergedCk.length || prevCk.length) && (mergedCk.length !== prevCk.length || mergedCk.some((c, i) => prevCk[i] !== c))) {
     apr.checklist = mergedCk;
     changed = true;
   }
@@ -202,23 +207,10 @@ export function buildApprovalDeliverable(db, aprId) {
 
   // 0) 대표님 확인·실행 체크리스트 (안건 자체 또는 첨부 결과물에서 추출)
   const taskIds = relatedTaskIds(db, apr);
-  const checklist = [];
-  const seenCk = new Set();
-  const pushCk = (item) => {
-    const s = String(item || '').trim();
-    const k = s.toLowerCase().replace(/\s+/g, '');
-    if (s && !seenCk.has(k)) {
-      seenCk.add(k);
-      checklist.push(s);
-    }
-  };
-  for (const item of Array.isArray(apr.checklist) ? apr.checklist : []) pushCk(item);
-  for (const id of taskIds) {
-    const t = (db.tasks || []).find((x) => x.id === id);
-    if (t?.output) {
-      for (const item of extractChecklistItems(t.output, 8)) pushCk(item);
-    }
-  }
+  const checklist = refineApprovalChecklist(
+    apr.checklist,
+    taskIds.map((id) => (db.tasks || []).find((x) => x.id === id)?.output || '')
+  );
   if (checklist.length) {
     sections.push({
       heading: '☑️ 대표님 확인 · 실행 체크리스트',
