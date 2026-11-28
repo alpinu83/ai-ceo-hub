@@ -105,6 +105,7 @@ async function runTests() {
       'request_ceo_action',
       'pass_outsourcing_request',
       'request_aside_review',
+      'request_aside_task',
       'list_lead_jobs',
       'claim_lead_job',
       'submit_lead_job'
@@ -1188,6 +1189,49 @@ async function runTests() {
       const dupPayload = JSON.parse(dupReviewRes.result.content[0].text);
       assert.equal(dupPayload.alreadyQueued, true, 'Duplicate request_aside_review for same PR must deduplicate');
       assert.equal(dupPayload.request_id, goodPayload.request_id, 'Duplicate call must return existing request_id');
+
+      // 18b. MCP request_aside_task: 코드/브라우저/설계 일반 요청을 Aside 작업 큐로 직접 위임 + 검증 + 중복 방지
+      const mcpTaskCall = async (args) =>
+        (
+          await fetch(`${BASE}/api/mcp?${tokQ}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 89, method: 'tools/call', params: { name: 'request_aside_task', arguments: args } })
+          })
+        ).json();
+
+      const badTaskGoal = await mcpTaskCall({ kind: 'code', title: '짧음', goal: '짧은목표' });
+      assert.equal(badTaskGoal.result?.isError, true, 'request_aside_task must reject goals shorter than 10 chars');
+
+      const badRepoTask = await mcpTaskCall({ kind: 'code', title: '잘못된 저장소', goal: '잘못된 저장소 문자열 테스트입니다.', repo: 'not-a-valid-repo' });
+      assert.equal(badRepoTask.result?.isError, true, 'request_aside_task must reject invalid owner/repo format');
+
+      const asideCodeTaskRes = await mcpTaskCall({
+        kind: 'code',
+        title: 'Aside 직접 위임 코드 작업 테스트',
+        goal: '대시보드 카드에 작업자별 사용량 요약 섹션을 추가하고 npm test로 검증해 PR을 열어 주세요.',
+        repo: 'alpinu83/ai-ceo-hub',
+        context: 'AGY 크레딧 절약을 위해 Aside가 직접 구현합니다.'
+      });
+      assert.ok(!asideCodeTaskRes.result?.isError, 'request_aside_task should succeed for valid code task');
+      const asideCodePayload = JSON.parse(asideCodeTaskRes.result.content[0].text);
+      assert.equal(asideCodePayload.ok, true);
+      assert.equal(asideCodePayload.created, true);
+      assert.equal(asideCodePayload.target, 'aside');
+      assert.equal(asideCodePayload.repo, 'alpinu83/ai-ceo-hub');
+      assert.ok(/^OUT-/.test(asideCodePayload.request_id || ''), 'request_aside_task must return OUT- id');
+
+      const asideTaskQueue = await (await fetch(`${BASE}/api/outsourcing?${tokQ}&worker=aside`)).json();
+      assert.ok((asideTaskQueue.requests || []).some((r) => r.id === asideCodePayload.request_id), 'Aside polling must immediately see request_aside_task item');
+
+      const dupTaskRes = await mcpTaskCall({
+        kind: 'code',
+        title: 'Aside 직접 위임 코드 작업 테스트',
+        goal: '같은 제목으로 중복 요청했을 때 기존 요청 ID를 반환해야 합니다.'
+      });
+      const dupTaskPayload = JSON.parse(dupTaskRes.result.content[0].text);
+      assert.equal(dupTaskPayload.alreadyQueued, true, 'Duplicate request_aside_task must deduplicate');
+      assert.equal(dupTaskPayload.request_id, asideCodePayload.request_id);
     }
 
     // Clean reset after tests
