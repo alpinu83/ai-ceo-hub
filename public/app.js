@@ -706,6 +706,251 @@ function renderChrome() {
   if (sub) sub.textContent = meta.subtitle || '';
 
   renderSidebarTree();
+  renderUsageWidget();
+}
+
+// ---- 좌측 메뉴 하단 AI 사용량 위젯 (Aside·Claude / AGY / Gemini 앱) ----
+// 서버 state.subscriptionUsage(src/subscription-usage.js)를 그린다. 구독 앱은 공식 잔여량 API가 없어
+// Hub가 직접 본 처리 건수 + 대표님이 정한 목표 상한 + (선택) 앱 화면에서 본 잔여량 기록을 함께 보여 준다.
+function usageRelTime(iso) {
+  const t = Date.parse(iso || '');
+  if (!Number.isFinite(t)) return '';
+  const min = Math.round((Date.now() - t) / 60000);
+  if (min < 1) return '방금';
+  if (min < 60) return `${min}분 전`;
+  const h = Math.floor(min / 60);
+  if (h < 24) return `${h}시간 전`;
+  return `${Math.floor(h / 24)}일 전`;
+}
+
+function usageResetText(iso) {
+  const t = Date.parse(iso || '');
+  if (!Number.isFinite(t)) return '';
+  const d = new Date(t);
+  const hhmm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  const sameDay = new Date().toDateString() === d.toDateString();
+  return `${sameDay ? '' : `${d.getMonth() + 1}/${d.getDate()} `}${hhmm} 리셋`;
+}
+
+function usageValueText(w) {
+  if (w.source === 'limited') return '한도 도달';
+  if (w.source === 'snapshot' && typeof w.estimatedRemainingPercent === 'number') return `잔여 ~${w.estimatedRemainingPercent}%`;
+  return `${w.count}/${w.limit}`;
+}
+
+function usageOnlineText(w) {
+  if (w.online) return '접속 중';
+  return w.lastSeenAt ? `대기 · 마지막 접속 ${usageRelTime(w.lastSeenAt)}` : '대기 · 접속 기록 없음';
+}
+
+function renderUsageWidget() {
+  const wrap = document.getElementById('ai-usage-widget');
+  const box = document.getElementById('ai-usage-rows');
+  if (!wrap || !box) return;
+  const workers = state?.subscriptionUsage?.workers || [];
+  if (!workers.length) {
+    wrap.classList.add('is-empty');
+    box.innerHTML = `<p class="ai-usage-empty">${runtimeMode === 'standalone' ? '서버 연결 시 표시됩니다' : '집계 준비 중'}</p>`;
+    return;
+  }
+  wrap.classList.remove('is-empty');
+  box.innerHTML = workers
+    .map((w) => {
+      const pct = Math.max(0, Math.min(100, Number(w.usedPercent) || 0));
+      const level = ['ok', 'warn', 'limit'].includes(w.level) ? w.level : 'ok';
+      const tip = [
+        `${w.windowLabel} ${w.count}건 / 상한 ${w.limit}건`,
+        w.breakdown ? `협업 큐 ${w.breakdown.outsourcing}건 · 팀장 판단 ${w.breakdown.leadDesk}건` : '',
+        `오늘 ${w.today}건 · 최근 5시간 ${w.last5h}건`,
+        w.snapshot?.active && typeof w.snapshot.remainingPercent === 'number' ? `기록한 잔여 ${w.snapshot.remainingPercent}% (${usageRelTime(w.snapshot.at)}) · 이후 ${w.sinceSnapshot}건` : '',
+        w.snapshot?.active && w.snapshot.resetAt ? usageResetText(w.snapshot.resetAt) : '',
+        usageOnlineText(w)
+      ]
+        .filter(Boolean)
+        .join('\n');
+      return `<button type="button" class="ai-usage-row level-${level}" data-usage-worker="${esc(w.id)}" title="${esc(tip)}">
+        <span class="ai-usage-line">
+          <span class="ai-usage-name"><span class="ai-usage-dot${w.online ? ' on' : ''}" aria-hidden="true"></span>${esc(w.label)}</span>
+          <span class="ai-usage-val">${esc(usageValueText(w))}</span>
+        </span>
+        <span class="ai-usage-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}" aria-label="${esc(w.label)} 사용률"><span class="ai-usage-fill" style="width:${pct}%"></span></span>
+      </button>`;
+    })
+    .join('');
+  if (document.getElementById('usage-modal-backdrop')?.classList.contains('open')) renderUsageModalSummary();
+}
+
+function renderUsageModalSummary() {
+  const el = document.getElementById('usage-modal-summary');
+  if (!el) return;
+  const workers = state?.subscriptionUsage?.workers || [];
+  el.innerHTML = workers
+    .map((w) => {
+      const snap = w.snapshot;
+      let snapText = '잔여량 기록 없음';
+      if (snap) {
+        const parts = [];
+        if (typeof snap.remainingPercent === 'number') parts.push(`남은 ${snap.remainingPercent}%`);
+        if (snap.limited) parts.push('한도 도달');
+        if (snap.resetAt) parts.push(usageResetText(snap.resetAt));
+        parts.push(`${usageRelTime(snap.at)} 기록`);
+        if (w.sinceSnapshot) parts.push(`이후 Hub 처리 ${w.sinceSnapshot}건`);
+        if (snap.note) parts.push(snap.note);
+        snapText = `${snap.active ? '' : '(지난 기록) '}${parts.join(' · ')}`;
+      }
+      return `<div class="usage-sum-row level-${esc(w.level)}">
+        <div class="usage-sum-head"><strong>${esc(w.label)}</strong><span>${esc(usageValueText(w))}</span></div>
+        <div class="usage-sum-meta">${esc(w.windowLabel)} ${w.count}건 / 상한 ${w.limit}건${w.breakdown ? ` (협업 큐 ${w.breakdown.outsourcing} · 팀장 판단 ${w.breakdown.leadDesk})` : ''} · ${w.window === '5h' ? `오늘 ${w.today}건` : `최근 5시간 ${w.last5h}건`} · ${esc(usageOnlineText(w))}</div>
+        <div class="usage-sum-meta">${esc(snapText)}</div>
+      </div>`;
+    })
+    .join('');
+}
+
+function renderUsageLimitFields() {
+  const el = document.getElementById('usage-limits-fields');
+  if (!el) return;
+  const workers = state?.subscriptionUsage?.workers || [];
+  el.innerHTML = workers
+    .map(
+      (w) => `<div class="usage-limit-row">
+        <span class="usage-limit-name">${esc(w.label)}</span>
+        <select data-usage-window="${esc(w.id)}" aria-label="${esc(w.label)} 집계 구간">
+          <option value="5h"${w.window === '5h' ? ' selected' : ''}>5시간</option>
+          <option value="day"${w.window === 'day' ? ' selected' : ''}>하루(KST)</option>
+        </select>
+        <input type="number" min="1" max="1000" step="1" inputmode="numeric" data-usage-limit="${esc(w.id)}" value="${Number(w.limit) || 1}" aria-label="${esc(w.label)} 상한(건)" />
+        <span class="usage-limit-unit">건</span>
+      </div>`
+    )
+    .join('');
+}
+
+function resetUsageSnapshotForm() {
+  for (const id of ['usage-snap-remaining', 'usage-snap-reset', 'usage-snap-note']) {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  }
+  const lim = document.getElementById('usage-snap-limited');
+  if (lim) lim.checked = false;
+}
+
+function openUsageModal(workerId = '') {
+  if (runtimeMode === 'standalone') {
+    toast('서버에 연결된 상태에서만 사용량을 기록할 수 있습니다.', true);
+    return;
+  }
+  const bd = document.getElementById('usage-modal-backdrop');
+  if (!bd) return;
+  renderUsageModalSummary();
+  renderUsageLimitFields();
+  resetUsageSnapshotForm();
+  const sel = document.getElementById('usage-snap-worker');
+  if (sel && workerId && [...sel.options].some((o) => o.value === workerId)) sel.value = workerId;
+  bd.classList.add('open');
+  bd.setAttribute('aria-hidden', 'false');
+  refreshIcons();
+}
+
+function closeUsageModal() {
+  const bd = document.getElementById('usage-modal-backdrop');
+  if (!bd) return;
+  bd.classList.remove('open');
+  bd.setAttribute('aria-hidden', 'true');
+}
+
+function applyUsageResponse(res) {
+  if (res?.state) state = res.state;
+  else if (res?.usage && state) state.subscriptionUsage = res.usage;
+  renderUsageWidget();
+  renderUsageModalSummary();
+}
+
+function bindUsageWidget() {
+  document.getElementById('btn-ai-usage-open')?.addEventListener('click', () => openUsageModal());
+  document.getElementById('ai-usage-rows')?.addEventListener('click', (e) => {
+    const row = e.target.closest('[data-usage-worker]');
+    if (row) openUsageModal(row.dataset.usageWorker);
+  });
+  const bd = document.getElementById('usage-modal-backdrop');
+  document.getElementById('btn-close-usage-modal')?.addEventListener('click', closeUsageModal);
+  bd?.addEventListener('click', (e) => {
+    if (e.target === bd) closeUsageModal();
+  });
+
+  document.getElementById('usage-limits-form')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const limits = {};
+    document.querySelectorAll('[data-usage-limit]').forEach((input) => {
+      const id = input.dataset.usageLimit;
+      const win = document.querySelector(`[data-usage-window="${id}"]`)?.value;
+      limits[id] = { limit: Number(input.value), ...(win ? { window: win } : {}) };
+    });
+    const bad = Object.values(limits).find((l) => !Number.isInteger(l.limit) || l.limit < 1 || l.limit > 1000);
+    if (bad) {
+      toast('상한은 1~1000 사이 정수로 입력해 주세요.', true);
+      return;
+    }
+    try {
+      const res = await api('/api/ops/usage-limits', { method: 'POST', body: JSON.stringify({ limits }) });
+      applyUsageResponse(res);
+      renderUsageLimitFields();
+      toast('AI 사용량 목표 상한을 저장했습니다.');
+    } catch (err) {
+      toast(err.message, true);
+    }
+  });
+
+  document.getElementById('usage-snapshot-form')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const worker = document.getElementById('usage-snap-worker')?.value || 'aside';
+    const remaining = String(document.getElementById('usage-snap-remaining')?.value || '').trim();
+    const resetVal = document.getElementById('usage-snap-reset')?.value || '';
+    const note = String(document.getElementById('usage-snap-note')?.value || '').trim();
+    const limited = Boolean(document.getElementById('usage-snap-limited')?.checked);
+    const payload = { worker };
+    if (remaining !== '') {
+      const n = Number(remaining);
+      if (!Number.isFinite(n) || n < 0 || n > 100) {
+        toast('남은 %는 0~100 사이 숫자로 입력해 주세요.', true);
+        return;
+      }
+      payload.remainingPercent = n;
+    }
+    if (resetVal) {
+      const t = new Date(resetVal);
+      if (Number.isNaN(t.getTime())) {
+        toast('리셋 시각을 다시 확인해 주세요.', true);
+        return;
+      }
+      payload.resetAt = t.toISOString();
+    }
+    if (limited) payload.limited = true;
+    if (note) payload.note = note;
+    if (payload.remainingPercent === undefined && !payload.resetAt && !limited) {
+      toast('남은 %, 리셋 시각, 한도 도달 중 하나는 입력해 주세요.', true);
+      return;
+    }
+    try {
+      const res = await api('/api/ops/usage-snapshot', { method: 'POST', body: JSON.stringify(payload) });
+      applyUsageResponse(res);
+      resetUsageSnapshotForm();
+      toast('잔여량을 기록했습니다.');
+    } catch (err) {
+      toast(err.message, true);
+    }
+  });
+
+  document.getElementById('btn-usage-snap-clear')?.addEventListener('click', async () => {
+    const worker = document.getElementById('usage-snap-worker')?.value || 'aside';
+    try {
+      const res = await api('/api/ops/usage-snapshot', { method: 'POST', body: JSON.stringify({ worker, clear: true }) });
+      applyUsageResponse(res);
+      toast('잔여량 기록을 지웠습니다.');
+    } catch (err) {
+      toast(err.message, true);
+    }
+  });
 }
 
 function getNavGroupExpanded(groupKey) {
@@ -3107,6 +3352,10 @@ let backNavSilent = false;
 let exitConfirmOpen = false;
 
 function closeTopOverlay() {
+  if (document.getElementById('usage-modal-backdrop')?.classList.contains('open')) {
+    closeUsageModal();
+    return true;
+  }
   const hire = document.getElementById('hire-modal-backdrop');
   if (hire?.classList.contains('open')) {
     hire.classList.remove('open');
@@ -3243,6 +3492,9 @@ function bindEvents() {
     localStorage.setItem('ceo_office_theme', next);
     toast(next === 'studio' ? '다크 테마로 전환했습니다.' : '라이트 테마로 전환했습니다.');
   });
+
+  // 좌측 메뉴 하단 AI 사용량 위젯 (상한 수정·잔여량 기록 팝업)
+  bindUsageWidget();
 
   // 외주 요청별 대상 변경 (select)
   document.getElementById('content-area')?.addEventListener('change', async (e) => {
@@ -5107,6 +5359,10 @@ async function init() {
               const latest = fresh.messages[fresh.messages.length - 1];
               toast(`${latest.senderName} 님의 새 보고가 도착했습니다.`);
             }
+          } else if (fresh?.subscriptionUsage && state) {
+            // 다른 변화가 없어도 AI 사용량 위젯(접속·건수)은 매번 갱신
+            state.subscriptionUsage = fresh.subscriptionUsage;
+            renderUsageWidget();
           }
         } catch {
           // ignore transient network glitches
