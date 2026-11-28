@@ -393,16 +393,38 @@ export function leadTriageResult(db, task, agent, mission, output, osFlag = '', 
     appendLog(db, '총괄 팀장', `"${task.title}" 지침 위반이 반복돼 완료 처리하지 않고 보류: ${violations.join(', ')}`, 'warning');
     return { handled: true };
   }
-  const nr = detectNonResult(output, osFlag, { hasLimitations });
+  const br = task.botReport || {};
+  const reportText = [...(Array.isArray(br.blockers) ? br.blockers : []), ...(Array.isArray(br.questions) ? br.questions : [])].join('\n');
+  const nr = detectNonResult(output, osFlag, { hasLimitations, reportText });
   if (!nr.nonResult) return { handled: false };
   const repoLinked = Boolean(getMissionRepoCfg(db.settings, mission));
-  const blocker = classifyBlocker(`${nr.reason} ${osFlag}`, { repoLinked });
+  const blocker = nr.conflict ? 'conflict' : classifyBlocker(`${nr.reason} ${osFlag}`, { repoLinked });
   const osOn = getOutsourcingSettings(db.settings).enabled && !task.outsourceDeclined;
   task.triage = task.triage || { retries: 0, tried: [] };
   if (agent?.id && !task.triage.tried.includes(agent.id)) task.triage.tried.push(agent.id);
   task.triage.lastReason = String(nr.reason).slice(0, 200);
   task.triage.blocker = blocker;
   const nowIso = new Date().toISOString();
+
+  // 지시 상충·중단 확인 보고: "가정 세워 끝까지" 자동 반려 금지 → 재지시 없이 팀장·대표님 확인 대기(보류)로 올림
+  if (blocker === 'conflict') {
+    recordLeadReplyToBot(db, task, agent, mission, {
+      verdict: 'blocked',
+      botReply: triageGuidance('conflict'),
+      feedback: nr.reason,
+      postToRoom: false
+    });
+    task.status = 'blocked';
+    task.blockedReason = String(nr.reason).slice(0, 200);
+    task.output = String(output || '');
+    task.updatedAt = nowIso;
+    const latestCeo = task.ceoFeedback ? ` 최신 대표님 지시: "${String(task.ceoFeedback).slice(0, 160)}".` : '';
+    const ask = `"${task.title}" 담당 ${agent?.name || '팀원'}이(가) 지시 상충·중단 여부 확인을 요청해 보류했습니다(가정으로 진행시키지 않음): ${String(nr.reason).slice(0, 160)}.${latestCeo} "피드백 주고 다시 맡김"(확정 지시 입력) 또는 "작업 접음" 중 하나로 정해 주세요.`;
+    leadSay(db, mission, '대표님 확인 필요', ask);
+    sendTelegramReport(db.settings, `대표님 확인 필요 · ${mission.title}`, ask, `conflict:${task.id}`).catch(() => {});
+    appendLog(db, '총괄 팀장', `"${task.title}" 지시 상충·중단 확인 요청 → 재지시 없이 대표님 확인 대기`, 'info');
+    return { handled: true, blocked: true, conflict: true };
+  }
 
   if (blocker === 'login' && osOn) {
     recordLeadReplyToBot(db, task, agent, mission, {
