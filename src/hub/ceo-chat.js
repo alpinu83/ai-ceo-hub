@@ -12,6 +12,7 @@ import { handleNotifyCommand } from './notify.js';
 import { handleOutsourceTelegramCallback, handleOutsourceTelegramCommand } from './outsourcing-bridge.js';
 import { handleDeliverableReviewDecision, handleStageGateDecision } from './lead-ops.js';
 import { buildApprovalDeliverable } from './deliverables.js';
+import { handleSystemImprovementDecision } from './system-audit.js';
 
 export function getTelegramCallbacks() {
   return {
@@ -33,6 +34,9 @@ export function getTelegramCallbacks() {
         await handleStageGateDecision(res.approval, decision, cleanNote);
       } else if (res.ok && res.approval?.kind === 'deliverable_review') {
         await handleDeliverableReviewDecision(res.approval, decision, cleanNote);
+      } else if (res.ok && res.approval?.kind === 'system_improvement') {
+        // 텔레그램 원터치 승인도 웹 결재와 똑같이 개발팀 배정·고정 지침 반영
+        await handleSystemImprovementDecision(res.approval, decision, cleanNote);
       } else if (res.ok && isCodeApproval(res.db, res.approval)) {
         res.codeApply = decision === 'approved';
         handleCodeDecision(res.approval.id, decision).catch((err) => {

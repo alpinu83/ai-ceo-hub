@@ -12,6 +12,7 @@ import { buildApprovalDeliverable } from '../hub/deliverables.js';
 import { isCeoRequest } from '../hub/outsourcing-bridge.js';
 import { notifyAllApprovalChannels } from '../hub/notify.js';
 import { processTaskResult, registerDeliverable } from '../hub/task-results.js';
+import { handleSystemImprovementDecision } from '../hub/system-audit.js';
 
 
 export function registerMissionsRoutes(app) {
@@ -805,6 +806,9 @@ export function registerMissionsRoutes(app) {
       latestDb = handled?.db || loadDb();
     } else if (res.approval?.kind === 'deliverable_review') {
       const handled = await handleDeliverableReviewDecision(res.approval, body.decision, body.ceoNote);
+      latestDb = handled?.db || loadDb();
+    } else if (res.approval?.kind === 'system_improvement') {
+      const handled = await handleSystemImprovementDecision(res.approval, body.decision, body.ceoNote);
       latestDb = handled?.db || loadDb();
     }
     let codeApply = false;

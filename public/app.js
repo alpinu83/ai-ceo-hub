@@ -2314,7 +2314,7 @@ function renderConsultSection(apr) {
 
 /* ==================== ROUTINES (루틴 업무) ==================== */
 let lastAiHealth = null;
-const ROUTINE_KIND_LABELS = { ops_check: '시스템 점검', briefing: '마감 보고', task: '정기 업무' };
+const ROUTINE_KIND_LABELS = { ops_check: '시스템 점검', briefing: '마감 보고', system_audit: '팀장 시스템 회고', task: '정기 업무' };
 const ROUTINE_DAY_LABELS = ['일', '월', '화', '수', '목', '금', '토'];
 
 function routineScheduleText(r) {
@@ -2328,6 +2328,7 @@ function routineScheduleText(r) {
 function routineStatusBadge(r, task) {
   if (!r.lastRunAt) return ['badge-neutral', '실행 전'];
   if (r.lastStatus === 'running') return ['badge-blue', '실행 중'];
+  if (r.lastStatus === 'pending') return ['badge-blue', '팀장 판단 대기'];
   if (r.lastStatus === 'error') return ['badge-red', '오류'];
   if (r.lastStatus === 'warning') return ['badge-amber', '이상 발견'];
   if (r.lastStatus === 'started') {

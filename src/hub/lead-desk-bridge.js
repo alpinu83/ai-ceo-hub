@@ -9,6 +9,7 @@ import { botConnected, isAgentExhausted, pickBotOrDevMember } from '../lead-engi
 import { buildDispatchPrompt } from '../orchestrator.js';
 import { DEV_TEAM, dispatchDevTeamTask } from './dev-policy.js';
 import { leadSay } from './missions.js';
+import { resumeSystemAudit } from './system-audit.js';
 
 const STALE_BRIDGE_MS = 3 * 3600 * 1000; // 봇이 3시간 동안 가져가지 않으면
 const STUCK_BRIDGE_MS = 12 * 3600 * 1000; // 접속은 하는데 12시간째 처리 안 하면
@@ -89,6 +90,7 @@ export async function resumeReviewTask(taskId) {
 
 setLeadJobHandler(async ({ purpose, refs = {} }) => {
   if (purpose === 'review' && refs.taskId) return resumeReviewTask(refs.taskId);
+  if (purpose === 'system_audit' && refs.auditKey) return resumeSystemAudit(refs.auditKey);
   if (refs.missionId) return opsCycle(refs.missionId, refs.fillIdle?.length ? { fillIdle: refs.fillIdle, fillSlot: refs.fillSlot } : {});
   return null;
 });
@@ -113,4 +115,12 @@ export async function leadDeskTick() {
   const live = new Set((fresh.leadJobs || []).filter((j) => ['open', 'claimed'].includes(j.status)).map((j) => j.refs?.taskId).filter(Boolean));
   const waiting = (fresh.tasks || []).filter((t) => t.status === 'review_pending' && !live.has(t.id)).slice(0, 3);
   for (const t of waiting) await resumeReviewTask(t.id);
+  const liveAuditKeys = new Set(
+    (fresh.leadJobs || [])
+      .filter((j) => j.purpose === 'system_audit' && ['open', 'claimed'].includes(j.status))
+      .map((j) => j.refs?.auditKey)
+      .filter(Boolean)
+  );
+  const waitingAudits = (fresh.systemAudits || []).filter((a) => a.status === 'pending' && a.auditKey && !liveAuditKeys.has(a.auditKey)).slice(0, 2);
+  for (const a of waitingAudits) await resumeSystemAudit(a.auditKey);
 }

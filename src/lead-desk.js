@@ -225,7 +225,12 @@ export function askLeadDesk({ key, purpose, system, prompt, schema, refs = {} })
   throw new LeadPendingError(created);
 }
 
-const PURPOSE_LABELS = { review: '결과물 검수', plan: '작전 계획 수립', milestone: '마일스톤 판정·작업 계획' };
+const PURPOSE_LABELS = {
+  review: '결과물 검수',
+  plan: '작전 계획 수립',
+  milestone: '마일스톤 판정·작업 계획',
+  system_audit: '전사 시스템·운영 회고 및 개선 제안'
+};
 
 export function summarizeLeadJob(j) {
   return {
