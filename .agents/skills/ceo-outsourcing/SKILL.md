@@ -24,7 +24,7 @@ CEO Office(https://ai-ceo-hub.onrender.com)의 무료 AI 팀이 할 수 없어�
      1) 저장소를 열고(없으면 clone) `git fetch origin`으로 최신 `origin/main`을 받는다. 루트의 `AGENTS.md`와 `docs/ARCHITECTURE.md`(있으면), 수정 대상 파일과 호출부(`rg`)를 먼저 읽는다.
      2) 일반 코드 요청은 최신 `origin/main` 기준 `out/<요청ID>` 브랜치를 만들고, Aside 검수 반려(`reviewStage: "agy_rework"`) 요청이면 기존 PR(`sourcePrUrl`) 브랜치를 체크아웃해 `[Aside 검수 반려 · 수정 지시]` 항목을 모두 반영한다.
      3) 요청 범위만 최소·정밀하게 수정한다. `main` 직접 push 금지(main 보호 설정 적용). `data/db.json`, `data/state.json`, `.env`, `.github/` 수정 금지. `public/app.js` 수정 시 `public/index.html` 캐시 버전 갱신.
-     4) 저장소의 테스트·빌드 명령(예: `npm test`, `npm run build && npm run verify`)을 100% 통과할 때까지 고친 뒤, PR 올리기 직전 `git fetch origin && git merge origin/main` 및 `git diff origin/main...HEAD`로 최근 PR 되돌림·회귀가 없는지 자가 검수한다. 제목에 `[<요청ID>]`를 넣어 PR을 열고, 본문에 변경 파일·테스트 결과·확인 포인트를 적어 제출한다.
+     4) 저장소의 테스트·빌드 명령(예: `npm test`, `npm run build && npm run verify`)을 100% 통과할 때까지 고친 뒤(**테스트 통과 전에는 `out/*`·`feat/*`·WIP 어떤 브랜치도 push 금지** — 실패 push마다 대표님께 CI 실패 메일이 감. 통과시키지 못하면 push하지 말고 `request_ceo_action`/`pass_outsourcing_request`), PR 올리기 직전 `git fetch origin && git merge origin/main` 및 `git diff origin/main...HEAD`로 최근 PR 되돌림·회귀가 없는지 자가 검수한다. 제목에 `[<요청ID>]`를 넣어 PR을 열고, 본문에 변경 파일·테스트 결과·확인 포인트를 적어 제출한다.
    - **외부 자문**: ① 총평 한 줄 ② 사실과 다르거나 근거 없는 주장 ③ 빠진 리스크 ④ 바로 실행할 개선안 3가지 ⑤ 승인/수정 후 승인/반려 의견. 라이브 사이트와 저장소를 직접 확인하고 확인한 사실과 추정을 구분한다.
    - **브라우저·계정 작업**: 브라우저로 확인한다. 결제·광고비 집행·외부 발송·되돌리기 어려운 변경은 하지 않는다.
    - **리서치·실무**: 출처를 확인하고 적는다. (`대표님 돈벌어다주기` 프로젝트에서 세금·세무 주제는 절대 제안 금지)
