@@ -16,6 +16,7 @@ export const ADMIN_OPEN_PATHS = [
   /^\/api\/auth\/telegram-(request|verify)$/,
   /^\/api\/outsourcing/,
   /^\/api\/lead-jobs/,
+  /^\/api\/ops\/usage-snapshot$/, // 라우트에서 CEO 키 또는 MCP 토큰을 직접 확인 (src/routes/usage.js)
   /^\/api\/shorts\/hook\//
 ];
 

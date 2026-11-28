@@ -636,6 +636,64 @@ async function runTests() {
     const outRow = (afterOut.outsourcing || []).find((r) => r.id === outId);
     assert.equal(outRow?.status, 'accepted', 'submitted outsourcing result should be accepted');
 
+    // 9b. 좌측 메뉴 하단 AI 사용량 위젯: 자동 집계 · 목표 상한 · 잔여량 스냅샷 (Aside·Claude / AGY / Gemini 앱)
+    const usageH = { 'Content-Type': 'application/json' };
+    const usageWorkers = afterOut.subscriptionUsage?.workers || [];
+    assert.deepEqual(usageWorkers.map((w) => w.id), ['aside', 'agy', 'gemini_app'], 'state.subscriptionUsage must list Aside·AGY·Gemini 앱 in order');
+    const agyUsage = usageWorkers.find((w) => w.id === 'agy');
+    assert.ok(agyUsage.today >= 1 && agyUsage.last5h >= 1, 'AGY outsourcing submit must be counted (today · 5h)');
+    assert.equal(agyUsage.window, 'day', 'AGY default window is a KST day');
+    assert.ok(agyUsage.breakdown.outsourcing >= 1, 'AGY breakdown must include outsourcing-queue work');
+    assert.equal(agyUsage.limit, 15, 'AGY default daily target limit is 15');
+    const asideUsage = usageWorkers.find((w) => w.id === 'aside');
+    assert.equal(asideUsage.window, '5h', 'Aside (Claude) uses a 5h rolling window');
+    assert.equal(asideUsage.limit, 40, 'Aside default 5h target limit is 40');
+    assert.equal(asideUsage.online, true, 'Aside queue poll must mark Aside as connected');
+    assert.equal(usageWorkers.find((w) => w.id === 'gemini_app').limit, 30, 'Gemini app default daily target limit is 30');
+
+    const usageLimitsRes = await (
+      await fetch(`${BASE}/api/ops/usage-limits`, { method: 'POST', headers: usageH, body: JSON.stringify({ limits: { aside: { limit: 50 }, agy: { limit: 1 } } }) })
+    ).json();
+    assert.equal(usageLimitsRes.ok, true, 'usage limits save should succeed');
+    assert.equal(usageLimitsRes.state.settings.subscriptionLimits.aside.limit, 50, 'limits must be stored in settings.subscriptionLimits');
+    assert.equal(usageLimitsRes.state.settings.subscriptionLimits.gemini_app.limit, 30, 'untouched worker keeps its default limit');
+    assert.equal(usageLimitsRes.usage.workers.find((w) => w.id === 'agy').level, 'limit', 'AGY at or over its target limit must turn red');
+    const usageBadLimit = await fetch(`${BASE}/api/ops/usage-limits`, { method: 'POST', headers: usageH, body: JSON.stringify({ limits: { aside: { limit: 0 } } }) });
+    assert.equal(usageBadLimit.status, 400, 'invalid usage limit must be rejected');
+
+    const usageResetAt = new Date(Date.now() + 2 * 3600 * 1000).toISOString();
+    const usageSnapRes = await (
+      await fetch(`${BASE}/api/ops/usage-snapshot?${tokQ}`, { method: 'POST', headers: usageH, body: JSON.stringify({ worker: 'aside', remainingPercent: 35, resetAt: usageResetAt, note: 'CI 스냅샷' }) })
+    ).json();
+    assert.equal(usageSnapRes.ok, true, 'usage snapshot with MCP token should succeed');
+    const asideSnapRow = usageSnapRes.usage.workers.find((w) => w.id === 'aside');
+    assert.equal(asideSnapRow.snapshot?.remainingPercent, 35, 'snapshot remainingPercent must be saved');
+    assert.equal(asideSnapRow.snapshot?.resetAt, usageResetAt, 'snapshot resetAt must be saved');
+    assert.equal(asideSnapRow.source, 'snapshot', 'active snapshot must drive the gauge');
+    assert.equal(asideSnapRow.sinceSnapshot, 0, 'no Hub work yet after the snapshot');
+    assert.equal(asideSnapRow.estimatedRemainingPercent, 35, 'estimated remaining equals snapshot right after recording');
+    const usageLimitedRes = await (
+      await fetch(`${BASE}/api/ops/usage-snapshot`, { method: 'POST', headers: usageH, body: JSON.stringify({ worker: 'gemini', limited: true }) })
+    ).json();
+    const geminiLimitedRow = usageLimitedRes.usage.workers.find((w) => w.id === 'gemini_app');
+    assert.equal(geminiLimitedRow.level, 'limit', 'limited snapshot must show a red gauge');
+    assert.equal(geminiLimitedRow.source, 'limited', 'limited snapshot source');
+    for (const badSnap of [{ worker: 'aside', remainingPercent: 150 }, { worker: 'chatgpt', remainingPercent: 10 }, { worker: 'aside' }, { worker: 'agy', resetAt: 'not-a-date' }]) {
+      const r = await fetch(`${BASE}/api/ops/usage-snapshot`, { method: 'POST', headers: usageH, body: JSON.stringify(badSnap) });
+      assert.equal(r.status, 400, `invalid usage snapshot must be rejected: ${JSON.stringify(badSnap)}`);
+    }
+    const usageStateAfter = await (await fetch(`${BASE}/api/state`)).json();
+    assert.equal(usageStateAfter.subscriptionUsage.workers.find((w) => w.id === 'aside').snapshot?.remainingPercent, 35, 'snapshot must persist in /api/state');
+    const usageGet = await (await fetch(`${BASE}/api/ops/usage`)).json();
+    assert.equal(usageGet.ok, true, 'GET /api/ops/usage should succeed');
+    assert.equal(usageGet.limits.aside.limit, 50, 'GET /api/ops/usage returns saved limits');
+    // 원래대로 (뒤 테스트에 영향 없게)
+    await fetch(`${BASE}/api/ops/usage-limits`, { method: 'POST', headers: usageH, body: JSON.stringify({ limits: { aside: { limit: 40 }, agy: { limit: 15 } } }) });
+    for (const w of ['aside', 'gemini_app']) {
+      const cleared = await (await fetch(`${BASE}/api/ops/usage-snapshot`, { method: 'POST', headers: usageH, body: JSON.stringify({ worker: w, clear: true }) })).json();
+      assert.equal(cleared.ok, true, 'usage snapshot clear should succeed');
+    }
+
     // 10. 2단계 코드 협업 (AGY 수정 + Aside 검수·보완 + 반려 재수정 루프)
     const twoStageRoute = await (
       await fetch(`${BASE}/api/outsourcing/route`, {

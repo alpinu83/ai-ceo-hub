@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { computeSubscriptionUsage } from './subscription-usage.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1110,5 +1111,11 @@ export function sanitizeStateForClient(db) {
   clone.pushSubscribedCount = Array.isArray(clone.pushSubscriptions) ? clone.pushSubscriptions.length : 0;
   delete clone.pushSubscriptions;
   clone.cloudBackup = getCloudPersistenceStatus();
+  // 좌측 메뉴 하단 AI 사용량 위젯 (Aside·Claude / AGY / Gemini 앱)
+  try {
+    clone.subscriptionUsage = computeSubscriptionUsage(db);
+  } catch (err) {
+    clone.subscriptionUsage = { workers: [], error: String(err?.message || err).slice(0, 200) };
+  }
   return clone;
 }

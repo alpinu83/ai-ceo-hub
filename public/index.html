@@ -14,7 +14,7 @@
   <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png" />
   <link rel="apple-touch-icon" href="./icons/icon-192.png" />
   <link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" />
-  <link rel="stylesheet" href="./styles.css?v=20261127v" />
+  <link rel="stylesheet" href="./styles.css?v=20261128a" />
   <script src="./vendor/marked.umd.js" defer></script>
   <script src="./vendor/lucide.min.js" defer></script>
 </head>
@@ -80,6 +80,15 @@
           <span class="nav-left"><i data-lucide="users" class="icon-sm"></i><span>AI 팀</span></span>
         </button>
       </nav>
+
+      <!-- AI 사용량 위젯: Aside·Claude / AGY / Gemini 앱 (state.subscriptionUsage) -->
+      <section class="ai-usage" id="ai-usage-widget" aria-label="AI 사용량">
+        <button type="button" class="ai-usage-head" id="btn-ai-usage-open" aria-haspopup="dialog" title="목표 상한 수정 · 잔여량 기록">
+          <span class="ai-usage-title"><i data-lucide="gauge" class="icon-xs"></i>AI 사용량</span>
+          <span class="ai-usage-edit">설정</span>
+        </button>
+        <div class="ai-usage-rows" id="ai-usage-rows"></div>
+      </section>
 
       <div class="sidebar-footer">
         <div class="ceo-chip">
@@ -976,6 +985,63 @@
     </div>
   </div>
 
+  <!-- AI 사용량 · 한도 팝업 (목표 상한 수정 + 잔여량 기록) -->
+  <div class="modal-backdrop" id="usage-modal-backdrop" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="usage-modal-title">
+      <div class="modal-header">
+        <h2 id="usage-modal-title">AI 사용량 · 한도</h2>
+        <button type="button" class="icon-btn" id="btn-close-usage-modal" aria-label="닫기">
+          <i data-lucide="x" class="icon-sm"></i>
+        </button>
+      </div>
+      <div class="modal-body usage-modal-body">
+        <p class="form-hint">구독 앱은 공식 잔여량 API가 없어 Hub가 직접 본 처리 건수(협업 큐 제출·넘김·대표님 요청, 팀장 업무함 판단)로 계산합니다. 앱 화면에서 본 남은 %·리셋 시각을 기록하면 그 값을 우선 씁니다.</p>
+        <div class="usage-modal-summary" id="usage-modal-summary"></div>
+
+        <form id="usage-limits-form" class="usage-form">
+          <h3 class="usage-form-title">목표 상한</h3>
+          <div class="usage-limit-grid" id="usage-limits-fields"></div>
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary btn-sm">상한 저장</button>
+          </div>
+        </form>
+
+        <form id="usage-snapshot-form" class="usage-form">
+          <h3 class="usage-form-title">잔여량 기록 (선택)</h3>
+          <div class="form-row-two">
+            <label class="field">
+              <span class="field-label">대상</span>
+              <select id="usage-snap-worker">
+                <option value="aside" selected>Aside (Claude)</option>
+                <option value="agy">AGY</option>
+                <option value="gemini_app">Gemini 앱</option>
+              </select>
+            </label>
+            <label class="field">
+              <span class="field-label">남은 % (0~100)</span>
+              <input type="number" id="usage-snap-remaining" min="0" max="100" step="1" inputmode="numeric" placeholder="예: 35" />
+            </label>
+          </div>
+          <div class="form-row-two">
+            <label class="field">
+              <span class="field-label">리셋 시각</span>
+              <input type="datetime-local" id="usage-snap-reset" />
+            </label>
+            <label class="field">
+              <span class="field-label">메모</span>
+              <input type="text" id="usage-snap-note" maxlength="200" placeholder="예: 앱 설정 화면 기준" />
+            </label>
+          </div>
+          <label class="checkbox-row"><input type="checkbox" id="usage-snap-limited" /> 지금 한도에 도달함 (사용 불가)</label>
+          <div class="form-actions">
+            <button type="button" class="btn btn-ghost btn-sm" id="btn-usage-snap-clear">기록 지우기</button>
+            <button type="submit" class="btn btn-primary btn-sm">잔여량 기록</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
   <!-- Mobile Bottom Navigation (5 Core Tabs) -->
   <nav class="mobile-bottom-nav" aria-label="하단 메뉴">
     <button type="button" class="mobile-nav-item active" data-view="command">
@@ -997,6 +1063,6 @@
   </nav>
 
   <div class="toast-region" id="toast-region" aria-live="polite"></div>
-  <script type="module" src="./app.js?v=20261127ad"></script>
+  <script type="module" src="./app.js?v=20261128a"></script>
 </body>
 </html>
