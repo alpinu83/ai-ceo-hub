@@ -508,7 +508,66 @@ export function applyApprovalDecisionInDb(aprId, decision, ceoNote = '') {
       source: 'approval'
     });
   }
+  // 결재 의견(승인 포함)에 담긴 결정·완료 사실("이미 등록함", "나중에 등록", "Aside가 후속")은
+  // 고정 기억 + 회의실 + 같은 업무의 대기 중인 봇 업무에 바로 반영해 같은 질문이 반복되지 않게 함
+  if (apr.ceoNote && !autoNote && apr.ceoNote.length >= 6) {
+    applyCeoApprovalNote(db, apr, task, decision);
+  }
 
   saveDb(db);
   return { ok: true, approval: apr, title: apr.title, db };
+}
+
+const MAX_PINNED_APPROVAL_NOTES = 5; // 업무(미션)별 고정 결재 의견 상한: 상시 지침이 고정 기억에서 밀려나지 않게
+
+function applyCeoApprovalNote(db, apr, task, decision) {
+  const note = apr.ceoNote;
+  const missionId = apr.missionId || task?.missionId || '';
+  rememberFact(db, {
+    kind: 'decision',
+    missionId,
+    pinned: true,
+    text: `[대표님 결재 의견] ${note} (${apr.title})`,
+    source: 'approval_note'
+  });
+  const notePins = (db.memory?.facts || [])
+    .filter((f) => f.pinned && f.source === 'approval_note' && (f.missionId || '') === missionId)
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+  for (const old of notePins.slice(MAX_PINNED_APPROVAL_NOTES)) old.pinned = false;
+
+  // 승인은 기존에 회의실 게시가 없었음 → 외부 봇 수신함(recentMeetingRoom)에서도 바로 보이게 남김 (반려·수정 지시는 위에서 이미 게시)
+  if (decision === 'approved') {
+    appendMessage(db, {
+      missionId: missionId || db.missions[0]?.id || '',
+      senderId: 'ceo',
+      senderName: `${db.settings?.ceoName || '대표님'} (CEO)`,
+      senderRole: 'CEO 결재 피드백',
+      senderShortCode: 'CEO',
+      senderAccent: '#171614',
+      targetAgentId: '',
+      statusText: '대표님 결재 의견 반영',
+      type: 'directive',
+      text: `대표님 결재 의견 반영 (결재 승인: "${task?.title || apr.title}")\n${note}\n→ 모든 팀원은 이 결정을 기준으로 진행하고, 이미 결정·완료된 항목은 다시 묻지 마세요.`
+    });
+  }
+
+  // 같은 업무의 아직 끝나지 않은 대기 업무(결재 당사자 업무 제외)에도 최신 대표님 결정을 붙이고 지시서를 다시 만듦
+  if (!missionId) return;
+  const decidedIds = new Set([apr.taskId, ...(Array.isArray(apr.taskIds) ? apr.taskIds : [])].filter(Boolean));
+  const mission = db.missions.find((m) => m.id === missionId);
+  const memo = `[대표님 결재 의견 반영] ${note}`;
+  for (const t of db.tasks) {
+    if (t.missionId !== missionId || decidedIds.has(t.id)) continue;
+    if (!['awaiting_bridge', 'queued'].includes(t.status)) continue;
+    if ((t.leadNotes || []).some((n) => n.text === memo)) continue;
+    addLeadNote(t, 'ceo_memo', memo);
+    const ag = db.agents.find((a) => a.id === t.assigneeId);
+    if (ag && mission) {
+      const prompt = buildDispatchPrompt(ag, t, mission);
+      // 작업 지시서(팀장 피드백)를 쓰지 않는 봇(피클·인스팅스 등)에도 전달되도록 없으면 끝에 붙임
+      const probe = note.replace(/\s+/g, ' ').slice(0, 12);
+      t.dispatchPrompt = prompt.includes(probe) ? prompt : `${prompt}\n\n${memo}`;
+    }
+    t.updatedAt = new Date().toISOString();
+  }
 }
