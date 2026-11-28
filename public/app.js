@@ -2031,21 +2031,29 @@ function renderApprovalsView() {
 
     ${(() => {
       const hasLeadBrief = Boolean(String(apr.leadBrief || task?.leadBrief || '').trim());
+      // 코드 PR·개발 설계·시스템 개선 결재는 명시적으로 연결된 업무만 첨부 (서버 enrichApprovalDeliverables와 같은 기준)
+      const isCodeLike = Boolean(
+        apr.prUrl || apr.prNumber || apr.codeChange || apr.kind === 'it_pr_merge' || apr.kind === 'dev_design' || apr.kind === 'system_improvement' || apr.category === 'dev'
+      );
+      let explicitIds = null;
+      if (isCodeLike && !apr.taskId && (apr.outsourceId || apr.designRequestId || apr.kind === 'dev_design' || apr.kind === 'system_improvement')) {
+        explicitIds = new Set(
+          (state.outsourcing || [])
+            .filter((r) => r?.taskId && ((apr.outsourceId && r.id === apr.outsourceId) || (apr.designRequestId && r.id === apr.designRequestId)))
+            .map((r) => r.taskId)
+        );
+      }
       const idSet = new Set();
       if (apr.taskId) idSet.add(apr.taskId);
-      for (const id of Array.isArray(apr.taskIds) ? apr.taskIds : []) if (id) idSet.add(id);
-      if ((apr.kind === 'stage_gate' || apr.kind === 'next_phase') && msn?.deliverables) {
+      for (const id of Array.isArray(apr.taskIds) ? apr.taskIds : []) if (id && (!explicitIds || explicitIds.has(id))) idSet.add(id);
+      if ((apr.kind === 'stage_gate' || apr.kind === 'next_phase') && !isCodeLike && msn?.deliverables) {
         for (const d of msn.deliverables.slice(0, 6)) if (d?.taskId) idSet.add(d.taskId);
       }
       const attachedTasks = [...idSet]
         .map((id) => state.tasks.find((t) => t.id === id))
         .filter((t) => t && String(t.output || '').trim());
-      const hasBundleable =
-        attachedTasks.length > 0 ||
-        hasLeadBrief ||
-        (Array.isArray(apr.checklist) && apr.checklist.length > 0) ||
-        Boolean(apr.proposedDirective || apr.prUrl || apr.consult?.document);
-      if (!hasBundleable) return '';
+      // 연결된 성과품이 없으면 첨부 영역 자체를 숨김 (결재 본문·팀장 보고서·PR 정보만으로 충분)
+      if (attachedTasks.length === 0) return '';
       return `<div class="memo-section">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
             <h4 style="margin:0;">📎 ${hasLeadBrief ? '실무 팀원 원문 · 첨부 성과품' : '첨부 성과품 · 시안'} (${attachedTasks.length}건)</h4>
