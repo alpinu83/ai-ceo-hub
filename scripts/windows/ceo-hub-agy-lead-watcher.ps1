@@ -8,6 +8,7 @@
       claim -> save packet to empty temp dir (lead-job.md) -> run agy CLI (Hydrogen model, 5-min cap)
       -> extract JSON from stdout (1 retry on extraction failure) -> submit JSON
   - Never edits repository files; never logs tokens or packet contents
+  - Reports AGY quota/rate-limit (and the next normal finish) to the CEO Hub AI usage widget (POST /api/ops/usage-snapshot, non-blocking)
 #>
 param(
   [switch]$CheckOnce,
@@ -253,6 +254,106 @@ function Extract-JsonObjectText([string]$RawText) {
   return ''
 }
 
+# ---------- AI usage widget hook (POST /api/ops/usage-snapshot, worker 'agy') ----------
+# Non-blocking: any error here is logged and ignored so the watcher keeps running.
+# Shared with the other AGY watcher through one state file, so a limit seen by one is cleared by the next normal run of either.
+$AgyUsageStateFile = Join-Path $env:LOCALAPPDATA 'CeoHubAgyWatcher\usage-state.json'
+$script:UsageBaseUrl = ''
+$script:UsageToken = ''
+$AgyQuotaRe = '(?i)(RESOURCE_EXHAUSTED|quota[ _-]?(exceeded|exhausted|limit)|exceeded (your|the) (current )?quota|rate[ _-]?limit(ed| exceeded| reached)|too many requests|\b429\b|usage limit|limit (reached|exceeded)|out of (credits|quota))'
+
+function K([string]$Escaped) { return [System.Text.RegularExpressions.Regex]::Unescape($Escaped) }
+
+function Find-AgyQuotaLine([string]$Text) {
+  if ([string]::IsNullOrWhiteSpace($Text)) { return '' }
+  foreach ($ln in ($Text -split "\r?\n")) {
+    # GitHub API rate-limit messages from git/gh tools are not an AGY quota problem
+    if ($ln -match '(?i)github') { continue }
+    if ([System.Text.RegularExpressions.Regex]::IsMatch($ln, $AgyQuotaRe)) { return $ln.Trim() }
+  }
+  return ''
+}
+
+function Resolve-AgyRetryAt([string]$Line) {
+  $m = [System.Text.RegularExpressions.Regex]::Match($Line, '(?i)retry(?:Delay)?["'']?\s*(?:after|in|:)?\s*["'']?(\d+(?:\.\d+)?)\s*(s|sec|secs|seconds?|m|min|mins|minutes?|h|hours?)\b')
+  if (-not $m.Success) { return $null }
+  $n = [double]$m.Groups[1].Value
+  $u = $m.Groups[2].Value.ToLower()
+  if ($u.StartsWith('h')) { return [DateTime]::UtcNow.AddHours($n) }
+  if ($u.StartsWith('m')) { return [DateTime]::UtcNow.AddMinutes($n) }
+  return [DateTime]::UtcNow.AddSeconds($n)
+}
+
+function Get-AgyUsageLimitedFlag {
+  try {
+    if (Test-Path $AgyUsageStateFile) {
+      $o = Get-Content -Path $AgyUsageStateFile -Raw -Encoding UTF8 | ConvertFrom-Json
+      return ($o.limited -eq $true)
+    }
+  } catch { }
+  return $false
+}
+
+function Set-AgyUsageLimitedFlag([bool]$IsLimited) {
+  try { Set-Content -Path $AgyUsageStateFile -Value (@{ limited = $IsLimited; at = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json) -Encoding UTF8 } catch { }
+}
+
+function Send-AgyUsageSnapshot([hashtable]$Body) {
+  if (-not $script:UsageBaseUrl -or -not $script:UsageToken) { return $false }
+  $json = $Body | ConvertTo-Json -Compress -Depth 4
+  $req = [System.Net.HttpWebRequest]::Create("$($script:UsageBaseUrl.TrimEnd('/'))/api/ops/usage-snapshot")
+  $req.Method = 'POST'
+  $req.Timeout = 10000
+  $req.ReadWriteTimeout = 10000
+  $req.Accept = 'application/json'
+  $req.ContentType = 'application/json; charset=utf-8'
+  $req.Headers.Add('Authorization', "Bearer $($script:UsageToken)")
+  $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+  $req.ContentLength = $bytes.Length
+  try {
+    $s = $req.GetRequestStream()
+    try { $s.Write($bytes, 0, $bytes.Length) } finally { $s.Dispose() }
+    $res = $req.GetResponse()
+    $res.Close()
+    return $true
+  } catch {
+    Write-Log "usage: snapshot POST failed ($($_.Exception.Message))"
+    return $false
+  }
+}
+
+# Call after every agy.exe run (not after a timeout). limited = quota text in stderr, or in stdout when agy exited non-zero.
+function Update-AgyUsageFromRun([int]$ExitCode, [string]$Stdout, [string]$Stderr, [string]$Source) {
+  try {
+    $line = Find-AgyQuotaLine $Stderr
+    if (-not $line -and $ExitCode -ne 0) {
+      $tail = [string]$Stdout
+      if ($tail.Length -gt 4000) { $tail = $tail.Substring($tail.Length - 4000) }
+      $line = Find-AgyQuotaLine $tail
+    }
+    if ($line) {
+      $short = $line
+      if ($short.Length -gt 120) { $short = $short.Substring(0, 120) }
+      $body = @{ worker = 'agy'; by = "agy-watcher:$Source"; limited = $true; note = (K '\ud55c\ub3c4 \ucd08\uacfc \uac10\uc9c0') + " ($Source, exit=$ExitCode): $short" }
+      $retryAt = Resolve-AgyRetryAt $line
+      if ($retryAt) { $body.resetAt = $retryAt.ToString('o') }
+      if (Send-AgyUsageSnapshot $body) {
+        Set-AgyUsageLimitedFlag $true
+        Write-Log "usage: AGY quota/rate-limit detected ($Source, exit=$ExitCode) -> reported limited=true"
+      }
+    } elseif ($ExitCode -eq 0 -and (Get-AgyUsageLimitedFlag)) {
+      # Only clear a limit this hook reported earlier, so a manual remaining-% snapshot is not overwritten after every run
+      $body = @{ worker = 'agy'; by = "agy-watcher:$Source"; limited = $false; note = (K '\uc815\uc0c1 \uc644\ub8cc \ud655\uc778 (\ud55c\ub3c4 \ud574\uc81c)') + " ($Source)" }
+      if (Send-AgyUsageSnapshot $body) {
+        Set-AgyUsageLimitedFlag $false
+        Write-Log "usage: AGY run finished normally ($Source) -> reported limited=false"
+      }
+    }
+  } catch {
+    Write-Log "usage: snapshot report skipped ($($_.Exception.Message))"
+  }
+}
+
 function Start-AgyLeadProcess([string]$AgyExe, [string]$WorkDir, [string]$Arguments, [int]$TimeoutMs, [string]$JobId) {
   $psi = New-Object System.Diagnostics.ProcessStartInfo
   $psi.FileName = $AgyExe
@@ -337,6 +438,7 @@ function Invoke-AgyLeadJob([string]$AgyExe, [string]$JobId, [string]$PacketText,
         }
       }
 
+      Update-AgyUsageFromRun -ExitCode $res.ExitCode -Stdout $res.Stdout -Stderr $res.Stderr -Source 'lead'
       $jsonText = Extract-JsonObjectText -RawText $res.Stdout
       if ($jsonText) {
         return [PSCustomObject]@{ Ok = $true; TimedOut = $false; JsonText = $jsonText; Reason = 'ok' }
@@ -381,6 +483,8 @@ try {
     $processedJob = $false
     try {
       $token = Load-McpToken -TokenPath $cfg.tokenFile
+      $script:UsageToken = $token
+      $script:UsageBaseUrl = $baseUrl
       $headers = @{
         Authorization = "Bearer $token"
         Accept        = 'application/json'
