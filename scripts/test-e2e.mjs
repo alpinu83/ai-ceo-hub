@@ -504,6 +504,43 @@ async function runTests() {
     const en = enrichApprovalDeliverables(univDb, univDb.approvals[1]);
     assert.ok(univDb.approvals[1].taskIds.includes('tsk_u1') && en.deliverable.markdown.includes('토스 콘솔 심사 제출'), 'next_phase approval must also auto-attach mission deliverables & checklist');
 
+    // 9-4. 코드 PR·개발 설계·시스템 개선·일반 단독 결재에는 무관한 미션 성과품(쇼츠 대본 등)을 자동 첨부하지 않고, 예전에 잘못 붙은 항목은 정리
+    const shortsDraftOut =
+      '## 쇼츠 대본 초안\n국회 예산안 처리 논란 쇼츠 대본 초안입니다. 장면 1~5 자막과 배경 키워드, 출처 기사 링크를 정리했습니다.\n## 체크리스트\n- [ ] 쇼츠 대본 최종 문구 대표님 확인';
+    const codeAprDb = {
+      missions: [{ id: 'msn_sh', title: '유튜브 쇼츠', mode: 'project', deliverables: [{ taskId: 'tsk_sh1' }, { taskId: 'tsk_sh2' }] }],
+      agents: [],
+      tasks: [
+        { id: 'tsk_sh1', missionId: 'msn_sh', title: '쇼츠 대본 작성 1', status: 'completed', output: shortsDraftOut, updatedAt: new Date().toISOString() },
+        { id: 'tsk_sh2', missionId: 'msn_sh', title: '쇼츠 대본 작성 2', status: 'completed', output: shortsDraftOut, updatedAt: new Date().toISOString() },
+        { id: 'tsk_dev1', missionId: 'msn_sh', title: '코드 반영 결정 업무', status: 'completed', output: '팀 결정: 결재 카드 첨부 영역 정리', updatedAt: new Date().toISOString() }
+      ],
+      outsourcing: [{ id: 'OUT-PR1', taskId: '' }],
+      approvals: [
+        { id: 'apr_pr_new', kind: 'it_pr_merge', missionId: 'msn_sh', taskId: '', taskIds: [], prUrl: 'https://github.com/alpinu83/ai-ceo-hub/pull/901', prNumber: 901, outsourceId: 'OUT-PR1', title: '[개발팀 · Aside] PR #901', summary: '코드 PR', status: 'pending' },
+        { id: 'apr_pr_old', kind: 'it_pr_merge', missionId: 'msn_sh', taskId: '', taskIds: ['tsk_sh1', 'tsk_sh2'], prUrl: 'https://github.com/alpinu83/ai-ceo-hub/pull/902', prNumber: 902, outsourceId: 'OUT-PR1', checklist: ['쇼츠 대본 최종 문구 대표님 확인'], title: '[개발팀 · AGY] PR #902', summary: '코드 PR', status: 'pending' },
+        { id: 'apr_pr_bundle', kind: 'it_pr_merge', missionId: 'msn_sh', taskId: '', taskIds: ['tsk_dev1'], prUrl: 'https://github.com/alpinu83/ai-ceo-hub/pull/903', prNumber: 903, title: '[ai-ceo-hub PR #903] 팀 결정 반영', summary: '코드 번들 PR', status: 'pending' },
+        { id: 'apr_design', kind: 'dev_design', category: 'dev', missionId: 'msn_sh', taskId: '', taskIds: [], title: '[개발 설계] 결재 카드', summary: '설계서', status: 'pending' },
+        { id: 'apr_sysimp', kind: 'system_improvement', missionId: 'msn_sh', taskId: '', taskIds: [], title: '[시스템 개선 제안] 첨부 정리', summary: '개선 제안', status: 'pending' },
+        { id: 'apr_plain', missionId: 'msn_sh', taskId: '', title: '에이전트 의사결정 요청', summary: '본문만으로 충분한 결재', status: 'pending' }
+      ]
+    };
+    const codeApr = (id) => codeAprDb.approvals.find((a) => a.id === id);
+    const prNewEnrich = enrichApprovalDeliverables(codeAprDb, codeApr('apr_pr_new'));
+    assert.ok(!(codeApr('apr_pr_new').taskIds || []).some((id) => id.startsWith('tsk_sh')), 'code PR approval without taskId must not auto-attach unrelated mission outputs (shorts scripts)');
+    assert.ok(!prNewEnrich.deliverable.markdown.includes('쇼츠 대본 초안'), 'code PR deliverable must not bundle unrelated shorts drafts');
+    assert.ok(!buildApprovalDeliverable(codeAprDb, 'apr_pr_old').markdown.includes('쇼츠 대본 초안'), 'stale code PR deliverable must skip wrongly attached shorts drafts even before cleanup is saved');
+    const prOldEnrich = enrichApprovalDeliverables(codeAprDb, codeApr('apr_pr_old'));
+    assert.ok(prOldEnrich.changed, 'stale code PR approval should be rewritten');
+    assert.deepEqual(codeApr('apr_pr_old').taskIds, [], 'wrongly attached shorts tasks must be removed from an external code PR approval');
+    assert.ok(!(codeApr('apr_pr_old').checklist || []).some((c) => c.includes('쇼츠 대본')), 'checklist items from removed unrelated tasks must be dropped');
+    enrichApprovalDeliverables(codeAprDb, codeApr('apr_pr_bundle'));
+    assert.deepEqual(codeApr('apr_pr_bundle').taskIds, ['tsk_dev1'], 'code bundle PR created with explicit taskIds must keep them');
+    for (const id of ['apr_design', 'apr_sysimp', 'apr_plain']) {
+      enrichApprovalDeliverables(codeAprDb, codeApr(id));
+      assert.equal((codeApr(id).taskIds || []).length, 0, `${id} without linked tasks must not auto-attach mission outputs`);
+    }
+
     // 10. Async External Agent HTTPS Inbox (Pickle / Vooy real pull, flexible POST, & heartbeat tracking)
     const inboxRes = await fetch(`${BASE}/api/agent-inbox/pickle?token=${encodeURIComponent(mcpToken)}`);
     const inbox = await inboxRes.json();
@@ -1337,6 +1374,33 @@ async function runTests() {
       const dupTaskPayload = JSON.parse(dupTaskRes.result.content[0].text);
       assert.equal(dupTaskPayload.alreadyQueued, true, 'Duplicate request_aside_task must deduplicate');
       assert.equal(dupTaskPayload.request_id, asideCodePayload.request_id);
+
+      // 18c. 매칭 미션이 없는 저장소로 위임하면 무관한 프로젝트(유튜브 쇼츠 등) missionId를 붙이지 않음
+      const noMatchTaskRes = await mcpTaskCall({
+        kind: 'code',
+        title: 'Aside 위임 미션 매칭 테스트 (github.io)',
+        goal: '매칭되는 프로젝트가 없는 저장소 요청은 무관한 프로젝트에 연결되지 않아야 합니다.',
+        repo: 'alpinu83/alpinu83.github.io'
+      });
+      assert.ok(!noMatchTaskRes.result?.isError, 'request_aside_task should accept an allowed repo without a matching mission');
+      const noMatchPayload = JSON.parse(noMatchTaskRes.result.content[0].text);
+      const stateAfterAsideTasks = await (await fetch(`${BASE}/api/state`)).json();
+      assert.ok(
+        stateAfterAsideTasks.missions.some((m) => m.mode === 'project' && !m.isRoutineHub && !/CEO Office/i.test(m.title || '')),
+        'fixture: unrelated project missions exist (old fallback would have attached one)'
+      );
+      const ghIoMission = stateAfterAsideTasks.missions.find((m) => String(m.githubRepo || '').toLowerCase() === 'alpinu83/alpinu83.github.io');
+      const noMatchReq = (stateAfterAsideTasks.outsourcing || []).find((r) => r.id === noMatchPayload.request_id);
+      assert.ok(noMatchReq, 'request_aside_task item must be stored');
+      assert.equal(noMatchReq.missionId || '', ghIoMission?.id || '', 'request_aside_task must not fall back to an unrelated project mission');
+      for (const reqId of [asideCodePayload.request_id, goodPayload.request_id]) {
+        const hubReq = (stateAfterAsideTasks.outsourcing || []).find((r) => r.id === reqId);
+        const hubMsn = hubReq?.missionId ? stateAfterAsideTasks.missions.find((m) => m.id === hubReq.missionId) : null;
+        assert.ok(
+          !hubReq?.missionId || /ai-ceo-hub/i.test(hubMsn?.githubRepo || '') || /CEO Office/i.test(hubMsn?.title || ''),
+          `ai-ceo-hub request ${reqId} must link only to the repo-matched or CEO Office mission`
+        );
+      }
 
       // 19. 총괄 팀장 자율 시스템·운영 회고(system_audit) → 교훈 자동 학습 → 개선 제안 결재 카드 → 1클릭 승인 시 개발팀(AGY→Aside) 자동 배정 검증
       await fetch(`${BASE}/api/lead-jobs?worker=agy_lead&${tokQ}`);
