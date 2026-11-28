@@ -4,6 +4,7 @@ import { loadDb, recordAgentHeartbeat, saveDb } from '../store.js';
 import { renderSkills, selectSkills } from '../skills.js';
 import { checkInboxToken, handleAgentInboxReply, resolveInboxAgent } from '../hub/agent-inbox.js';
 import { buildAgentRecentFeedback, taskFeedbackSummary } from '../hub/deliverables.js';
+import { shortsContextForTasks, withShortsCandidates } from '../hub/lead-ops.js';
 
 
 export function registerAgentInboxRoutes(app) {
@@ -41,7 +42,8 @@ export function registerAgentInboxRoutes(app) {
           status: t.status,
           requiresApproval: t.requiresApproval,
           estimatedCostKRW: t.estimatedCostKRW,
-          dispatchPrompt: t.dispatchPrompt,
+          // 쇼츠 프로젝트 업무는 지시서에 최신 뉴스 후보(RSS 링크)가 빠져 있으면 응답에 덧붙임
+          dispatchPrompt: withShortsCandidates(db, t),
           needsRevision: fb.needsRevision,
           revisionRound: fb.revisionRound,
           actionRequired: fb.actionRequired,
@@ -55,6 +57,11 @@ export function registerAgentInboxRoutes(app) {
           lastDecision: fb.lastDecision
         };
       });
+
+    // 회사 맥락 + (쇼츠 업무가 있으면) 최신 쇼츠 뉴스 후보 목록
+    const companyContext = [buildCompanyContext(db, pendingTasks[0]?.missionId || '', { compact: true }), shortsContextForTasks(db, pendingTasks)]
+      .filter(Boolean)
+      .join('\n\n');
 
     const revisionNeededCount = pendingTasks.filter((t) => t.actionRequired === 'revise_and_resubmit').length;
     const newCount = pendingTasks.filter((t) => t.actionRequired === 'submit_result').length;
@@ -100,7 +107,7 @@ export function registerAgentInboxRoutes(app) {
         `상태 요약: ${inboxHeadline}`,
         '',
         '=== CEO 전역 지침 · 회사 기억 (항상 적용) ===',
-        buildCompanyContext(db, pendingTasks[0]?.missionId || '', { compact: true }),
+        companyContext,
         '',
         `=== 나에게 배정된 대기 업무 (${pendingTasks.length}건) ===`,
         ...(pendingTasks.length
@@ -151,7 +158,7 @@ export function registerAgentInboxRoutes(app) {
       ceoName: db.settings.ceoName || '대표님',
       agent: { id: agent.id, name: agent.name, roleTitle: agent.roleTitle },
       globalDirectives: db.settings.globalDirectives || '',
-      companyContext: buildCompanyContext(db, pendingTasks[0]?.missionId || '', { compact: true }),
+      companyContext,
       // 외부 봇도 내부 AI와 같은 스킬(절차·점검표)을 따르도록 업무별 가이드 제공
       skillGuides: pendingTasks.slice(0, 5).map((t) => ({
         taskId: t.id,
